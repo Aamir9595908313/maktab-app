@@ -1,3 +1,4 @@
+
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -32,7 +33,6 @@ String _compassPoint(double deg) {
   return pts[i];
 }
 
-// CHANGED THIS RETURN TYPE FROM "Widget" TO "PreferredSizeWidget"
 PreferredSizeWidget guestAppBar(BuildContext context, String title) => AppBar(
       title: Text(title),
       backgroundColor: _kGreen,
@@ -193,3 +193,5 @@ class _CalendarScreenState extends State<CalendarScreen> {
                   final date = DateTime(shown.year, shown.month, d);
                   final isFriday = date.weekday == DateTime.friday;
                   final isToday = date.year == today.year && date.month == today.month && date.day == today.day;
+                  return Container(
+                    margin: const EdgeInsets.all(2),
