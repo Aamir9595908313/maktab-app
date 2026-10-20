@@ -32,7 +32,7 @@ String _compassPoint(double deg) {
   return pts[i];
 }
 
-Widget guestAppBar(BuildContext context, String title) => AppBar(
+PreferredSizeWidget guestAppBar(BuildContext context, String title) => AppBar(
       title: Text(title),
       backgroundColor: _kGreen,
       foregroundColor: Colors.white,
