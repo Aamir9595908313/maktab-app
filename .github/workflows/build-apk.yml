@@ -22,6 +22,13 @@ jobs:
           flutter create --org com.faizeraza --project-name maktab_app --platforms=android /tmp/scaffold
           cp -r /tmp/scaffold/android ./android
           sed -i 's/android:label="[^"]*"/android:label="Maktab Madrasa"/' android/app/src/main/AndroidManifest.xml
+          # The app now calls Supabase over the network (OTP login, data
+          # sync), so the release build must declare internet access
+          # explicitly - without this the app would build fine but every
+          # network call would silently fail on a real device.
+          if ! grep -q 'android.permission.INTERNET' android/app/src/main/AndroidManifest.xml; then
+            sed -i '0,/<application/s//<uses-permission android:name="android.permission.INTERNET"\/>\n    <application/' android/app/src/main/AndroidManifest.xml
+          fi
       - run: flutter pub get
       - run: flutter build apk --release
       - uses: actions/upload-artifact@v4

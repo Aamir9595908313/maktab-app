@@ -457,12 +457,27 @@ class AppState extends ChangeNotifier {
   ];
 
   // ---------- login ----------
+  // Demo-data login (kept for reference / offline testing only - no longer
+  // reachable from the UI now that login goes through Supabase OTP).
   void login(String phone) {
     user = users[phone];
     kidId = null;
     studentView = false;
     if (user != null && user!.role == 'teacher') {
       teacherMadrasa = user!.teachMadrasas.isNotEmpty ? user!.teachMadrasas.first : 'Hanfi';
+    }
+    notifyListeners();
+  }
+
+  // Real login: called once Supabase Auth has verified the OTP and the
+  // matching user_profiles row (plus madrasa scope) has been loaded and
+  // built into an Account by loadSupabaseProfile() in main.dart.
+  void loginWithAccount(Account a) {
+    user = a;
+    kidId = null;
+    studentView = false;
+    if (a.role == 'teacher') {
+      teacherMadrasa = a.teachMadrasas.isNotEmpty ? a.teachMadrasas.first : 'Hanfi';
     }
     notifyListeners();
   }

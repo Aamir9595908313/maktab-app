@@ -1,12 +1,69 @@
 import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'state.dart';
 import 'guest_tools.dart';
+import 'supabase_config.dart';
 
 final AppState st = AppState();
 const Color kGreen = Color(0xFF054D00);
 const Color kGold = Color(0xFFD4A72C);
 
-void main() => runApp(const MaktabApp());
+SupabaseClient get sb => Supabase.instance.client;
+
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await Supabase.initialize(url: SupabaseConfig.url, anonKey: SupabaseConfig.anonKey);
+  runApp(const MaktabApp());
+}
+
+// Maps the Supabase schema's role names to the names the rest of this app
+// already uses everywhere (tabsFor, roleLabel, etc.) - only 'super_admin'
+// and 'madrasa_admin' differ, every other role name matches as-is.
+String _mapDbRole(String dbRole) {
+  switch (dbRole) {
+    case 'super_admin':
+      return 'super';
+    case 'madrasa_admin':
+      return 'admin';
+    default:
+      return dbRole;
+  }
+}
+
+// Called right after Supabase Auth confirms the OTP. Reads the matching
+// user_profiles row (created automatically by the on_auth_user_created
+// database trigger the first time this phone number signs in) plus any
+// madrasa scope/teacher assignment rows, and turns all of that into the
+// same Account object the rest of the app already expects. Returns null if
+// no user_profiles row exists yet (should not normally happen - the
+// trigger creates it - but a network hiccup right after sign-up could
+// beat it, so the caller retries a couple of times before giving up).
+Future<Account?> loadSupabaseProfile(String uid) async {
+  final profile = await sb.from('user_profiles').select().eq('id', uid).maybeSingle();
+  if (profile == null) return null;
+
+  String roleName = '';
+  if (profile['custom_role_id'] != null) {
+    final roleRow = await sb.from('roles').select('name').eq('id', profile['custom_role_id'] as Object).maybeSingle();
+    roleName = (roleRow?['name'] as String?) ?? '';
+  }
+
+  final scopeRows = await sb.from('user_madrasa_scope').select('madrasas(name)').eq('user_id', uid);
+  final branches = [for (final r in (scopeRows as List)) ((r['madrasas'] as Map?)?['name'] as String?) ?? ''].where((n) => n.isNotEmpty).toList();
+
+  final tcaRows = await sb.from('teacher_class_assignments').select('madrasas(name)').eq('teacher_id', uid);
+  final teachMadrasas = <String>{for (final r in (tcaRows as List)) ((r['madrasas'] as Map?)?['name'] as String?) ?? ''}..removeWhere((n) => n.isEmpty);
+
+  return Account(
+    (profile['phone'] as String?) ?? '',
+    (profile['full_name'] as String?) ?? 'User',
+    _mapDbRole((profile['base_role'] as String?) ?? 'student'),
+    roleName: roleName,
+    branches: branches,
+    teachMadrasas: teachMadrasas.toList(),
+    active: (profile['is_active'] as bool?) ?? true,
+  );
+}
 
 class MaktabApp extends StatelessWidget {
   const MaktabApp({super.key});
@@ -113,20 +170,93 @@ class GuestHome extends StatefulWidget {
 
 class _GuestHomeState extends State<GuestHome> {
   final phone = TextEditingController();
-  final otp = TextEditingController(text: '123456');
+  final otp = TextEditingController();
   bool step2 = false;
+  bool busy = false;
   String err = '';
 
-  static const List<List<String>> testUsers = [
-    ['Parent (Rashid, 2 children)', '9800000301'],
-    ['Parent (Shabana)', '9800000302'],
-    ['Student (Zainab own login)', '9800000401'],
-    ['Teacher (Hanfi + Jama)', '9800000201'],
-    ['Madrasa Admin', '9800000101'],
-    ['Super Admin', '9800000001'],
-    ['Working Committee', '9800000601'],
-    ['Accountant (custom role)', '9800000501'],
-  ];
+  Future<void> _sendOtp() async {
+    final p = digits(phone.text);
+    if (p.length != 10) {
+      setState(() => err = 'Enter a valid 10-digit mobile number.');
+      return;
+    }
+    setState(() {
+      busy = true;
+      err = '';
+    });
+    try {
+      await sb.auth.signInWithOtp(phone: '+91$p');
+      setState(() {
+        busy = false;
+        step2 = true;
+      });
+    } on AuthException catch (e) {
+      setState(() {
+        busy = false;
+        err = e.message;
+      });
+    } catch (e) {
+      setState(() {
+        busy = false;
+        err = 'Could not reach the server. Check your internet connection and try again.';
+      });
+    }
+  }
+
+  Future<void> _verifyOtp() async {
+    final p = digits(phone.text);
+    setState(() {
+      busy = true;
+      err = '';
+    });
+    try {
+      final res = await sb.auth.verifyOTP(phone: '+91$p', token: otp.text.trim(), type: OtpType.sms);
+      final uid = res.user?.id;
+      if (uid == null) {
+        setState(() {
+          busy = false;
+          err = 'Verification failed. Please try again.';
+        });
+        return;
+      }
+      // The database trigger that creates a user_profiles row for a new
+      // sign-in runs almost instantly, but give it a couple of short
+      // retries in case this request lands a moment before it does.
+      Account? account;
+      for (var i = 0; i < 4 && account == null; i++) {
+        account = await loadSupabaseProfile(uid);
+        if (account == null) await Future.delayed(const Duration(milliseconds: 500));
+      }
+      if (!mounted) return;
+      if (account == null) {
+        setState(() {
+          busy = false;
+          err = 'Signed in, but no role is set up for this account yet. Ask your Super Admin to assign one.';
+        });
+        return;
+      }
+      if (!account.active) {
+        await sb.auth.signOut();
+        setState(() {
+          busy = false;
+          err = 'This account has been deactivated. Contact your Madrasa Admin.';
+        });
+        return;
+      }
+      st.loginWithAccount(account);
+    } on AuthException catch (e) {
+      setState(() {
+        busy = false;
+        err = e.message;
+      });
+    } catch (e) {
+      setState(() {
+        busy = false;
+        err = 'Could not verify the OTP. Check your internet connection and try again.';
+      });
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -149,32 +279,14 @@ class _GuestHomeState extends State<GuestHome> {
                 width: double.infinity,
                 child: ElevatedButton(
                   style: ElevatedButton.styleFrom(backgroundColor: kGreen, padding: const EdgeInsets.symmetric(vertical: 14)),
-                  onPressed: () {
-                    final p = digits(phone.text);
-                    if (p.length != 10) {
-                      setState(() => err = 'Enter a valid 10-digit mobile number.');
-                    } else if (!st.users.containsKey(p)) {
-                      setState(() => err = 'This number is not registered. Use a test user below.');
-                    } else if (st.users[p]!.active == false) {
-                      setState(() => err = 'This account has been deactivated. Contact your Madrasa Admin.');
-                    } else {
-                      setState(() {
-                        err = '';
-                        step2 = true;
-                      });
-                    }
-                  },
-                  child: const Text('Login'),
+                  onPressed: busy ? null : _sendOtp,
+                  child: busy ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white)) : const Text('Login'),
                 ),
               ),
-              const SizedBox(height: 16),
-              const Text('Test users (tap to fill). Test OTP is 123456.', style: TextStyle(fontSize: 12, color: Colors.black54)),
-              const SizedBox(height: 6),
-              Wrap(spacing: 6, runSpacing: 4, children: [
-                for (final u in testUsers) ActionChip(label: Text(u[0]), onPressed: () => setState(() => phone.text = u[1])),
-              ]),
+              const SizedBox(height: 10),
+              const Text('An OTP will be sent to this number by SMS.', style: TextStyle(fontSize: 12, color: Colors.black54)),
             ] else ...[
-              Text('OTP sent to ${digits(phone.text)} (test OTP: 123456)', textAlign: TextAlign.center),
+              Text('OTP sent to +91 ${digits(phone.text)}', textAlign: TextAlign.center),
               const SizedBox(height: 10),
               field(otp, 'Enter OTP', number: true),
               if (err.isNotEmpty) Text(err, style: const TextStyle(color: Colors.red)),
@@ -182,17 +294,11 @@ class _GuestHomeState extends State<GuestHome> {
                 width: double.infinity,
                 child: ElevatedButton(
                   style: ElevatedButton.styleFrom(backgroundColor: kGreen, padding: const EdgeInsets.symmetric(vertical: 14)),
-                  onPressed: () {
-                    if (otp.text.trim() == '123456') {
-                      st.login(digits(phone.text));
-                    } else {
-                      setState(() => err = 'OTP is wrong.');
-                    }
-                  },
-                  child: const Text('Verify & Login'),
+                  onPressed: busy ? null : _verifyOtp,
+                  child: busy ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white)) : const Text('Verify & Login'),
                 ),
               ),
-              Center(child: TextButton(onPressed: () => setState(() => step2 = false), child: const Text('Change number'))),
+              Center(child: TextButton(onPressed: busy ? null : () => setState(() => step2 = false), child: const Text('Change number'))),
             ],
             const SizedBox(height: 28),
             const Divider(),
@@ -403,7 +509,15 @@ class _ShellState extends State<Shell> {
             ListTile(leading: const Icon(Icons.calendar_month), title: const Text('Calendar'), onTap: () { Navigator.pop(context); openTool(context, const CalendarScreen()); }),
             ListTile(leading: const Icon(Icons.fingerprint), title: const Text('Tasbeeh Counter'), onTap: () { Navigator.pop(context); openTool(context, const TasbeehScreen()); }),
             const Divider(),
-            ListTile(leading: const Icon(Icons.logout), title: const Text('Logout'), onTap: () => st.logout()),
+            ListTile(
+              leading: const Icon(Icons.logout),
+              title: const Text('Logout'),
+              onTap: () async {
+                Navigator.pop(context);
+                await sb.auth.signOut();
+                st.logout();
+              },
+            ),
           ]),
         ),
         body: tabs[idx].build(),
