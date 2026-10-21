@@ -322,11 +322,31 @@ class _ShellState extends State<Shell> {
         appBar: AppBar(
           backgroundColor: kGreen,
           foregroundColor: Colors.white,
+          // Every tab screen except Home gets an explicit back-to-home
+          // button, since switching tabs here does not use the Navigator
+          // stack (so there is no automatic back arrow to rely on). The
+          // drawer/menu icon moves into actions on those screens so it is
+          // not lost when the leading slot is used for Back.
+          leading: idx != 0
+              ? IconButton(
+                  icon: const Icon(Icons.arrow_back),
+                  tooltip: 'Back to Home',
+                  onPressed: () => setState(() => idx = 0),
+                )
+              : null,
           title: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Text(tabs[idx].title, style: const TextStyle(fontSize: 18)),
             Text('${roleLabel(u)} - ${u.name}', style: const TextStyle(fontSize: 11, color: Color(0xFFF0D98A))),
           ]),
           actions: [
+            if (idx != 0)
+              Builder(
+                builder: (ctx) => IconButton(
+                  icon: const Icon(Icons.menu),
+                  tooltip: 'Menu',
+                  onPressed: () => Scaffold.of(ctx).openDrawer(),
+                ),
+              ),
             if (isMultiMadrasaTeacher)
               Padding(
                 padding: const EdgeInsets.only(right: 8),
