@@ -14,7 +14,13 @@ jobs:
           java-version: '17'
       - uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.24.5'
+          # No pinned flutter-version: packages like app_links (pulled in
+          # transitively by supabase_flutter for OTP/OAuth deep links) ship
+          # Android build files that expect current Flutter Gradle tooling.
+          # Pinning to an old release (3.24.5) broke with "Could not get
+          # unknown property 'flutter'" / "compileSdkVersion is not
+          # specified" - using whatever is current on the stable channel
+          # avoids that version skew.
           channel: stable
           cache: true
       - name: Create Android platform files
