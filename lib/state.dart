@@ -114,7 +114,12 @@ class Account {
 class MadrasaRec {
   String name;
   bool active;
-  MadrasaRec(this.name, {this.active = true});
+  // The matching row's id in Supabase public.madrasas, once this record has
+  // been loaded from (or successfully saved to) the real database. Null
+  // means this is still local-only demo data that hasn't been synced -
+  // Supabase calls in main.dart use this to know which row to update.
+  String? dbId;
+  MadrasaRec(this.name, {this.active = true, this.dbId});
 }
 
 class Course {
@@ -122,7 +127,9 @@ class Course {
   String name;
   String description;
   bool active;
-  Course(this.id, this.name, this.description, {this.active = true});
+  // Same purpose as MadrasaRec.dbId above, for public.courses.
+  String? dbId;
+  Course(this.id, this.name, this.description, {this.active = true, this.dbId});
 }
 
 // status: in_progress, awaiting_approval, completed
@@ -243,14 +250,30 @@ class AppState extends ChangeNotifier {
   };
 
   // ---------- master data: madrasas ----------
+  // Seeded with the same demo branches so the app still looks right before
+  // Supabase data has loaded (or if it can't load). setMadrasasFromDb()
+  // below replaces this list wholesale once the real data arrives.
   final List<MadrasaRec> madrasas = [for (final b in kBranches) MadrasaRec(b)];
   List<String> get activeMadrasaNames => madrasas.where((m) => m.active).map((m) => m.name).toList();
 
-  String? addMadrasa(String name) {
+  // Replaces the whole list with what was just loaded from Supabase
+  // (public.madrasas). Called after login and after a manual refresh.
+  void setMadrasasFromDb(List<MadrasaRec> list) {
+    madrasas
+      ..clear()
+      ..addAll(list);
+    notifyListeners();
+  }
+
+  // Local-only add (used as a fallback, and by setMadrasasFromDb's caller
+  // pattern before this round existed). Prefer addMadrasaRemote in
+  // main.dart, which writes to Supabase first and then calls this with the
+  // new row's dbId so the local list and the database agree.
+  String? addMadrasa(String name, {String? dbId}) {
     final n = name.trim();
     if (n.isEmpty) return 'Enter a Madrasa / Branch name';
     if (madrasas.any((m) => m.name.toLowerCase() == n.toLowerCase())) return 'This Madrasa already exists';
-    madrasas.add(MadrasaRec(n));
+    madrasas.add(MadrasaRec(n, dbId: dbId));
     notifyListeners();
     return null;
   }
@@ -274,10 +297,22 @@ class AppState extends ChangeNotifier {
     return null;
   }
 
-  String? addCourse(String name, String description) {
+  // Replaces the whole list with what was just loaded from Supabase
+  // (public.courses). Local integer ids are reassigned sequentially since
+  // course_enrollments (still in-memory/demo until a later round) key off
+  // them, not off the database uuid.
+  void setCoursesFromDb(List<Course> list) {
+    courses
+      ..clear()
+      ..addAll(list);
+    nextCourseId = (courses.map((c) => c.id).fold(0, (a, b) => a > b ? a : b)) + 1;
+    notifyListeners();
+  }
+
+  String? addCourse(String name, String description, {String? dbId}) {
     final n = name.trim();
     if (n.isEmpty) return 'Enter a course name';
-    courses.add(Course(nextCourseId++, n, description.trim()));
+    courses.add(Course(nextCourseId++, n, description.trim(), dbId: dbId));
     notifyListeners();
     return null;
   }

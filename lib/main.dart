@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'state.dart';
@@ -72,6 +73,112 @@ Future<Account?> loadSupabaseProfile(String uid) async {
     teachMadrasas: teachMadrasas.toList(),
     active: (profile['is_active'] as bool?) ?? true,
   );
+}
+
+// Loads Master Data (Madrasas and Courses) from Supabase and replaces the
+// app's in-memory copies with it. Called right after a successful login.
+// Students, Classes and Teachers stay on in-memory demo data for now - this
+// is the first slice of Master Data to move to the real database; the rest
+// follow in later rounds once this one is confirmed working.
+//
+// Deliberately non-fatal: if this fails (e.g. a brief network hiccup right
+// after login), the app keeps showing whatever it already had (the demo
+// seed data on first run, or the last successful load) rather than
+// blocking or crashing - the Master Data screen's pull-to-refresh-style
+// "Add" buttons will simply fail with a clear message if Supabase truly
+// isn't reachable, which is enough signal to retry.
+Future<void> loadMasterData() async {
+  try {
+    final madrasaRows = await sb.from('madrasas').select().order('name');
+    st.setMadrasasFromDb([
+      for (final r in (madrasaRows as List))
+        MadrasaRec((r['name'] as String?) ?? '', active: (r['is_active'] as bool?) ?? true, dbId: r['id'] as String?),
+    ]);
+
+    final courseRows = await sb.from('courses').select().order('name');
+    var i = 1;
+    st.setCoursesFromDb([
+      for (final r in (courseRows as List))
+        Course(
+          i++,
+          (r['name'] as String?) ?? '',
+          (r['description'] as String?) ?? '',
+          active: (r['is_active'] as bool?) ?? true,
+          dbId: r['id'] as String?,
+        ),
+    ]);
+  } catch (_) {
+    // Swallow - see note above. The Master Data screen still works off
+    // whatever was already loaded; a retry happens next time this is
+    // called (e.g. next login) or the user can be told to check their
+    // connection if "Add" keeps failing.
+  }
+}
+
+// Inserts a new row into public.madrasas and, on success, adds it to the
+// local list with its real database id attached. Returns null on success
+// or a short message to show the user on failure.
+Future<String?> addMadrasaRemote(String name) async {
+  final n = name.trim();
+  if (n.isEmpty) return 'Enter a Madrasa / Branch name';
+  if (st.madrasas.any((m) => m.name.toLowerCase() == n.toLowerCase())) return 'This Madrasa already exists';
+  try {
+    final row = await sb.from('madrasas').insert({'name': n}).select().single();
+    st.addMadrasa(n, dbId: row['id'] as String?);
+    return null;
+  } on PostgrestException catch (e) {
+    if (e.code == '23505') return 'This Madrasa already exists';
+    return 'Could not save: ${e.message}';
+  } catch (_) {
+    return 'Could not save. Check your internet connection and try again.';
+  }
+}
+
+// Updates a madrasa's active flag in Supabase first, then reflects it
+// locally only once that succeeds, so a failed save never leaves the app
+// showing something the database doesn't actually have.
+Future<String?> setMadrasaActiveRemote(MadrasaRec m, bool v) async {
+  if (m.dbId == null) {
+    // Shouldn't happen once master data is loaded from Supabase, but guard
+    // against toggling a row that was never actually saved.
+    return 'This Madrasa was not saved to the database yet.';
+  }
+  try {
+    await sb.from('madrasas').update({'is_active': v}).eq('id', m.dbId as Object);
+    st.setMadrasaActive(m, v);
+    return null;
+  } catch (_) {
+    return 'Could not save. Check your internet connection and try again.';
+  }
+}
+
+// Same pattern as addMadrasaRemote, for public.courses.
+Future<String?> addCourseRemote(String name, String description) async {
+  final n = name.trim();
+  if (n.isEmpty) return 'Enter a course name';
+  try {
+    final row = await sb.from('courses').insert({'name': n, 'description': description.trim()}).select().single();
+    st.addCourse(n, description, dbId: row['id'] as String?);
+    return null;
+  } on PostgrestException catch (e) {
+    return 'Could not save: ${e.message}';
+  } catch (_) {
+    return 'Could not save. Check your internet connection and try again.';
+  }
+}
+
+// Same pattern as setMadrasaActiveRemote, for public.courses.
+Future<String?> setCourseActiveRemote(Course c, bool v) async {
+  if (c.dbId == null) {
+    return 'This course was not saved to the database yet.';
+  }
+  try {
+    await sb.from('courses').update({'is_active': v}).eq('id', c.dbId as Object);
+    st.setCourseActive(c, v);
+    return null;
+  } catch (_) {
+    return 'Could not save. Check your internet connection and try again.';
+  }
 }
 
 class MaktabApp extends StatefulWidget {
@@ -164,16 +271,27 @@ class _ConnectErrorScreen extends StatelessWidget {
 // ---------------- helpers ----------------
 void toast(BuildContext c, String m) => ScaffoldMessenger.of(c).showSnackBar(SnackBar(content: Text(m)));
 
-Widget tile(String label, String value, {Color? color}) => Card(
-      child: Padding(
-        padding: const EdgeInsets.all(10),
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisAlignment: MainAxisAlignment.center, children: [
-          Text(label, style: const TextStyle(fontSize: 11, color: Colors.black54)),
-          const SizedBox(height: 4),
-          Text(value, style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: color)),
+// onTap is optional: dashboards that only show a number (e.g. "Average
+// attendance") leave it out, while anything that's really a shortcut to a
+// list screen (Madrasas, Students, Teachers...) passes one so the tile is
+// an actual way to get there, not just a static stat card.
+Widget tile(String label, String value, {Color? color, VoidCallback? onTap}) {
+  final card = Card(
+    child: Padding(
+      padding: const EdgeInsets.all(10),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisAlignment: MainAxisAlignment.center, children: [
+        Row(children: [
+          Expanded(child: Text(label, style: const TextStyle(fontSize: 11, color: Colors.black54))),
+          if (onTap != null) const Icon(Icons.chevron_right, size: 14, color: Colors.black38),
         ]),
-      ),
-    );
+        const SizedBox(height: 4),
+        Text(value, style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: color)),
+      ]),
+    ),
+  );
+  if (onTap == null) return card;
+  return InkWell(borderRadius: BorderRadius.circular(4), onTap: onTap, child: card);
+}
 
 Widget grid(List<Widget> tiles) => GridView.count(
       crossAxisCount: 2,
@@ -322,6 +440,12 @@ class _GuestHomeState extends State<GuestHome> {
         return;
       }
       st.loginWithAccount(account);
+      // Fire-and-forget: Master Data (Madrasas/Courses) loads in the
+      // background so login itself isn't held up by it; the Home screen
+      // and Master Data screen just show demo data for a moment if this is
+      // still in flight, then update once it resolves (st is a
+      // ChangeNotifier, so any screen listening to it redraws).
+      unawaited(loadMasterData());
     } on AuthException catch (e) {
       setState(() {
         busy = false;
@@ -1044,14 +1168,14 @@ class _StaffHomeState extends State<StaffHome> {
       return page([
         banner(),
         grid([
-          tile('Madrasas', '4'),
-          tile('Students', '${st.students.length}'),
-          tile('Teachers', '5'),
+          tile('Madrasas', '${st.madrasas.length}', onTap: () => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const MasterDataView()))),
+          tile('Students', '${st.students.length}', onTap: () => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const StudentsView()))),
+          tile('Teachers', '${st.teachers().length}', onTap: () => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const TeachersView()))),
           tile('Average attendance', '86%'),
           tile('Average syllabus', '68%'),
-          tile('Leave requests', '$pendingLeave pending'),
-          tile('Complaints open', '$open'),
-          tile('Committee members', '${st.committee().length}'),
+          tile('Leave requests', '$pendingLeave pending', onTap: () => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const TeachersView()))),
+          tile('Complaints open', '$open', onTap: () => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const ComplaintsView()))),
+          tile('Committee members', '${st.committee().length}', onTap: () => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const CommitteeAdmin()))),
         ]),
         h('Post common announcement (all madrasas, all roles)'),
         field(title, 'Title'),
@@ -1086,12 +1210,12 @@ class _StaffHomeState extends State<StaffHome> {
       return page([
         banner(),
         grid([
-          tile('Students', '${st.inBranch('Hanfi').length}'),
-          tile('Teachers today', '$present present, $onLeave on leave'),
-          tile('Pending registrations', '${st.pending.length}'),
-          tile('Leave requests', '$pendingLeave pending'),
-          tile('Fees Sep', '${st.completeCount('Sep')} of ${st.totalFor('Sep')} complete'),
-          tile('Complaints open', '$open'),
+          tile('Students', '${st.inBranch('Hanfi').length}', onTap: () => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const StudentsView()))),
+          tile('Teachers today', '$present present, $onLeave on leave', onTap: () => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const TeachersView()))),
+          tile('Pending registrations', '${st.pending.length}', onTap: () => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const ApprovalsView()))),
+          tile('Leave requests', '$pendingLeave pending', onTap: () => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const TeachersView()))),
+          tile('Fees Sep', '${st.completeCount('Sep')} of ${st.totalFor('Sep')} complete', onTap: () => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const FeesAdmin()))),
+          tile('Complaints open', '$open', onTap: () => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const ComplaintsView()))),
         ]),
         h('Ready to promote'),
         Text('${st.students.where((s) => st.eligible(s)).length} student(s)'),
@@ -2052,6 +2176,7 @@ class _MasterDataViewState extends State<MasterDataView> {
   final madrasaName = TextEditingController();
   final courseName = TextEditingController();
   final courseDesc = TextEditingController();
+  bool busy = false;
 
   @override
   Widget build(BuildContext context) {
@@ -2062,17 +2187,26 @@ class _MasterDataViewState extends State<MasterDataView> {
               title: Text(m.name),
               subtitle: Text(m.active ? 'Active - shown in registration dropdown' : 'Deactivated - hidden from new registrations'),
               value: m.active,
-              onChanged: (v) => st.setMadrasaActive(m, v),
+              onChanged: (v) async {
+                final e = await setMadrasaActiveRemote(m, v);
+                if (!mounted) return;
+                if (e != null) toast(context, e);
+              },
             ),
           )),
       field(madrasaName, 'New Madrasa / Branch name'),
       ElevatedButton(
-        onPressed: () {
-          final e = st.addMadrasa(madrasaName.text);
-          toast(context, e ?? 'Madrasa added. It now appears in the registration dropdown.');
-          if (e == null) madrasaName.clear();
-        },
-        child: const Text('Add Madrasa / Branch'),
+        onPressed: busy
+            ? null
+            : () async {
+                setState(() => busy = true);
+                final e = await addMadrasaRemote(madrasaName.text);
+                if (!mounted) return;
+                setState(() => busy = false);
+                toast(context, e ?? 'Madrasa added. It now appears in the registration dropdown.');
+                if (e == null) madrasaName.clear();
+              },
+        child: busy ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2)) : const Text('Add Madrasa / Branch'),
       ),
       h('Classes'),
       const Text('Classes and their syllabus (pages / chapters) are managed from the "Classes & Syllabus" screen.', style: TextStyle(color: Colors.black54, fontSize: 12.5)),
@@ -2099,21 +2233,30 @@ class _MasterDataViewState extends State<MasterDataView> {
               title: Text(c.name),
               subtitle: Text(c.description.isEmpty ? 'No description' : c.description),
               value: c.active,
-              onChanged: (v) => st.setCourseActive(c, v),
+              onChanged: (v) async {
+                final e = await setCourseActiveRemote(c, v);
+                if (!mounted) return;
+                if (e != null) toast(context, e);
+              },
             ),
           )),
       field(courseName, 'New course name'),
       field(courseDesc, 'Course description (optional)', lines: 2),
       ElevatedButton(
-        onPressed: () {
-          final e = st.addCourse(courseName.text, courseDesc.text);
-          toast(context, e ?? 'Course added. It can now be assigned from any student\'s Courses tab.');
-          if (e == null) {
-            courseName.clear();
-            courseDesc.clear();
-          }
-        },
-        child: const Text('Add course'),
+        onPressed: busy
+            ? null
+            : () async {
+                setState(() => busy = true);
+                final e = await addCourseRemote(courseName.text, courseDesc.text);
+                if (!mounted) return;
+                setState(() => busy = false);
+                toast(context, e ?? 'Course added. It can now be assigned from any student\'s Courses tab.');
+                if (e == null) {
+                  courseName.clear();
+                  courseDesc.clear();
+                }
+              },
+        child: busy ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2)) : const Text('Add course'),
       ),
     ]);
   }
