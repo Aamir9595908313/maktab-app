@@ -10,11 +10,20 @@ const Color kGold = Color(0xFFD4A72C);
 
 SupabaseClient get sb => Supabase.instance.client;
 
-Future<void> main() async {
+void main() {
   WidgetsFlutterBinding.ensureInitialized();
-  await Supabase.initialize(url: SupabaseConfig.url, anonKey: SupabaseConfig.anonKey);
+  // Connecting to Supabase must never block the app from showing a screen:
+  // if it's awaited directly in main() and the connection is slow, blocked,
+  // or the device has no network yet, the app sits on a blank screen with
+  // nothing to show and no way to retry, which looks exactly like a freeze.
+  // Instead, runApp() happens immediately and MaktabApp itself shows a
+  // small splash while connecting, with a hard timeout and a Retry screen
+  // if it fails.
   runApp(const MaktabApp());
 }
+
+Future<void> _connectSupabase() =>
+    Supabase.initialize(url: SupabaseConfig.url, anonKey: SupabaseConfig.anonKey).timeout(const Duration(seconds: 12));
 
 // Maps the Supabase schema's role names to the names the rest of this app
 // already uses everywhere (tabsFor, roleLabel, etc.) - only 'super_admin'
@@ -65,8 +74,23 @@ Future<Account?> loadSupabaseProfile(String uid) async {
   );
 }
 
-class MaktabApp extends StatelessWidget {
+class MaktabApp extends StatefulWidget {
   const MaktabApp({super.key});
+  @override
+  State<MaktabApp> createState() => _MaktabAppState();
+}
+
+class _MaktabAppState extends State<MaktabApp> {
+  late Future<void> _init;
+
+  @override
+  void initState() {
+    super.initState();
+    _init = _connectSupabase();
+  }
+
+  void _retry() => setState(() => _init = _connectSupabase());
+
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
@@ -76,9 +100,62 @@ class MaktabApp extends StatelessWidget {
         useMaterial3: true,
         colorScheme: ColorScheme.fromSeed(seedColor: kGreen, secondary: kGold),
       ),
-      home: AnimatedBuilder(
-        animation: st,
-        builder: (c, _) => st.user == null ? const GuestHome() : const Shell(),
+      home: FutureBuilder<void>(
+        future: _init,
+        builder: (context, snap) {
+          if (snap.connectionState != ConnectionState.done) {
+            return const _ConnectingScreen();
+          }
+          if (snap.hasError) {
+            return _ConnectErrorScreen(onRetry: _retry);
+          }
+          return AnimatedBuilder(
+            animation: st,
+            builder: (c, _) => st.user == null ? const GuestHome() : const Shell(),
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _ConnectingScreen extends StatelessWidget {
+  const _ConnectingScreen();
+  @override
+  Widget build(BuildContext context) {
+    return const Scaffold(
+      body: Center(
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          CircularProgressIndicator(color: kGreen),
+          SizedBox(height: 16),
+          Text('Connecting...'),
+        ]),
+      ),
+    );
+  }
+}
+
+class _ConnectErrorScreen extends StatelessWidget {
+  final VoidCallback onRetry;
+  const _ConnectErrorScreen({required this.onRetry});
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: SafeArea(
+        child: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              const Icon(Icons.cloud_off, size: 56, color: Colors.black38),
+              const SizedBox(height: 16),
+              const Text('Could not connect to the server.', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16), textAlign: TextAlign.center),
+              const SizedBox(height: 8),
+              const Text('Check your internet connection and try again.', style: TextStyle(color: Colors.black54), textAlign: TextAlign.center),
+              const SizedBox(height: 20),
+              ElevatedButton(onPressed: onRetry, child: const Text('Retry')),
+            ]),
+          ),
+        ),
       ),
     );
   }
