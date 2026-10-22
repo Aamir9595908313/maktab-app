@@ -121,12 +121,141 @@ Future<void> loadMasterData() async {
           dbId: r['id'] as String?,
         ),
     ]);
+
+    // Classes must already be loaded (just above) to turn each row's
+    // class_id (a uuid) back into the class number (1, 2, 3...) the rest
+    // of the app keys everything off; same idea for madrasa_id -> name.
+    final madrasaNameById = {for (final m in st.madrasas) if (m.dbId != null) m.dbId!: m.name};
+    final classNoById = {for (final cd in st.classDefs.values) if (cd.dbId != null) cd.dbId!: cd.id};
+    final studentRows = await sb.from('students').select().order('created_at');
+    var sid = 1;
+    st.setStudentsFromDb([
+      for (final r in (studentRows as List))
+        Student(
+          id: sid++,
+          key: (r['student_key'] as String?) ?? '',
+          name: (r['name'] as String?) ?? '',
+          gender: (r['gender'] as String?) ?? 'Male',
+          cls: classNoById[r['class_id'] as String?] ?? 1,
+          madrasa: madrasaNameById[r['madrasa_id'] as String?] ?? 'Hanfi',
+          start: (r['admission_date'] as String?) ?? kToday,
+          parentPhone: (r['parent_phone'] as String?) ?? '',
+          studentPhone: (r['student_phone'] as String?) ?? '',
+          aadhaar: (r['aadhaar_file_ref'] as String?) != null && r['aadhaar_file_ref'] != 'not_uploaded',
+          address: (r['address'] as String?) ?? '',
+          status: (r['is_active'] as bool?) ?? true ? 'Active' : 'Inactive',
+          dbId: r['id'] as String?,
+        ),
+    ]);
   } catch (_) {
     // Swallow - see note above. The Master Data screen still works off
     // whatever was already loaded; a retry happens next time this is
     // called (e.g. next login) or the user can be told to check their
     // connection if "Add" keeps failing.
   }
+}
+
+// Inserts a new row into public.students and, on success, adds it to the
+// local list with its real database id attached. Same validation as the
+// old local-only addStudent(), plus it needs the chosen Madrasa and Class
+// to already have a real database id (they will, once Master Data has
+// loaded) to satisfy the students table's foreign keys.
+Future<String?> addStudentRemote({
+  required String name,
+  required String gender,
+  required int cls,
+  required String parentPhone,
+  String studentPhone = '',
+  required bool aadhaar,
+  String address = '',
+  required String madrasa,
+}) async {
+  final n = name.trim();
+  if (n.isEmpty) return 'Enter the student name';
+  if (gender.isEmpty) return 'Select gender (Male or Female)';
+  if (parentPhone.length != 10) return 'Parent mobile number is required (10 digits)';
+  if (!aadhaar) return 'Aadhaar card is required';
+  if (studentPhone.isNotEmpty) {
+    if (studentPhone.length != 10) return 'Student mobile must be 10 digits, or leave it blank';
+    if (studentPhone == parentPhone) return 'Student mobile must differ from the parent mobile';
+  }
+  final m = st.madrasas.where((x) => x.name == madrasa).toList();
+  final cd = st.classDefs[cls];
+  if (m.isEmpty || m.first.dbId == null || cd?.dbId == null) {
+    return 'This Madrasa or Class was not saved to the database yet.';
+  }
+  final prefix = madrasa == 'Jama'
+      ? 'JAM'
+      : madrasa == 'Khwajapiya'
+          ? 'KHW'
+          : madrasa == 'Bagwanpura'
+              ? 'BAG'
+              : madrasa == 'Hanfi'
+                  ? 'HNF'
+                  : madrasa.replaceAll(RegExp('[^A-Za-z]'), '').toUpperCase().padRight(3, 'X').substring(0, 3);
+  final today = DateTime.now();
+  final start = '${today.year}-${today.month.toString().padLeft(2, '0')}-${today.day.toString().padLeft(2, '0')}';
+  final key = '$prefix-${today.year}-${today.millisecondsSinceEpoch % 100000}';
+  try {
+    final row = await sb.from('students').insert({
+      'madrasa_id': m.first.dbId,
+      'class_id': cd!.dbId,
+      'student_key': key,
+      'name': n,
+      'gender': gender,
+      'parent_phone': parentPhone,
+      'student_phone': studentPhone.isEmpty ? null : studentPhone,
+      'address': address.trim().isEmpty ? null : address.trim(),
+      'aadhaar_file_ref': 'uploaded_demo',
+      'admission_date': start,
+    }).select().single();
+    st.addStudentFromRemote(
+      key: key,
+      name: n,
+      gender: gender,
+      cls: cls,
+      madrasa: madrasa,
+      start: start,
+      parentPhone: parentPhone,
+      studentPhone: studentPhone,
+      aadhaar: true,
+      address: address.trim(),
+      dbId: row['id'] as String?,
+    );
+    return null;
+  } on PostgrestException catch (e) {
+    if (e.code == '23505') return 'A student with a matching ID already exists, try again';
+    return 'Could not save: ${e.message}';
+  } catch (_) {
+    return 'Could not save. Check your internet connection and try again.';
+  }
+}
+
+// Deactivate/reactivate a student that has a real database row: save
+// is_active to Supabase first, then update the local copy, same
+// save-then-reflect order as setMadrasaActiveRemote. If this student was
+// never synced to the database (dbId null), falls back to the old
+// local-only behaviour so nothing breaks for leftover demo data.
+Future<String> deactivateStudentRemote(Student s, String reason) async {
+  if (s.dbId != null) {
+    try {
+      await sb.from('students').update({'is_active': false}).eq('id', s.dbId as Object);
+    } catch (_) {
+      return 'Could not save. Check your internet connection and try again.';
+    }
+  }
+  return st.deactivateStudent(s, reason);
+}
+
+Future<String> reactivateStudentRemote(Student s) async {
+  if (s.dbId != null) {
+    try {
+      await sb.from('students').update({'is_active': true}).eq('id', s.dbId as Object);
+    } catch (_) {
+      return 'Could not save. Check your internet connection and try again.';
+    }
+  }
+  return st.reactivateStudent(s);
 }
 
 // Inserts a new row into public.madrasas and, on success, adds it to the
@@ -1600,10 +1729,19 @@ class _StudentsViewState extends State<StudentsView> {
   String gender = '';
   int cls = 1;
   bool aadhaar = false;
+  bool busy = false;
   String? regMadrasa;
 
   @override
   Widget build(BuildContext context) {
+    // Same reason as MasterDataView: this screen reads st.students directly,
+    // so without listening to st it wouldn't redraw when a student is added
+    // or deactivated from somewhere else (or even by this screen's own
+    // async Save button, which updates st and not local setState).
+    return AnimatedBuilder(animation: st, builder: (context, _) => _body(context));
+  }
+
+  Widget _body(BuildContext context) {
     final u = st.user!;
     final canSeeAadhaar = u.role == 'admin' || u.role == 'super';
     final canDeactivate = u.role == 'admin' || u.role == 'super' || u.role == 'teacher';
@@ -1647,21 +1785,35 @@ class _StudentsViewState extends State<StudentsView> {
       ),
       const SizedBox(height: 8),
       ElevatedButton(
-        onPressed: () {
-          final e = st.addStudent(name: name.text, gender: gender, cls: cls, parentPhone: digits(parent.text), studentPhone: digits(stuPhone.text), aadhaar: aadhaar, address: address.text, madrasa: u.role == 'teacher' ? st.teacherMadrasa : (regMadrasa ?? 'Hanfi'));
-          toast(context, e ?? 'Student added. Parent invited (login with OTP).');
-          if (e == null) {
-            name.clear();
-            parent.clear();
-            stuPhone.clear();
-            address.clear();
-            setState(() {
-              gender = '';
-              aadhaar = false;
-            });
-          }
-        },
-        child: const Text('Save student'),
+        onPressed: busy
+            ? null
+            : () async {
+                setState(() => busy = true);
+                final e = await addStudentRemote(
+                  name: name.text,
+                  gender: gender,
+                  cls: cls,
+                  parentPhone: digits(parent.text),
+                  studentPhone: digits(stuPhone.text),
+                  aadhaar: aadhaar,
+                  address: address.text,
+                  madrasa: u.role == 'teacher' ? st.teacherMadrasa : (regMadrasa ?? 'Hanfi'),
+                );
+                if (!mounted) return;
+                setState(() => busy = false);
+                toast(context, e ?? 'Student added and saved.');
+                if (e == null) {
+                  name.clear();
+                  parent.clear();
+                  stuPhone.clear();
+                  address.clear();
+                  setState(() {
+                    gender = '';
+                    aadhaar = false;
+                  });
+                }
+              },
+        child: busy ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2)) : const Text('Save student'),
       ),
       h('Pass and promote', icon: Icons.school),
       const Text('Classes 1-3: eligible once every page of the book is Completed. Class 4+: eligible once every chapter is Completed.'),
@@ -1691,12 +1843,20 @@ class _StudentsViewState extends State<StudentsView> {
                     TextButton(
                       onPressed: () async {
                         final r = await askText(context, 'Reason for deactivating ${s.name} (optional)');
-                        if (r != null) toast(context, st.deactivateStudent(s, r));
+                        if (r == null) return;
+                        final msg = await deactivateStudentRemote(s, r);
+                        if (context.mounted) toast(context, msg);
                       },
                       child: const Text('Deactivate', style: TextStyle(color: Colors.red)),
                     ),
                   if (canDeactivate && s.status == 'Inactive')
-                    TextButton(onPressed: () => toast(context, st.reactivateStudent(s)), child: const Text('Reactivate')),
+                    TextButton(
+                      onPressed: () async {
+                        final msg = await reactivateStudentRemote(s);
+                        if (context.mounted) toast(context, msg);
+                      },
+                      child: const Text('Reactivate'),
+                    ),
                 ]),
               ),
             ),

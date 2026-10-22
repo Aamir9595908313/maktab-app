@@ -66,6 +66,12 @@ class Student {
   Map<int, String> chGrade;
   List<String> absent;
   List<String> history;
+  // The matching row's id in Supabase public.students, once this record has
+  // been loaded from (or successfully saved to) the real database. Null
+  // means this is still local-only demo data that hasn't been synced.
+  // Attendance/syllabus/fees still live only in the fields above for every
+  // student, database-backed or not - those haven't been wired up yet.
+  String? dbId;
   Student({
     required this.id,
     required this.key,
@@ -85,6 +91,7 @@ class Student {
     Map<int, String>? chGrade,
     List<String>? absent,
     List<String>? history,
+    this.dbId,
   })  : pageDate = pageDate ?? {},
         pageGrade = pageGrade ?? {},
         chDate = chDate ?? {},
@@ -743,6 +750,41 @@ class AppState extends ChangeNotifier {
   }
 
   // ---------- students ----------
+  // Replaces the whole list with what was just loaded from Supabase
+  // (public.students). Called after login, same pattern as
+  // setMadrasasFromDb/setClassDefsFromDb. Keeps using a local incrementing
+  // int id (not the database's uuid) because that int id is already the
+  // key for attendance, fees and course-enrollment data elsewhere in this
+  // file - those still live only in memory and aren't wired to the
+  // database yet, so they need a stable local key to keep working.
+  void setStudentsFromDb(List<Student> list) {
+    students
+      ..clear()
+      ..addAll(list);
+    nextId = (students.map((s) => s.id).fold(0, (a, b) => a > b ? a : b)) + 1;
+    notifyListeners();
+  }
+
+  // Adds one student that was just saved to Supabase, assigning it a fresh
+  // local id the same way addStudent does for the pure-demo path.
+  void addStudentFromRemote({
+    required String key,
+    required String name,
+    required String gender,
+    required int cls,
+    required String madrasa,
+    required String start,
+    required String parentPhone,
+    String studentPhone = '',
+    bool aadhaar = true,
+    String address = '',
+    String? dbId,
+  }) {
+    final id = nextId++;
+    students.add(Student(id: id, key: key, name: name, gender: gender, cls: cls, madrasa: madrasa, start: start, parentPhone: parentPhone, studentPhone: studentPhone, aadhaar: aadhaar, address: address, dbId: dbId));
+    notifyListeners();
+  }
+
   String? addStudent({required String name, required String gender, required int cls, required String parentPhone, String studentPhone = '', required bool aadhaar, String address = '', String madrasa = 'Hanfi'}) {
     if (name.trim().isEmpty) return 'Enter the student name';
     if (gender.isEmpty) return 'Select gender (Male or Female)';
