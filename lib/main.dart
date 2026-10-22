@@ -147,11 +147,106 @@ Future<void> loadMasterData() async {
           dbId: r['id'] as String?,
         ),
     ]);
+
+    await loadTeachers();
   } catch (_) {
     // Swallow - see note above. The Master Data screen still works off
     // whatever was already loaded; a retry happens next time this is
     // called (e.g. next login) or the user can be told to check their
     // connection if "Add" keeps failing.
+  }
+}
+
+// Loads the real Teachers list: actual accounts (public.user_profiles
+// where base_role='teacher', once they've signed in at least once) plus
+// anyone invited but who hasn't joined yet (public.pending_role_invites).
+// Pending invites are only visible to a Super Admin (same RLS as the rest
+// of that table), so a Madrasa Admin viewing this screen will just see the
+// real teachers and no pending ones - not an error, just narrower access.
+Future<void> loadTeachers() async {
+  final list = <Account>[];
+
+  final profRows = await sb.from('user_profiles').select('id, full_name, phone, is_active').eq('base_role', 'teacher');
+  for (final r in (profRows as List)) {
+    final tcaRows = await sb.from('teacher_class_assignments').select('madrasas(name)').eq('teacher_id', r['id'] as Object);
+    final teachMadrasas = <String>{for (final t in (tcaRows as List)) ((t['madrasas'] as Map?)?['name'] as String?) ?? ''}..removeWhere((x) => x.isEmpty);
+    list.add(Account(
+      (r['phone'] as String?) ?? '',
+      (r['full_name'] as String?) ?? 'Teacher',
+      'teacher',
+      teachMadrasas: teachMadrasas.toList(),
+      active: (r['is_active'] as bool?) ?? true,
+      dbId: r['id'] as String?,
+    ));
+  }
+
+  try {
+    final inviteRows = await sb.from('pending_role_invites').select().eq('base_role', 'teacher');
+    for (final r in (inviteRows as List)) {
+      list.add(Account(
+        (r['phone'] as String?) ?? '',
+        (r['full_name'] as String?) ?? 'Teacher',
+        'teacher',
+        teachMadrasas: List<String>.from((r['madrasa_names'] as List?) ?? []),
+        pending: true,
+      ));
+    }
+  } catch (_) {
+    // Not a Super Admin, most likely - pending invites just aren't visible
+    // to this account. The real teachers above still loaded fine.
+  }
+
+  st.setTeachersFromDb(list);
+}
+
+// Queues a new teacher invite (public.pending_role_invites) for a phone
+// number that hasn't signed in yet. The same mechanism already used for
+// every test login in this app: the chosen name/role/madrasas apply
+// automatically the first time that phone number completes a real OTP
+// sign-in, same as the existing Teacher test account.
+// Shared by the Teacher/Madrasa Admin/Committee "add" forms below - all
+// three are really the same thing (queue a pending_role_invites row for a
+// phone number that will become that role the moment it first signs in
+// with a real OTP), just with a different base_role and whether a
+// madrasa scope is required.
+Future<String?> addRoleInviteRemote({required String name, required String phone, required String dbRole, List<String> madrasaNames = const []}) async {
+  final n = name.trim();
+  if (n.isEmpty) return 'Enter the name';
+  final p = digits(phone);
+  if (p.length != 10) return 'Enter a 10-digit mobile number';
+  try {
+    await sb.from('pending_role_invites').upsert({
+      'phone': '91$p',
+      'base_role': dbRole,
+      'full_name': n,
+      'madrasa_names': madrasaNames,
+    });
+    return null;
+  } on PostgrestException catch (e) {
+    if (e.code == '42501') return 'Only a Super Admin can invite a new account.';
+    return 'Could not save: ${e.message}';
+  } catch (_) {
+    return 'Could not save. Check your internet connection and try again.';
+  }
+}
+
+Future<String?> addTeacherInviteRemote(String name, String phone, List<String> madrasaNames) async {
+  if (madrasaNames.isEmpty) return 'Choose at least one madrasa';
+  final e = await addRoleInviteRemote(name: name, phone: phone, dbRole: 'teacher', madrasaNames: madrasaNames);
+  if (e == null) await loadTeachers();
+  return e;
+}
+
+Future<String?> setTeacherActiveRemote(Account a, bool v) async {
+  if (a.dbId == null) {
+    return "This teacher hasn't logged in yet, so there's nothing to activate/deactivate - cancel the invite instead if you no longer want them to join.";
+  }
+  try {
+    await sb.from('user_profiles').update({'is_active': v}).eq('id', a.dbId as Object);
+    st.setTeacherActive(a, v);
+    return null;
+  } catch (_) {
+    return 'Could not save. Check your internet connection and try again.';
   }
 }
 
@@ -258,6 +353,26 @@ Future<String> reactivateStudentRemote(Student s) async {
   return st.reactivateStudent(s);
 }
 
+Future<String?> editStudentRemote(Student s, {String? name, String? parentPhone, String? address}) async {
+  final patch = <String, Object?>{};
+  if (name != null && name.trim().isNotEmpty) patch['name'] = name.trim();
+  if (parentPhone != null && parentPhone.trim().isNotEmpty) {
+    if (digits(parentPhone).length != 10) return 'Parent mobile must be 10 digits';
+    patch['parent_phone'] = digits(parentPhone);
+  }
+  if (address != null) patch['address'] = address.trim().isEmpty ? null : address.trim();
+  if (patch.isEmpty) return null;
+  if (s.dbId != null) {
+    try {
+      await sb.from('students').update(patch).eq('id', s.dbId as Object);
+    } catch (_) {
+      return 'Could not save. Check your internet connection and try again.';
+    }
+  }
+  st.editStudent(s, name: name, parentPhone: parentPhone == null ? null : digits(parentPhone), address: address);
+  return null;
+}
+
 // Inserts a new row into public.madrasas and, on success, adds it to the
 // local list with its real database id attached. Returns null on success
 // or a short message to show the user on failure.
@@ -290,6 +405,22 @@ Future<String?> setMadrasaActiveRemote(MadrasaRec m, bool v) async {
     await sb.from('madrasas').update({'is_active': v}).eq('id', m.dbId as Object);
     st.setMadrasaActive(m, v);
     return null;
+  } catch (_) {
+    return 'Could not save. Check your internet connection and try again.';
+  }
+}
+
+Future<String?> renameMadrasaRemote(MadrasaRec m, String name) async {
+  final n = name.trim();
+  if (n.isEmpty) return 'Enter a Madrasa / Branch name';
+  if (m.dbId == null) return 'This Madrasa was not saved to the database yet.';
+  try {
+    await sb.from('madrasas').update({'name': n}).eq('id', m.dbId as Object);
+    st.renameMadrasa(m, n);
+    return null;
+  } on PostgrestException catch (e) {
+    if (e.code == '23505') return 'This Madrasa already exists';
+    return 'Could not save: ${e.message}';
   } catch (_) {
     return 'Could not save. Check your internet connection and try again.';
   }
@@ -337,6 +468,19 @@ Future<String?> setClassActiveRemote(ClassDef cd, bool v) async {
   }
 }
 
+Future<String?> renameClassRemote(ClassDef cd, String name) async {
+  final n = name.trim();
+  if (n.isEmpty) return 'Enter a class name';
+  if (cd.dbId == null) return 'This class was not saved to the database yet.';
+  try {
+    await sb.from('classes').update({'name': n}).eq('id', cd.dbId as Object);
+    st.renameClass(cd, n);
+    return null;
+  } catch (_) {
+    return 'Could not save. Check your internet connection and try again.';
+  }
+}
+
 // Same pattern as addMadrasaRemote, for public.courses.
 Future<String?> addCourseRemote(String name, String description) async {
   final n = name.trim();
@@ -360,6 +504,19 @@ Future<String?> setCourseActiveRemote(Course c, bool v) async {
   try {
     await sb.from('courses').update({'is_active': v}).eq('id', c.dbId as Object);
     st.setCourseActive(c, v);
+    return null;
+  } catch (_) {
+    return 'Could not save. Check your internet connection and try again.';
+  }
+}
+
+Future<String?> renameCourseRemote(Course c, String name, String description) async {
+  final n = name.trim();
+  if (n.isEmpty) return 'Enter a course name';
+  if (c.dbId == null) return 'This course was not saved to the database yet.';
+  try {
+    await sb.from('courses').update({'name': n, 'description': description.trim()}).eq('id', c.dbId as Object);
+    st.renameCourse(c, n, description: description.trim());
     return null;
   } catch (_) {
     return 'Could not save. Check your internet connection and try again.';
@@ -1485,7 +1642,7 @@ class _StaffHomeState extends State<StaffHome> {
         grid([
           tile('Madrasas', '${st.madrasas.length}', icon: Icons.account_balance, onTap: () => pushPage(context, 'Madrasas', const MasterDataView())),
           tile('Students', '${st.students.length}', icon: Icons.groups, onTap: () => pushPage(context, 'Students', const StudentsView())),
-          tile('Teachers', '${st.teachers().length}', icon: Icons.co_present, onTap: () => pushPage(context, 'Teachers & Leave', const TeachersView())),
+          tile('Teachers', '${st.teacherAccounts.where((t) => !t.pending).length}', icon: Icons.co_present, onTap: () => pushPage(context, 'Teachers & Leave', const TeachersView())),
           tile('Average attendance', '${st.avgAttAll()}%', icon: Icons.event_available),
           tile('Average syllabus', '${st.avgSylAll()}%', icon: Icons.menu_book),
           tile('Leave requests', '$pendingLeave pending', icon: Icons.event_busy, onTap: () => pushPage(context, 'Teachers & Leave', const TeachersView())),
@@ -1830,35 +1987,61 @@ class _StudentsViewState extends State<StudentsView> {
             ),
           )),
       h('Students - ${u.role == 'teacher' ? st.teacherMadrasa : 'Hanfi'}'),
+      // Actions used to sit in the ListTile's trailing column, which has a
+      // fixed height - two or three buttons there overflowed it ("BOTTOM
+      // OVERFLOWED BY 16 PIXELS"). Moved below the tile in a Wrap instead,
+      // which has no fixed height and just adds a row (or wraps to a
+      // second one) no matter how many buttons end up there.
       ...list.map((s) => Card(
             child: Padding(
               padding: const EdgeInsets.symmetric(vertical: 4),
-              child: ListTile(
-                title: Text('${s.name} (${s.gender})'),
-                subtitle: Text('${s.key} - ${st.className(s.cls)} - ${s.status}\nAadhaar uploaded: ${s.aadhaar ? 'Yes' : 'No'}${canSeeAadhaar ? '' : ' (teachers see only Yes or No)'}'),
-                isThreeLine: true,
-                trailing: Column(mainAxisSize: MainAxisSize.min, children: [
-                  if (canSeeAadhaar) TextButton(onPressed: () => toast(context, 'Demo: Aadhaar card opens here (view is logged)'), child: const Text('View Aadhaar')),
-                  if (canDeactivate && s.status == 'Active')
-                    TextButton(
-                      onPressed: () async {
-                        final r = await askText(context, 'Reason for deactivating ${s.name} (optional)');
-                        if (r == null) return;
-                        final msg = await deactivateStudentRemote(s, r);
-                        if (context.mounted) toast(context, msg);
-                      },
-                      child: const Text('Deactivate', style: TextStyle(color: Colors.red)),
-                    ),
-                  if (canDeactivate && s.status == 'Inactive')
-                    TextButton(
-                      onPressed: () async {
-                        final msg = await reactivateStudentRemote(s);
-                        if (context.mounted) toast(context, msg);
-                      },
-                      child: const Text('Reactivate'),
-                    ),
-                ]),
-              ),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                ListTile(
+                  title: Text('${s.name} (${s.gender})'),
+                  subtitle: Text('${s.key} - ${st.className(s.cls)} - ${s.status}\nAadhaar uploaded: ${s.aadhaar ? 'Yes' : 'No'}${canSeeAadhaar ? '' : ' (teachers see only Yes or No)'}'),
+                  isThreeLine: true,
+                ),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
+                  child: Wrap(alignment: WrapAlignment.end, spacing: 4, children: [
+                    if (canDeactivate)
+                      TextButton(
+                        onPressed: () async {
+                          final n = await askText(context, 'Student name', initial: s.name);
+                          if (n == null) return;
+                          if (!context.mounted) return;
+                          final p = await askText(context, 'Parent mobile number', initial: s.parentPhone);
+                          if (p == null) return;
+                          if (!context.mounted) return;
+                          final a = await askText(context, 'Address', initial: s.address);
+                          if (a == null) return;
+                          final e = await editStudentRemote(s, name: n, parentPhone: p, address: a);
+                          if (context.mounted && e != null) toast(context, e);
+                        },
+                        child: const Text('Edit'),
+                      ),
+                    if (canSeeAadhaar) TextButton(onPressed: () => toast(context, 'Demo: Aadhaar card opens here (view is logged)'), child: const Text('View Aadhaar')),
+                    if (canDeactivate && s.status == 'Active')
+                      TextButton(
+                        onPressed: () async {
+                          final r = await askText(context, 'Reason for deactivating ${s.name} (optional)');
+                          if (r == null) return;
+                          final msg = await deactivateStudentRemote(s, r);
+                          if (context.mounted) toast(context, msg);
+                        },
+                        child: const Text('Deactivate', style: TextStyle(color: Colors.red)),
+                      ),
+                    if (canDeactivate && s.status == 'Inactive')
+                      TextButton(
+                        onPressed: () async {
+                          final msg = await reactivateStudentRemote(s);
+                          if (context.mounted) toast(context, msg);
+                        },
+                        child: const Text('Reactivate'),
+                      ),
+                  ]),
+                ),
+              ]),
             ),
           )),
     ]);
@@ -2532,6 +2715,15 @@ class _MasterDataViewState extends State<MasterDataView> {
   final classBookName = TextEditingController();
   final classTotalPages = TextEditingController();
   bool classPageBased = true;
+  final teacherName = TextEditingController();
+  final teacherPhone = TextEditingController();
+  final Set<String> teacherMadrasasSel = {};
+  final adminName = TextEditingController();
+  final adminPhone = TextEditingController();
+  String? adminMadrasa;
+  final committeeName = TextEditingController();
+  final committeePhone = TextEditingController();
+  String? committeeMadrasa;
   bool busy = false;
 
   @override
@@ -2548,7 +2740,18 @@ class _MasterDataViewState extends State<MasterDataView> {
       h('Madrasa / Branch', icon: Icons.account_balance),
       ...st.madrasas.map((m) => Card(
             child: SwitchListTile(
-              title: Text(m.name),
+              title: Row(children: [
+                Expanded(child: Text(m.name)),
+                InkWell(
+                  onTap: () async {
+                    final n = await askText(context, 'Rename Madrasa / Branch', initial: m.name);
+                    if (n == null) return;
+                    final e = await renameMadrasaRemote(m, n);
+                    if (context.mounted && e != null) toast(context, e);
+                  },
+                  child: const Padding(padding: EdgeInsets.all(4), child: Icon(Icons.edit, size: 16, color: Colors.black45)),
+                ),
+              ]),
               subtitle: Text(m.active ? 'Active - shown in registration dropdown' : 'Deactivated - hidden from new registrations'),
               value: m.active,
               onChanged: (v) async {
@@ -2575,7 +2778,18 @@ class _MasterDataViewState extends State<MasterDataView> {
       h('Classes', icon: Icons.menu_book),
       ...st.classDefs.values.map((cd) => Card(
             child: SwitchListTile(
-              title: Text(cd.name),
+              title: Row(children: [
+                Expanded(child: Text(cd.name)),
+                InkWell(
+                  onTap: () async {
+                    final n = await askText(context, 'Rename class', initial: cd.name);
+                    if (n == null) return;
+                    final e = await renameClassRemote(cd, n);
+                    if (context.mounted && e != null) toast(context, e);
+                  },
+                  child: const Padding(padding: EdgeInsets.all(4), child: Icon(Icons.edit, size: 16, color: Colors.black45)),
+                ),
+              ]),
               subtitle: Text(cd.pageBased ? 'Book: ${cd.bookName} - ${cd.totalPages} pages${cd.active ? '' : ' - Deactivated'}' : 'Chapter-based${cd.active ? '' : ' - Deactivated'}'),
               value: cd.active,
               onChanged: (v) async {
@@ -2617,15 +2831,115 @@ class _MasterDataViewState extends State<MasterDataView> {
         child: busy ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2)) : const Text('Add Class'),
       ),
       h('Teachers', icon: Icons.groups),
-      ...st.teachers().map((t) => Card(
-            child: SwitchListTile(
-              title: Text(t.name),
-              subtitle: Text('${t.phone} - ${t.teachMadrasas.join(', ')}'),
-              value: t.active,
-              onChanged: (v) => st.setTeacherActive(t, v),
-            ),
+      if (st.teacherAccounts.isEmpty) const Text('No teachers yet.', style: TextStyle(color: Colors.black54)),
+      ...st.teacherAccounts.map((t) => Card(
+            child: t.pending
+                ? ListTile(
+                    title: Text(t.name),
+                    subtitle: Text('${t.phone} - ${t.teachMadrasas.join(', ')} - Invited, waiting for first login'),
+                    trailing: const Icon(Icons.hourglass_empty, color: Colors.black38),
+                  )
+                : SwitchListTile(
+                    title: Text(t.name),
+                    subtitle: Text('${t.phone} - ${t.teachMadrasas.join(', ')}'),
+                    value: t.active,
+                    onChanged: (v) async {
+                      final e = await setTeacherActiveRemote(t, v);
+                      if (!mounted) return;
+                      if (e != null) toast(context, e);
+                    },
+                  ),
           )),
-      const Padding(padding: EdgeInsets.only(top: 4), child: Text('Add a new teacher from "Teacher Madrasas" (assign) or give them a login via Roles.', style: TextStyle(color: Colors.black54, fontSize: 12.5))),
+      field(teacherName, 'New teacher name'),
+      field(teacherPhone, 'Mobile number (10 digits)', number: true),
+      const Padding(padding: EdgeInsets.only(top: 4, bottom: 4), child: Text('Madrasas this teacher will teach in:', style: TextStyle(color: Colors.black54, fontSize: 12.5))),
+      Wrap(spacing: 4, children: [
+        for (final m in st.activeMadrasaNames)
+          FilterChip(
+            label: Text(m),
+            selected: teacherMadrasasSel.contains(m),
+            onSelected: (v) => setState(() => v ? teacherMadrasasSel.add(m) : teacherMadrasasSel.remove(m)),
+          ),
+      ]),
+      const SizedBox(height: 8),
+      ElevatedButton(
+        onPressed: busy
+            ? null
+            : () async {
+                setState(() => busy = true);
+                final e = await addTeacherInviteRemote(teacherName.text, teacherPhone.text, teacherMadrasasSel.toList());
+                if (!mounted) return;
+                setState(() => busy = false);
+                toast(context, e ?? 'Teacher invited. They become a real account the moment they log in with OTP on that number.');
+                if (e == null) {
+                  teacherName.clear();
+                  teacherPhone.clear();
+                  setState(() => teacherMadrasasSel.clear());
+                }
+              },
+        child: busy ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2)) : const Text('Invite Teacher'),
+      ),
+      h('Madrasa Admins', icon: Icons.admin_panel_settings),
+      const Text('Invites a Madrasa Admin for one branch. This list only shows who you invite this session - open Roles & Permissions below to see everyone with access.', style: TextStyle(color: Colors.black54, fontSize: 12.5)),
+      field(adminName, 'New Madrasa Admin name'),
+      field(adminPhone, 'Mobile number (10 digits)', number: true),
+      DropdownButtonFormField<String>(
+        value: adminMadrasa,
+        decoration: const InputDecoration(labelText: 'Madrasa', border: OutlineInputBorder()),
+        items: [for (final m in st.activeMadrasaNames) DropdownMenuItem<String>(value: m, child: Text(m))],
+        onChanged: (v) => setState(() => adminMadrasa = v),
+      ),
+      const SizedBox(height: 8),
+      ElevatedButton(
+        onPressed: busy
+            ? null
+            : () async {
+                if (adminMadrasa == null) {
+                  toast(context, 'Choose a madrasa');
+                  return;
+                }
+                setState(() => busy = true);
+                final e = await addRoleInviteRemote(name: adminName.text, phone: adminPhone.text, dbRole: 'madrasa_admin', madrasaNames: [adminMadrasa!]);
+                if (!mounted) return;
+                setState(() => busy = false);
+                toast(context, e ?? 'Madrasa Admin invited.');
+                if (e == null) {
+                  adminName.clear();
+                  adminPhone.clear();
+                }
+              },
+        child: busy ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2)) : const Text('Invite Madrasa Admin'),
+      ),
+      h('Committee Members', icon: Icons.diversity_3),
+      field(committeeName, 'New Committee Member name'),
+      field(committeePhone, 'Mobile number (10 digits)', number: true),
+      DropdownButtonFormField<String>(
+        value: committeeMadrasa,
+        decoration: const InputDecoration(labelText: 'Madrasa', border: OutlineInputBorder()),
+        items: [for (final m in st.activeMadrasaNames) DropdownMenuItem<String>(value: m, child: Text(m))],
+        onChanged: (v) => setState(() => committeeMadrasa = v),
+      ),
+      const SizedBox(height: 8),
+      ElevatedButton(
+        onPressed: busy
+            ? null
+            : () async {
+                if (committeeMadrasa == null) {
+                  toast(context, 'Choose a madrasa');
+                  return;
+                }
+                setState(() => busy = true);
+                final e = await addRoleInviteRemote(name: committeeName.text, phone: committeePhone.text, dbRole: 'committee', madrasaNames: [committeeMadrasa!]);
+                if (!mounted) return;
+                setState(() => busy = false);
+                toast(context, e ?? 'Committee Member invited.');
+                if (e == null) {
+                  committeeName.clear();
+                  committeePhone.clear();
+                }
+              },
+        child: busy ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2)) : const Text('Invite Committee Member'),
+      ),
       h('Users and Roles', icon: Icons.admin_panel_settings),
       ElevatedButton.icon(
         onPressed: () => pushPage(context, 'Roles & Permissions', const RolesView()),
@@ -2635,7 +2949,21 @@ class _MasterDataViewState extends State<MasterDataView> {
       h('Courses', icon: Icons.auto_stories),
       ...st.courses.map((c) => Card(
             child: SwitchListTile(
-              title: Text(c.name),
+              title: Row(children: [
+                Expanded(child: Text(c.name)),
+                InkWell(
+                  onTap: () async {
+                    final n = await askText(context, 'Rename course', initial: c.name);
+                    if (n == null) return;
+                    if (!context.mounted) return;
+                    final d = await askText(context, 'Description (optional)', initial: c.description);
+                    if (d == null) return;
+                    final e = await renameCourseRemote(c, n, d);
+                    if (context.mounted && e != null) toast(context, e);
+                  },
+                  child: const Padding(padding: EdgeInsets.all(4), child: Icon(Icons.edit, size: 16, color: Colors.black45)),
+                ),
+              ]),
               subtitle: Text(c.description.isEmpty ? 'No description' : c.description),
               value: c.active,
               onChanged: (v) async {

@@ -32,7 +32,7 @@ class Chapter {
 
 class ClassDef {
   final int id;
-  final String name;
+  String name;
   final bool pageBased;
   final String? bookName;
   int totalPages;
@@ -117,7 +117,14 @@ class Account {
   List<String> branches; // committee / custom role scope
   List<String> teachMadrasas; // teacher: madrasas they teach in
   bool active;
-  Account(this.phone, this.name, this.role, {this.roleName = '', List<String>? branches, List<String>? teachMadrasas, this.active = true})
+  // user_profiles.id once this teacher has actually signed in for the
+  // first time and a real row exists. Null means this is still just a
+  // pending invite (public.pending_role_invites) - the phone number is
+  // queued for a role, but nobody has logged in with it yet, so there's
+  // no real account to activate/deactivate.
+  String? dbId;
+  bool pending;
+  Account(this.phone, this.name, this.role, {this.roleName = '', List<String>? branches, List<String>? teachMadrasas, this.active = true, this.dbId, this.pending = false})
       : branches = branches ?? [],
         teachMadrasas = teachMadrasas ?? [];
 }
@@ -295,6 +302,11 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
+  void renameMadrasa(MadrasaRec m, String name) {
+    m.name = name;
+    notifyListeners();
+  }
+
   // ---------- master data: courses ----------
   int nextCourseId = 3;
   final List<Course> courses = [
@@ -331,6 +343,12 @@ class AppState extends ChangeNotifier {
 
   void setCourseActive(Course c, bool v) {
     c.active = v;
+    notifyListeners();
+  }
+
+  void renameCourse(Course c, String name, {String? description}) {
+    c.name = name;
+    if (description != null) c.description = description;
     notifyListeners();
   }
 
@@ -394,6 +412,11 @@ class AppState extends ChangeNotifier {
 
   void setClassActive(ClassDef cd, bool v) {
     cd.active = v;
+    notifyListeners();
+  }
+
+  void renameClass(ClassDef cd, String name) {
+    cd.name = name;
     notifyListeners();
   }
 
@@ -493,6 +516,13 @@ class AppState extends ChangeNotifier {
     s.history.add('Reactivated ${nice(kToday)} by ${user?.name ?? ''}');
     notifyListeners();
     return '${s.name} reactivated.';
+  }
+
+  void editStudent(Student s, {String? name, String? parentPhone, String? address}) {
+    if (name != null && name.trim().isNotEmpty) s.name = name.trim();
+    if (parentPhone != null && parentPhone.trim().isNotEmpty) s.parentPhone = parentPhone.trim();
+    if (address != null) s.address = address.trim();
+    notifyListeners();
   }
 
   final Map<int, String> todayAtt = {};
@@ -921,6 +951,18 @@ class AppState extends ChangeNotifier {
 
   // ---------- master data: teachers ----------
   List<Account> teachers() => users.values.where((u) => u.role == 'teacher').toList();
+
+  // Real teachers (from public.user_profiles, once they've logged in at
+  // least once) plus anyone invited but not yet joined (from
+  // public.pending_role_invites) - what the Master Data screen's Teachers
+  // section actually shows, replacing the old local-demo list above.
+  final List<Account> teacherAccounts = [];
+  void setTeachersFromDb(List<Account> list) {
+    teacherAccounts
+      ..clear()
+      ..addAll(list);
+    notifyListeners();
+  }
 
   void setTeacherActive(Account a, bool v) {
     a.active = v;
