@@ -2611,7 +2611,14 @@ class TeacherMadrasasAdmin extends StatefulWidget {
 }
 
 class _TeacherMadrasasAdminState extends State<TeacherMadrasasAdmin> {
-  Account? teacher;
+  // Keyed by phone, not the Account object itself: st.teacherAccounts is a
+  // fresh list of new Account instances every time it reloads (after a
+  // save, or a realtime update from another device), and Account has no
+  // custom == - so a DropdownButtonFormField<Account> would hold a
+  // selection pointing at an instance that no longer == anything in the
+  // rebuilt items list ("zero or 2+ items with the same value" assertion).
+  // A phone number is stable across reloads, so it survives rebuilds.
+  String? teacherPhone;
   String? madrasa;
   final Set<int> classIds = {};
   bool busy = false;
@@ -2622,6 +2629,7 @@ class _TeacherMadrasasAdminState extends State<TeacherMadrasasAdmin> {
       animation: st,
       builder: (context, _) {
         final teachers = st.teacherAccounts.where((t) => !t.pending).toList();
+        if (teacherPhone != null && teachers.every((t) => t.phone != teacherPhone)) teacherPhone = null;
         return page([
           h('Teacher madrasas and classes', icon: Icons.groups),
           if (teachers.isEmpty)
@@ -2640,11 +2648,11 @@ class _TeacherMadrasasAdminState extends State<TeacherMadrasasAdmin> {
           if (teachers.isEmpty)
             const Text('Invite and sign in a teacher first.', style: TextStyle(color: Colors.black54))
           else ...[
-            DropdownButtonFormField<Account>(
-              value: teacher,
+            DropdownButtonFormField<String>(
+              value: teacherPhone,
               decoration: const InputDecoration(labelText: 'Teacher', border: OutlineInputBorder()),
-              items: [for (final t in teachers) DropdownMenuItem<Account>(value: t, child: Text(t.name))],
-              onChanged: (v) => setState(() => teacher = v),
+              items: [for (final t in teachers) DropdownMenuItem<String>(value: t.phone, child: Text(t.name))],
+              onChanged: (v) => setState(() => teacherPhone = v),
             ),
             const SizedBox(height: 8),
             DropdownButtonFormField<String>(
@@ -2670,12 +2678,23 @@ class _TeacherMadrasasAdminState extends State<TeacherMadrasasAdmin> {
               onPressed: busy
                   ? null
                   : () async {
-                      if (teacher == null || madrasa == null) {
+                      if (teacherPhone == null || madrasa == null) {
                         toast(context, 'Choose a teacher and a madrasa');
                         return;
                       }
+                      Account? t;
+                      for (final x in teachers) {
+                        if (x.phone == teacherPhone) {
+                          t = x;
+                          break;
+                        }
+                      }
+                      if (t == null) {
+                        toast(context, 'Pick the teacher again - the list just refreshed.');
+                        return;
+                      }
                       setState(() => busy = true);
-                      final err = await assignTeacherMadrasaRemote(teacher!, madrasa!, classIds.toList());
+                      final err = await assignTeacherMadrasaRemote(t, madrasa!, classIds.toList());
                       if (!mounted) return;
                       setState(() => busy = false);
                       toast(context, err ?? 'Assigned. The teacher sees it next time they open the app.');
