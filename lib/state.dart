@@ -212,7 +212,9 @@ class Announcement {
   String msg;
   String priority;
   bool active = true;
-  Announcement(this.title, this.msg, this.priority);
+  // public.announcements row id, once loaded from (or saved to) the database.
+  String? dbId;
+  Announcement(this.title, this.msg, this.priority, {this.dbId});
 }
 
 class ReportRow {
@@ -972,6 +974,13 @@ class AppState extends ChangeNotifier {
   }
 
   // ---------- announcements ----------
+  void setAnnouncementsFromDb(List<Announcement> list) {
+    announcements
+      ..clear()
+      ..addAll(list);
+    notifyListeners();
+  }
+
   void postAnnouncement(String title, String msg, String priority) {
     announcements.add(Announcement(title, msg, priority));
     notifyListeners();

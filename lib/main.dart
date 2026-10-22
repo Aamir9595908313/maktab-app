@@ -159,6 +159,7 @@ Future<void> loadMasterData() async {
     await loadCustomRoles();
     await loadCommitteeMembers();
     await loadFees();
+    await loadAnnouncements();
   } catch (_) {
     // Swallow - see note above. The Master Data screen still works off
     // whatever was already loaded; a retry happens next time this is
@@ -204,6 +205,7 @@ void subscribeRealtime() {
     'role_permissions',
     'fees_monthly',
     'receipts',
+    'announcements',
   ];
   var channel = sb.channel('app-data-sync');
   for (final t in tables) {
@@ -650,6 +652,51 @@ Future<String?> removeCommitteeRemote(Account m) async {
   }
 }
 
+// ---------------- Announcements (public.announcements) ----------------
+// Was entirely local-only - postAnnouncement() just pushed to an in-memory
+// list, so only the Super Admin's own session ever saw it, which is why
+// it looked like "posting" did nothing: nobody else's screen could
+// possibly show it.
+Future<void> loadAnnouncements() async {
+  try {
+    final rows = await sb.from('announcements').select().order('created_at', ascending: false);
+    final list = <Announcement>[
+      for (final r in (rows as List))
+        Announcement((r['title'] as String?) ?? '', (r['msg'] as String?) ?? '', (r['priority'] as String?) ?? 'Normal', dbId: r['id'] as String?)
+          ..active = (r['active'] as bool?) ?? true,
+    ];
+    st.setAnnouncementsFromDb(list);
+  } catch (_) {}
+}
+
+Future<String?> postAnnouncementRemote(String title, String msg, String priority) async {
+  if (title.trim().isEmpty) return 'Enter a title';
+  try {
+    await sb.from('announcements').insert({
+      'title': title.trim(),
+      'msg': msg.trim(),
+      'priority': priority,
+      'created_by': sb.auth.currentUser?.id,
+    });
+    await loadAnnouncements();
+    return null;
+  } on PostgrestException catch (e) {
+    if (e.code == '42501') return 'Only a Super Admin can post an announcement.';
+    return 'Could not save: ${e.message}';
+  } catch (_) {
+    return 'Could not save. Check your internet connection and try again.';
+  }
+}
+
+Future<void> withdrawAnnouncementRemote(Announcement a) async {
+  st.withdraw(a);
+  if (a.dbId != null) {
+    try {
+      await sb.from('announcements').update({'active': false}).eq('id', a.dbId as Object);
+    } catch (_) {}
+  }
+}
+
 // ---------------- Custom roles (public.roles / public.role_permissions) ----------------
 // A Super Admin can read/write every custom role (RLS: roles_super_all /
 // role_permissions_super_all); anyone holding a custom role can read only
@@ -703,11 +750,12 @@ Future<String?> createRoleRemote(String name, Set<String> perms) async {
 // role's id) that the handle_new_auth_user trigger turns into a real
 // account - with the right custom_role_id and madrasa scope - the moment
 // that phone number signs in with OTP.
-Future<String?> assignRoleRemote(String phone, String name, String roleName, String branch) async {
+Future<String?> assignRoleRemote(String phone, String name, String roleName, List<String> branches) async {
   final p = digits(phone);
   if (p.length != 10) return 'Enter a 10-digit mobile number';
   if (name.trim().isEmpty) return 'Enter the name';
   if (roleName.isEmpty) return 'Choose a role';
+  if (branches.isEmpty) return 'Choose at least one madrasa';
   try {
     final roleRow = await sb.from('roles').select('id').eq('name', roleName).maybeSingle();
     if (roleRow == null) return 'That role was not found - try Create role again.';
@@ -715,7 +763,7 @@ Future<String?> assignRoleRemote(String phone, String name, String roleName, Str
       'phone': '91$p',
       'base_role': 'custom',
       'full_name': name.trim(),
-      'madrasa_names': [branch],
+      'madrasa_names': branches,
       'custom_role_id': roleRow['id'],
     });
     return null;
@@ -976,6 +1024,11 @@ Future<String?> editStudentRemote(Student s, {String? name, String? parentPhone,
   if (s.dbId != null) {
     try {
       await sb.from('students').update(patch).eq('id', s.dbId as Object);
+    } on PostgrestException catch (e) {
+      if (e.code == '42501' || e.message.toLowerCase().contains('row-level security')) {
+        return "You don't have access to save that change (it may be moving the student outside a madrasa/class you're assigned to).";
+      }
+      return 'Could not save: ${e.message}';
     } catch (_) {
       return 'Could not save. Check your internet connection and try again.';
     }
@@ -2327,12 +2380,16 @@ class _StaffHomeState extends State<StaffHome> {
         ),
         const SizedBox(height: 8),
         ElevatedButton(
-          onPressed: () {
+          onPressed: () async {
             if (title.text.trim().isEmpty) {
               toast(context, 'Enter a title');
               return;
             }
-            st.postAnnouncement(title.text.trim(), msg.text.trim(), priority);
+            final e = await postAnnouncementRemote(title.text, msg.text, priority);
+            if (e != null) {
+              toast(context, e);
+              return;
+            }
             title.clear();
             msg.clear();
             toast(context, 'Announcement posted. It now shows on every dashboard.');
@@ -2340,7 +2397,7 @@ class _StaffHomeState extends State<StaffHome> {
           child: const Text('Post announcement'),
         ),
         h('Active announcements'),
-        ...st.announcements.where((a) => a.active).map((a) => Card(child: ListTile(title: Text(a.title), subtitle: Text(a.msg), trailing: TextButton(onPressed: () => st.withdraw(a), child: const Text('Withdraw'))))),
+        ...st.announcements.where((a) => a.active).map((a) => Card(child: ListTile(title: Text(a.title), subtitle: Text(a.msg), trailing: TextButton(onPressed: () => withdrawAnnouncementRemote(a), child: const Text('Withdraw'))))),
       ]);
     }
     if (u.role == 'admin') {
@@ -3043,7 +3100,7 @@ class _RolesViewState extends State<RolesView> {
   final aName = TextEditingController();
   final Set<String> perms = {};
   String? pick;
-  String? branch;
+  final Set<String> branches = {};
   bool busy = false;
   static const List<String> screens = ['Students', 'Fees', 'Reports', 'Leave'];
 
@@ -3092,31 +3149,32 @@ class _RolesViewState extends State<RolesView> {
         items: [for (final n in names) DropdownMenuItem<String>(value: n, child: Text(n))],
         onChanged: (v) => setState(() => pick = v),
       ),
-      const SizedBox(height: 8),
-      DropdownButtonFormField<String>(
-        value: branch,
-        decoration: const InputDecoration(labelText: 'Madrasa', border: OutlineInputBorder()),
-        items: [for (final m in st.activeMadrasaNames) DropdownMenuItem<String>(value: m, child: Text(m))],
-        onChanged: (v) => setState(() => branch = v),
-      ),
+      const Padding(padding: EdgeInsets.only(top: 4, bottom: 4), child: Text('Madrasas this person can see:', style: TextStyle(color: Colors.black54, fontSize: 12.5))),
+      Wrap(spacing: 4, children: [
+        for (final m in st.activeMadrasaNames)
+          FilterChip(
+            label: Text(m),
+            selected: branches.contains(m),
+            onSelected: (v) => setState(() => v ? branches.add(m) : branches.remove(m)),
+          ),
+      ]),
       const SizedBox(height: 8),
       ElevatedButton(
         onPressed: busy
             ? null
             : () async {
-                if (branch == null) {
-                  toast(context, 'Choose a madrasa');
-                  return;
-                }
                 setState(() => busy = true);
-                final e = await assignRoleRemote(digits(aPhone.text), aName.text, pick ?? '', branch!);
+                final e = await assignRoleRemote(digits(aPhone.text), aName.text, pick ?? '', branches.toList());
                 if (!mounted) return;
                 setState(() => busy = false);
                 toast(context, e ?? 'Role given. That person now sees only the ticked screens, the moment they log in with OTP.');
                 if (e == null) {
                   aPhone.clear();
                   aName.clear();
-                  setState(() => pick = null);
+                  setState(() {
+                    pick = null;
+                    branches.clear();
+                  });
                 }
               },
         child: busy ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2)) : const Text('Assign role'),
