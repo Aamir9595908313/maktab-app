@@ -549,7 +549,7 @@ class _GuestHomeState extends State<GuestHome> {
                 width: double.infinity,
                 child: ElevatedButton(
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: digits(phone.text).length == 10 ? kGreen : Colors.grey.shade300,
+                    backgroundColor: digits(phone.text).length == 10 ? Colors.red : Colors.grey.shade300,
                     foregroundColor: digits(phone.text).length == 10 ? Colors.white : Colors.black38,
                     padding: const EdgeInsets.symmetric(vertical: 14),
                     elevation: digits(phone.text).length == 10 ? 2 : 0,
