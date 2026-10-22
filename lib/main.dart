@@ -370,6 +370,24 @@ Widget h(String t, {IconData? icon}) => Padding(
 
 Widget page(List<Widget> children) => ListView(padding: const EdgeInsets.all(14), children: children);
 
+// Pushes a screen built from `page([...])` as its own full page, with the
+// Scaffold + AppBar it needs (the tab-hosted versions of these same screens
+// get that chrome for free from the home shell they live inside, but a
+// screen reached by tapping a dashboard tile is pushed on its own and has
+// nothing providing it - which crashed any TextField on the page with
+// "No Material widget found" and left other pages blank/looking frozen).
+void pushPage(BuildContext context, String title, Widget body) {
+  Navigator.push(
+    context,
+    MaterialPageRoute<void>(
+      builder: (_) => Scaffold(
+        appBar: AppBar(title: Text(title), backgroundColor: kGreen, foregroundColor: Colors.white),
+        body: body,
+      ),
+    ),
+  );
+}
+
 Widget banner() {
   final a = st.announcements.where((x) => x.active).toList();
   if (a.isEmpty) return const SizedBox.shrink();
@@ -1280,14 +1298,14 @@ class _StaffHomeState extends State<StaffHome> {
       return page([
         banner(),
         grid([
-          tile('Madrasas', '${st.madrasas.length}', icon: Icons.account_balance, onTap: () => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const MasterDataView()))),
-          tile('Students', '${st.students.length}', icon: Icons.groups, onTap: () => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const StudentsView()))),
-          tile('Teachers', '${st.teachers().length}', icon: Icons.co_present, onTap: () => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const TeachersView()))),
+          tile('Madrasas', '${st.madrasas.length}', icon: Icons.account_balance, onTap: () => pushPage(context, 'Madrasas', const MasterDataView())),
+          tile('Students', '${st.students.length}', icon: Icons.groups, onTap: () => pushPage(context, 'Students', const StudentsView())),
+          tile('Teachers', '${st.teachers().length}', icon: Icons.co_present, onTap: () => pushPage(context, 'Teachers & Leave', const TeachersView())),
           tile('Average attendance', '${st.avgAttAll()}%', icon: Icons.event_available),
           tile('Average syllabus', '${st.avgSylAll()}%', icon: Icons.menu_book),
-          tile('Leave requests', '$pendingLeave pending', icon: Icons.event_busy, onTap: () => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const TeachersView()))),
-          tile('Complaints open', '$open', icon: Icons.report_problem, onTap: () => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const ComplaintsView()))),
-          tile('Committee members', '${st.committee().length}', icon: Icons.diversity_3, onTap: () => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const CommitteeAdmin()))),
+          tile('Leave requests', '$pendingLeave pending', icon: Icons.event_busy, onTap: () => pushPage(context, 'Teachers & Leave', const TeachersView())),
+          tile('Complaints open', '$open', icon: Icons.report_problem, onTap: () => pushPage(context, 'Complaints', const ComplaintsView())),
+          tile('Committee members', '${st.committee().length}', icon: Icons.diversity_3, onTap: () => pushPage(context, 'Committee', const CommitteeAdmin())),
         ]),
         h('Post common announcement (all madrasas, all roles)'),
         field(title, 'Title'),
@@ -1322,12 +1340,12 @@ class _StaffHomeState extends State<StaffHome> {
       return page([
         banner(),
         grid([
-          tile('Students', '${st.inBranch('Hanfi').length}', icon: Icons.groups, onTap: () => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const StudentsView()))),
-          tile('Teachers today', '$present present, $onLeave on leave', icon: Icons.co_present, onTap: () => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const TeachersView()))),
-          tile('Pending registrations', '${st.pending.length}', icon: Icons.how_to_reg, onTap: () => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const ApprovalsView()))),
-          tile('Leave requests', '$pendingLeave pending', icon: Icons.event_busy, onTap: () => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const TeachersView()))),
-          tile('Fees Sep', '${st.completeCount('Sep')} of ${st.totalFor('Sep')} complete', icon: Icons.payments, onTap: () => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const FeesAdmin()))),
-          tile('Complaints open', '$open', icon: Icons.report_problem, onTap: () => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const ComplaintsView()))),
+          tile('Students', '${st.inBranch('Hanfi').length}', icon: Icons.groups, onTap: () => pushPage(context, 'Students', const StudentsView())),
+          tile('Teachers today', '$present present, $onLeave on leave', icon: Icons.co_present, onTap: () => pushPage(context, 'Teachers & Leave', const TeachersView())),
+          tile('Pending registrations', '${st.pending.length}', icon: Icons.how_to_reg, onTap: () => pushPage(context, 'Pending Registrations', const ApprovalsView())),
+          tile('Leave requests', '$pendingLeave pending', icon: Icons.event_busy, onTap: () => pushPage(context, 'Teachers & Leave', const TeachersView())),
+          tile('Fees Sep', '${st.completeCount('Sep')} of ${st.totalFor('Sep')} complete', icon: Icons.payments, onTap: () => pushPage(context, 'Fees', const FeesAdmin())),
+          tile('Complaints open', '$open', icon: Icons.report_problem, onTap: () => pushPage(context, 'Complaints', const ComplaintsView())),
         ]),
         h('Ready to promote'),
         Text('${st.students.where((s) => st.eligible(s)).length} student(s)'),
@@ -2015,7 +2033,7 @@ class CommitteeDashboard extends StatelessWidget {
           title: const Text('All Maktab Students', style: TextStyle(fontWeight: FontWeight.bold)),
           subtitle: Text('$totalActive active student(s) across all Madrasas'),
           trailing: const Icon(Icons.chevron_right),
-          onTap: () => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const AllStudentsList())),
+          onTap: () => pushPage(context, 'All Students', const AllStudentsList()),
         ),
       ),
       Card(
@@ -2024,7 +2042,7 @@ class CommitteeDashboard extends StatelessWidget {
           title: const Text('Madrasa-Wise Student Information', style: TextStyle(fontWeight: FontWeight.bold)),
           subtitle: const Text('Pick a Madrasa to see its students'),
           trailing: const Icon(Icons.chevron_right),
-          onTap: () => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const CommitteeBranches())),
+          onTap: () => pushPage(context, 'Branches', const CommitteeBranches()),
         ),
       ),
     ]);
@@ -2341,7 +2359,7 @@ class _MasterDataViewState extends State<MasterDataView> {
       const Padding(padding: EdgeInsets.only(top: 4), child: Text('Add a new teacher from "Teacher Madrasas" (assign) or give them a login via Roles.', style: TextStyle(color: Colors.black54, fontSize: 12.5))),
       h('Users and Roles', icon: Icons.admin_panel_settings),
       ElevatedButton.icon(
-        onPressed: () => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const RolesView())),
+        onPressed: () => pushPage(context, 'Roles & Permissions', const RolesView()),
         icon: const Icon(Icons.admin_panel_settings),
         label: const Text('Open Roles & Permissions'),
       ),
