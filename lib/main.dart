@@ -72,6 +72,7 @@ Future<Account?> loadSupabaseProfile(String uid) async {
     branches: branches,
     teachMadrasas: teachMadrasas.toList(),
     active: (profile['is_active'] as bool?) ?? true,
+    dbId: uid,
   );
 }
 
@@ -149,12 +150,319 @@ Future<void> loadMasterData() async {
     ]);
 
     await loadTeachers();
+    await loadAttendance();
+    await loadSyllabusProgress();
+    await loadMyTeacherAttendance();
+    await loadAllTeacherAttendanceToday();
+    await loadComplaints();
   } catch (_) {
     // Swallow - see note above. The Master Data screen still works off
     // whatever was already loaded; a retry happens next time this is
     // called (e.g. next login) or the user can be told to check their
     // connection if "Add" keeps failing.
   }
+}
+
+// ---------------- Realtime: live updates across devices ----------------
+// Without this, two people testing at the same time only see each other's
+// changes after a manual refresh/re-login. This listens for any insert,
+// update or delete on the tables the app cares about and reloads
+// everything shortly after - a little wasteful compared to patching just
+// the one changed row, but far more robust with 11 students and a handful
+// of madrasas/classes: nothing to get subtly out of sync.
+bool _realtimeStarted = false;
+Timer? _realtimeDebounce;
+
+void _scheduleRealtimeReload() {
+  _realtimeDebounce?.cancel();
+  _realtimeDebounce = Timer(const Duration(milliseconds: 500), () {
+    unawaited(loadMasterData());
+  });
+}
+
+void subscribeRealtime() {
+  if (_realtimeStarted) return;
+  _realtimeStarted = true;
+  const tables = [
+    'madrasas',
+    'classes',
+    'courses',
+    'students',
+    'teacher_class_assignments',
+    'user_profiles',
+    'pending_role_invites',
+    'student_attendance',
+    'teacher_attendance',
+    'syllabus_progress',
+    'complaints',
+  ];
+  var channel = sb.channel('app-data-sync');
+  for (final t in tables) {
+    channel = channel.onPostgresChanges(
+      event: PostgresChangeEvent.all,
+      schema: 'public',
+      table: t,
+      callback: (payload) => _scheduleRealtimeReload(),
+    );
+  }
+  channel.subscribe();
+}
+
+String? _madrasaDbId(String name) {
+  for (final m in st.madrasas) {
+    if (m.name == name) return m.dbId;
+  }
+  return null;
+}
+
+String? _classDbId(int cls) => st.classDefs[cls]?.dbId;
+
+// ---------------- Student attendance (public.student_attendance) ----------------
+//
+// Loads today's marks (draft or final) for whichever students are already
+// in memory, plus each student's full history of final-submitted absent
+// days (what KidAttendance / attPct show). RLS already scopes this
+// correctly per role (teacher/admin see their madrasa, a parent sees only
+// their own child's rows, super admin sees everything), so one unfiltered
+// query is enough - the database does the filtering.
+Future<void> loadAttendance() async {
+  final idByDbId = {for (final s in st.students) if (s.dbId != null) s.dbId!: s};
+  if (idByDbId.isEmpty) return;
+
+  final todayRows = await sb.from('student_attendance').select('student_id, status').eq('attendance_date', kToday);
+  final today = <int, String>{};
+  for (final r in (todayRows as List)) {
+    final s = idByDbId[r['student_id'] as String?];
+    if (s != null) today[s.id] = (r['status'] as String?) == 'absent' ? 'A' : 'P';
+  }
+  st.setTodayAttendanceFromDb(today);
+
+  final historyRows = await sb.from('student_attendance').select('student_id, attendance_date').eq('status', 'absent').eq('is_draft', false);
+  final history = <int, List<String>>{};
+  for (final r in (historyRows as List)) {
+    final s = idByDbId[r['student_id'] as String?];
+    if (s == null) continue;
+    final d = r['attendance_date'] as String?;
+    if (d == null) continue;
+    history.putIfAbsent(s.id, () => []).add(d);
+  }
+  st.setAbsentHistoryFromDb(history);
+}
+
+// One tap = one upsert (draft). Updates the local view first so the button
+// highlights instantly, then saves - if the save fails, Final Submit will
+// retry it, and the tap already reflected locally so the teacher sees no
+// difference. Nothing to save for a student who isn't in the database yet.
+Future<void> setAttRemote(Student s, String v) async {
+  st.setAtt(s.id, v);
+  if (s.dbId == null) return;
+  try {
+    await sb.from('student_attendance').upsert({
+      'student_id': s.dbId,
+      'madrasa_id': _madrasaDbId(s.madrasa),
+      'class_id': _classDbId(s.cls),
+      'attendance_date': kToday,
+      'status': v == 'A' ? 'absent' : 'present',
+      'is_draft': true,
+    }, onConflict: 'student_id,attendance_date');
+  } catch (_) {
+    // Will be retried as part of Final Submit's own upsert.
+  }
+}
+
+// Final Submit: marks every row final (is_draft=false) in the database,
+// same as before locally updating each student's absent list and sending
+// the WhatsApp alert simulation, then returns the absence count exactly as
+// the old purely-local version did so the UI/toast text is unchanged.
+Future<int> submitAttRemote(List<Student> list) async {
+  final rows = [
+    for (final s in list)
+      if (s.status == 'Active' && s.dbId != null)
+        {
+          'student_id': s.dbId,
+          'madrasa_id': _madrasaDbId(s.madrasa),
+          'class_id': _classDbId(s.cls),
+          'attendance_date': kToday,
+          'status': (st.todayAtt[s.id] ?? 'P') == 'A' ? 'absent' : 'present',
+          'is_draft': false,
+          'final_submitted_by': sb.auth.currentUser?.id,
+          'final_submitted_at': DateTime.now().toIso8601String(),
+        },
+  ];
+  if (rows.isNotEmpty) {
+    try {
+      await sb.from('student_attendance').upsert(rows, onConflict: 'student_id,attendance_date');
+    } catch (_) {
+      // Local side effects (below) still happen so the teacher isn't
+      // blocked; the rows just didn't make it to the database this time.
+    }
+  }
+  return st.submitAtt(list);
+}
+
+// ---------------- Teacher self-attendance (public.teacher_attendance) ----------------
+
+Future<void> loadMyTeacherAttendance() async {
+  final u = st.user;
+  if (u == null || u.dbId == null || u.role != 'teacher') return;
+  try {
+    final row = await sb.from('teacher_attendance').select('status').eq('teacher_id', u.dbId as Object).eq('attendance_date', kToday).maybeSingle();
+    if (row != null) {
+      final status = row['status'] as String?;
+      st.setTeacherAttFromDb(u.name, status == 'absent' ? 'Absent' : (status == 'on_leave' ? 'On leave' : 'Present 07:05'));
+    }
+  } catch (_) {}
+}
+
+// For Teachers & Leave (admin view): every teacher's status for today, not
+// just the viewer's own - loadMyTeacherAttendance above only covers a
+// teacher checking their own status.
+Future<void> loadAllTeacherAttendanceToday() async {
+  try {
+    final rows = await sb.from('teacher_attendance').select('teacher_id, status').eq('attendance_date', kToday);
+    final byTeacherDbId = {for (final t in st.teacherAccounts) if (t.dbId != null) t.dbId!: t.name};
+    for (final r in (rows as List)) {
+      final name = byTeacherDbId[r['teacher_id'] as String?];
+      if (name == null) continue;
+      final status = r['status'] as String?;
+      st.setTeacherAttFromDb(name, status == 'absent' ? 'Absent' : (status == 'on_leave' ? 'On leave' : 'Present 07:05'));
+    }
+  } catch (_) {
+    // Admin/super sees whatever was already loaded; a Madrasa Admin viewing
+    // another madrasa's teacher simply sees "Not marked" instead of erroring.
+  }
+}
+
+Future<void> markSelfRemote(String v) async {
+  final u = st.user;
+  if (u == null) return;
+  st.markSelf(v);
+  if (u.dbId == null) return;
+  try {
+    await sb.from('teacher_attendance').upsert({
+      'teacher_id': u.dbId,
+      'madrasa_id': _madrasaDbId(st.teacherMadrasa),
+      'attendance_date': kToday,
+      'status': v == 'Absent' ? 'absent' : 'present',
+      'marked_by': sb.auth.currentUser?.id,
+    }, onConflict: 'teacher_id,attendance_date');
+  } catch (_) {}
+}
+
+// ---------------- Syllabus page-progress (public.syllabus_progress) ----------------
+// Chapter-based (Class 4+) syllabus still runs on local-only demo chapters
+// for now - public.chapters has no rows seeded yet, so there's nothing in
+// the database to read from or write to for that half. Page-based (Classes
+// 1-3, the book/page students) is fully wired below.
+
+Future<void> loadSyllabusProgress() async {
+  final idByDbId = {for (final s in st.students) if (s.dbId != null) s.dbId!: s};
+  if (idByDbId.isEmpty) return;
+  try {
+    final rows = await sb.from('syllabus_progress').select('student_id, page_no, completed_on, grade').not('page_no', 'is', null);
+    final byStudent = <int, List<Map<String, dynamic>>>{};
+    for (final r in (rows as List)) {
+      final s = idByDbId[r['student_id'] as String?];
+      if (s != null) byStudent.putIfAbsent(s.id, () => []).add(r as Map<String, dynamic>);
+    }
+    for (final s in st.students) {
+      final rs = byStudent[s.id];
+      if (rs == null) continue;
+      final dates = <int, String>{};
+      final grades = <int, String>{};
+      for (final r in rs) {
+        final no = r['page_no'] as int?;
+        if (no == null) continue;
+        dates[no] = (r['completed_on'] as String?) ?? kToday;
+        grades[no] = (r['grade'] as String?) ?? '';
+      }
+      st.setPageProgressFromDb(s, dates, grades);
+    }
+  } catch (_) {}
+}
+
+Future<void> markPageCompleteRemote(Student s, int pageNo, String date, String grade, String remark) async {
+  st.markPageComplete(s, pageNo, date, grade, remark);
+  if (s.dbId == null) return;
+  try {
+    await sb.from('syllabus_progress').upsert({
+      'student_id': s.dbId,
+      'page_no': pageNo,
+      'status': 'completed',
+      'completed_on': validDate(date) ? date : kToday,
+      'grade': grade,
+      'remark': remark,
+      'created_by': sb.auth.currentUser?.id,
+    }, onConflict: 'student_id,page_no');
+  } catch (_) {}
+}
+
+// ---------------- Complaints (public.complaints) ----------------
+
+Future<void> loadComplaints() async {
+  try {
+    final rows = await sb.from('complaints').select().order('created_at');
+    var i = 12;
+    final list = <Complaint>[
+      for (final r in (rows as List))
+        Complaint(
+          i++,
+          (r['phone'] as String?) ?? '',
+          (r['by_name'] as String?) ?? '',
+          (r['to_role'] as String?) ?? 'teacher',
+          (r['subject'] as String?) ?? '',
+          (r['body'] as String?) ?? '',
+        )
+          ..status = (r['status'] as String?) ?? 'Submitted'
+          ..replies = List<String>.from((r['replies'] as List?) ?? [])
+          ..dbId = r['id'] as String?,
+    ];
+    st.setComplaintsFromDb(list);
+  } catch (_) {
+    // Not every role can see complaints (RLS) - an empty/unchanged list is fine.
+  }
+}
+
+Future<String?> addComplaintRemote(String to, String subject, String text) async {
+  final u = st.user;
+  if (u == null) return 'Not signed in';
+  if (subject.trim().isEmpty) return 'Enter a subject';
+  try {
+    await sb.from('complaints').insert({
+      'phone': u.phone,
+      'by_name': u.name,
+      'to_role': to,
+      'subject': subject.trim(),
+      'body': text.trim(),
+      'created_by': sb.auth.currentUser?.id,
+    });
+    await loadComplaints();
+    return null;
+  } on PostgrestException catch (e) {
+    return 'Could not submit: ${e.message}';
+  } catch (_) {
+    return 'Could not submit. Check your internet connection and try again.';
+  }
+}
+
+Future<void> replyRemote(Complaint c, String text) async {
+  if (text.trim().isEmpty) return;
+  if (c.dbId != null) {
+    final newReplies = [...c.replies, '${roleLabel(st.user!)}: ${text.trim()}'];
+    try {
+      await sb.from('complaints').update({'replies': newReplies, 'status': 'In progress'}).eq('id', c.dbId as Object);
+    } catch (_) {}
+  }
+  st.reply(c, text);
+}
+
+Future<void> resolveRemote(Complaint c) async {
+  if (c.dbId != null) {
+    try {
+      await sb.from('complaints').update({'status': 'Resolved'}).eq('id', c.dbId as Object);
+    } catch (_) {}
+  }
+  st.resolve(c);
 }
 
 // Loads the real Teachers list: actual accounts (public.user_profiles
@@ -235,6 +543,37 @@ Future<String?> addTeacherInviteRemote(String name, String phone, List<String> m
   final e = await addRoleInviteRemote(name: name, phone: phone, dbRole: 'teacher', madrasaNames: madrasaNames);
   if (e == null) await loadTeachers();
   return e;
+}
+
+// Adds (upserts) rows into teacher_class_assignments for a real, already-
+// logged-in teacher (a.dbId != null) - one row per selected class, all in
+// the chosen madrasa. Safe to call again for the same teacher/madrasa with
+// different classes; existing rows for other classes in that madrasa are
+// left alone (use unassignTeacherClassRemote to remove one).
+Future<String?> assignTeacherMadrasaRemote(Account a, String madrasaName, List<int> classNos) async {
+  if (a.dbId == null) {
+    return "${a.name} hasn't logged in with OTP yet, so there's no account to assign - they'll get their classes once they're invited (Master Data > Teachers) and log in.";
+  }
+  if (classNos.isEmpty) return 'Pick at least one class';
+  final madrasaId = st.madrasas.firstWhere((m) => m.name == madrasaName, orElse: () => st.madrasas.first).dbId;
+  if (madrasaId == null) return 'That madrasa is not saved to the database yet.';
+  final classIds = [
+    for (final no in classNos)
+      if (st.classDefs[no]?.dbId != null) st.classDefs[no]!.dbId!,
+  ];
+  if (classIds.isEmpty) return 'Those classes are not saved to the database yet.';
+  try {
+    await sb.from('teacher_class_assignments').upsert([
+      for (final cid in classIds) {'teacher_id': a.dbId, 'madrasa_id': madrasaId, 'class_id': cid},
+    ]);
+    await loadTeachers();
+    return null;
+  } on PostgrestException catch (e) {
+    if (e.code == '42501') return 'Only a Super Admin can change teacher assignments.';
+    return 'Could not save: ${e.message}';
+  } catch (_) {
+    return 'Could not save. Check your internet connection and try again.';
+  }
 }
 
 Future<String?> setTeacherActiveRemote(Account a, bool v) async {
@@ -942,7 +1281,7 @@ class _GuestHomeState extends State<GuestHome> {
       // and Master Data screen just show demo data for a moment if this is
       // still in flight, then update once it resolves (st is a
       // ChangeNotifier, so any screen listening to it redraws).
-      unawaited(loadMasterData());
+      unawaited(loadMasterData().then((_) => subscribeRealtime()));
     } on AuthException catch (e) {
       setState(() {
         busy = false;
@@ -1496,7 +1835,7 @@ Future<void> markPageDialog(BuildContext c, Student s, int pageNo) async {
           TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
           ElevatedButton(
             onPressed: () {
-              st.markPageComplete(s, pageNo, date.text.trim(), grade, remark.text.trim());
+              markPageCompleteRemote(s, pageNo, date.text.trim(), grade, remark.text.trim());
               Navigator.pop(ctx);
             },
             child: const Text('Save'),
@@ -1621,11 +1960,11 @@ class _ComplaintsViewState extends State<ComplaintsView> {
               TextButton(
                 onPressed: () async {
                   final r = await askText(context, 'Reply');
-                  if (r != null) st.reply(c, r);
+                  if (r != null) await replyRemote(c, r);
                 },
                 child: const Text('Reply'),
               ),
-              TextButton(onPressed: () => st.resolve(c), child: const Text('Resolve')),
+              TextButton(onPressed: () => resolveRemote(c), child: const Text('Resolve')),
             ]),
         ]),
       ),
@@ -1653,12 +1992,16 @@ class _ComplaintsViewState extends State<ComplaintsView> {
         field(subject, 'Subject'),
         field(text, 'Details', lines: 3),
         ElevatedButton(
-          onPressed: () {
+          onPressed: () async {
             if (subject.text.trim().isEmpty) {
               toast(context, 'Enter a subject');
               return;
             }
-            st.addComplaint(to, subject.text.trim(), text.text.trim());
+            final e = await addComplaintRemote(to, subject.text.trim(), text.text.trim());
+            if (e != null) {
+              toast(context, e);
+              return;
+            }
             subject.clear();
             text.clear();
             toast(context, 'Complaint submitted');
@@ -1820,9 +2163,9 @@ class _TeacherSelfState extends State<TeacherSelf> {
       const Text('This is one record for the teacher, even when teaching at more than one madrasa.', style: TextStyle(fontSize: 12, color: Colors.black54)),
       Card(child: ListTile(title: Text(st.teacherAtt[u.name] ?? 'Not marked'), subtitle: const Text('Tap Present or Absent for today'))),
       Row(children: [
-        Expanded(child: ElevatedButton(onPressed: () => st.markSelf('Present'), child: const Text('Present'))),
+        Expanded(child: ElevatedButton(onPressed: () => markSelfRemote('Present'), child: const Text('Present'))),
         const SizedBox(width: 8),
-        Expanded(child: OutlinedButton(onPressed: () => st.markSelf('Absent'), child: const Text('Absent'))),
+        Expanded(child: OutlinedButton(onPressed: () => markSelfRemote('Absent'), child: const Text('Absent'))),
       ]),
       h('Apply for leave (sent to Super Admin)'),
       DropdownButtonFormField<String>(
@@ -1875,13 +2218,13 @@ class StudentAttendanceMark extends StatelessWidget {
             trailing: Row(mainAxisSize: MainAxisSize.min, children: [
               OutlinedButton(
                 style: OutlinedButton.styleFrom(backgroundColor: v == 'P' ? Colors.green : null, foregroundColor: v == 'P' ? Colors.white : Colors.green),
-                onPressed: () => st.setAtt(s.id, 'P'),
+                onPressed: () => setAttRemote(s, 'P'),
                 child: const Text('Present'),
               ),
               const SizedBox(width: 6),
               OutlinedButton(
                 style: OutlinedButton.styleFrom(backgroundColor: v == 'A' ? Colors.red : null, foregroundColor: v == 'A' ? Colors.white : Colors.red),
-                onPressed: () => st.setAtt(s.id, 'A'),
+                onPressed: () => setAttRemote(s, 'A'),
                 child: const Text('Absent'),
               ),
             ]),
@@ -1890,8 +2233,8 @@ class StudentAttendanceMark extends StatelessWidget {
       }),
       const SizedBox(height: 8),
       ElevatedButton(
-        onPressed: () {
-          final n = st.submitAtt(list);
+        onPressed: () async {
+          final n = await submitAttRemote(list);
           toast(context, 'Attendance Final Submitted. $n absence WhatsApp alert(s) sent to parents.');
         },
         child: const Text('Final Submit'),
@@ -2205,57 +2548,82 @@ class TeacherMadrasasAdmin extends StatefulWidget {
 }
 
 class _TeacherMadrasasAdminState extends State<TeacherMadrasasAdmin> {
-  String? teacherName;
+  Account? teacher;
   String? madrasa;
   final Set<int> classIds = {};
+  bool busy = false;
 
   @override
   Widget build(BuildContext context) {
-    final teachers = st.users.values.where((u) => u.role == 'teacher').toList();
-    return page([
-      h('Teacher madrasas and classes', icon: Icons.groups),
-      ...teachers.map((t) => Card(
-            child: ListTile(
-              title: Text(t.name),
-              subtitle: Text((st.teacherAssignments[t.name] ?? {}).entries.map((e) => '${e.key}: ${e.value.map((c) => st.className(c)).join(', ')}').join('\n')),
-              isThreeLine: true,
+    return AnimatedBuilder(
+      animation: st,
+      builder: (context, _) {
+        final teachers = st.teacherAccounts.where((t) => !t.pending).toList();
+        return page([
+          h('Teacher madrasas and classes', icon: Icons.groups),
+          if (teachers.isEmpty)
+            const Text(
+              'No teacher has logged in yet. Invite one from Master Data > Teachers first - they show up here once they sign in with OTP.',
+              style: TextStyle(color: Colors.black54),
             ),
-          )),
-      h('Assign a teacher to another madrasa'),
-      DropdownButtonFormField<String>(
-        value: teacherName,
-        decoration: const InputDecoration(labelText: 'Teacher', border: OutlineInputBorder()),
-        items: [for (final t in teachers) DropdownMenuItem<String>(value: t.name, child: Text(t.name))],
-        onChanged: (v) => setState(() => teacherName = v),
-      ),
-      const SizedBox(height: 8),
-      DropdownButtonFormField<String>(
-        value: madrasa,
-        decoration: const InputDecoration(labelText: 'Madrasa', border: OutlineInputBorder()),
-        items: [for (final b in kBranches) DropdownMenuItem<String>(value: b, child: Text(b))],
-        onChanged: (v) => setState(() => madrasa = v),
-      ),
-      const SizedBox(height: 8),
-      const Text('Classes:'),
-      ...st.classDefs.entries.map((e) => CheckboxListTile(
-            title: Text(e.value.name),
-            value: classIds.contains(e.key),
-            onChanged: (v) => setState(() {
-              if (v == true) {
-                classIds.add(e.key);
-              } else {
-                classIds.remove(e.key);
-              }
-            }),
-          )),
-      ElevatedButton(
-        onPressed: () {
-          final err = st.assignTeacherMadrasa(teacherName ?? '', madrasa ?? '', classIds.toList());
-          toast(context, err ?? 'Assigned. On next login the teacher sees a madrasa switcher and My Day.');
-        },
-        child: const Text('Assign to another madrasa'),
-      ),
-    ]);
+          ...teachers.map((t) => Card(
+                child: ListTile(
+                  title: Text(t.name),
+                  subtitle: Text(t.teachMadrasas.isEmpty ? 'Not assigned to any madrasa yet' : t.teachMadrasas.join(', ')),
+                  isThreeLine: false,
+                ),
+              )),
+          h('Assign a teacher to another madrasa'),
+          if (teachers.isEmpty)
+            const Text('Invite and sign in a teacher first.', style: TextStyle(color: Colors.black54))
+          else ...[
+            DropdownButtonFormField<Account>(
+              value: teacher,
+              decoration: const InputDecoration(labelText: 'Teacher', border: OutlineInputBorder()),
+              items: [for (final t in teachers) DropdownMenuItem<Account>(value: t, child: Text(t.name))],
+              onChanged: (v) => setState(() => teacher = v),
+            ),
+            const SizedBox(height: 8),
+            DropdownButtonFormField<String>(
+              value: madrasa,
+              decoration: const InputDecoration(labelText: 'Madrasa', border: OutlineInputBorder()),
+              items: [for (final m in st.activeMadrasaNames) DropdownMenuItem<String>(value: m, child: Text(m))],
+              onChanged: (v) => setState(() => madrasa = v),
+            ),
+            const SizedBox(height: 8),
+            const Text('Classes:'),
+            ...st.classDefs.entries.map((e) => CheckboxListTile(
+                  title: Text(e.value.name),
+                  value: classIds.contains(e.key),
+                  onChanged: (v) => setState(() {
+                    if (v == true) {
+                      classIds.add(e.key);
+                    } else {
+                      classIds.remove(e.key);
+                    }
+                  }),
+                )),
+            ElevatedButton(
+              onPressed: busy
+                  ? null
+                  : () async {
+                      if (teacher == null || madrasa == null) {
+                        toast(context, 'Choose a teacher and a madrasa');
+                        return;
+                      }
+                      setState(() => busy = true);
+                      final err = await assignTeacherMadrasaRemote(teacher!, madrasa!, classIds.toList());
+                      if (!mounted) return;
+                      setState(() => busy = false);
+                      toast(context, err ?? 'Assigned. The teacher sees it next time they open the app.');
+                      if (err == null) setState(() => classIds.clear());
+                    },
+              child: busy ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2)) : const Text('Assign to another madrasa'),
+            ),
+          ],
+        ]);
+      },
+    );
   }
 }
 

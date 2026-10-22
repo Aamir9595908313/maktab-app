@@ -187,6 +187,8 @@ class Complaint {
   String text;
   String status = 'Submitted';
   List<String> replies = [];
+  // public.complaints row id, once loaded from (or saved to) the database.
+  String? dbId;
   Complaint(this.id, this.phone, this.by, this.to, this.subject, this.text);
 }
 
@@ -676,6 +678,14 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
+  // Replaces a student's page-progress with what the database has, called
+  // after loading or saving so refreshes/other devices see the same thing.
+  void setPageProgressFromDb(Student s, Map<int, String> dates, Map<int, String> grades) {
+    s.pageDate = dates;
+    s.pageGrade = grades;
+    notifyListeners();
+  }
+
   // ---------- syllabus: chapter-based (Class 4+) ----------
   List<ChapPlan> chapterPlan(Student s) {
     int c = 0;
@@ -753,6 +763,28 @@ class AppState extends ChangeNotifier {
 
   void setAtt(int id, String v) {
     todayAtt[id] = v;
+    notifyListeners();
+  }
+
+  // Pushes database-loaded attendance (today's marks + each student's
+  // historical absent dates) into the in-memory model in one go, replacing
+  // the old local-only, resets-on-refresh version of the same data.
+  void setTodayAttendanceFromDb(Map<int, String> att) {
+    todayAtt
+      ..clear()
+      ..addAll(att);
+    notifyListeners();
+  }
+
+  void setAbsentHistoryFromDb(Map<int, List<String>> byLocalId) {
+    for (final s in students) {
+      s.absent = List<String>.from(byLocalId[s.id] ?? []);
+    }
+    notifyListeners();
+  }
+
+  void setTeacherAttFromDb(String teacherName, String status) {
+    teacherAtt[teacherName] = status;
     notifyListeners();
   }
 
@@ -888,6 +920,13 @@ class AppState extends ChangeNotifier {
   }
 
   // ---------- complaints ----------
+  void setComplaintsFromDb(List<Complaint> list) {
+    complaints
+      ..clear()
+      ..addAll(list);
+    notifyListeners();
+  }
+
   void addComplaint(String to, String subject, String text) {
     complaints.add(Complaint(complaints.length + 12, user!.phone, user!.name, to, subject, text));
     notifyListeners();
