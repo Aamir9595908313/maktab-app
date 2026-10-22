@@ -1018,6 +1018,17 @@ class AppState extends ChangeNotifier {
   // ---------- master data: teachers ----------
   List<Account> teachers() => users.values.where((u) => u.role == 'teacher').toList();
 
+  // Real committee members (same shape as teacherAccounts below - real
+  // accounts from public.user_profiles plus anyone invited but not yet
+  // joined from public.pending_role_invites).
+  final List<Account> committeeAccounts = [];
+  void setCommitteeFromDb(List<Account> list) {
+    committeeAccounts
+      ..clear()
+      ..addAll(list);
+    notifyListeners();
+  }
+
   // Real teachers (from public.user_profiles, once they've logged in at
   // least once) plus anyone invited but not yet joined (from
   // public.pending_role_invites) - what the Master Data screen's Teachers

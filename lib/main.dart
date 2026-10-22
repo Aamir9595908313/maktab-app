@@ -157,6 +157,7 @@ Future<void> loadMasterData() async {
     await loadAllTeacherAttendanceToday();
     await loadComplaints();
     await loadCustomRoles();
+    await loadCommitteeMembers();
   } catch (_) {
     // Swallow - see note above. The Master Data screen still works off
     // whatever was already loaded; a retry happens next time this is
@@ -529,6 +530,67 @@ Future<void> resolveRemote(Complaint c) async {
     } catch (_) {}
   }
   st.resolve(c);
+}
+
+// ---------------- Committee members ----------------
+// Same shape as loadTeachers above: real accounts (base_role='committee')
+// plus anyone invited but who hasn't signed in yet.
+Future<void> loadCommitteeMembers() async {
+  final list = <Account>[];
+  try {
+    final profRows = await sb.from('user_profiles').select('id, full_name, phone, is_active').eq('base_role', 'committee');
+    for (final r in (profRows as List)) {
+      final scopeRows = await sb.from('user_madrasa_scope').select('madrasas(name)').eq('user_id', r['id'] as Object);
+      final branches = [for (final s in (scopeRows as List)) ((s['madrasas'] as Map?)?['name'] as String?) ?? ''].where((n) => n.isNotEmpty).toList();
+      list.add(Account(
+        (r['phone'] as String?) ?? '',
+        (r['full_name'] as String?) ?? 'Committee',
+        'committee',
+        branches: branches,
+        active: (r['is_active'] as bool?) ?? true,
+        dbId: r['id'] as String?,
+      ));
+    }
+  } catch (_) {}
+  try {
+    final inviteRows = await sb.from('pending_role_invites').select().eq('base_role', 'committee');
+    for (final r in (inviteRows as List)) {
+      list.add(Account(
+        (r['phone'] as String?) ?? '',
+        (r['full_name'] as String?) ?? 'Committee',
+        'committee',
+        branches: List<String>.from((r['madrasa_names'] as List?) ?? []),
+        pending: true,
+      ));
+    }
+  } catch (_) {}
+  st.setCommitteeFromDb(list);
+}
+
+Future<String?> addCommitteeRemote(String phone, String name, List<String> branches) async {
+  if (branches.isEmpty) return 'Choose at least one madrasa';
+  final e = await addRoleInviteRemote(name: name, phone: phone, dbRole: 'committee', madrasaNames: branches);
+  if (e == null) await loadCommitteeMembers();
+  return e;
+}
+
+// "Remove" means different things depending on whether this person has
+// ever actually logged in: a real account is deactivated (same as
+// deactivating a teacher - keeps history, just revokes access), while a
+// still-pending invite can simply be deleted since nothing was ever
+// created for it.
+Future<String?> removeCommitteeRemote(Account m) async {
+  try {
+    if (m.dbId != null) {
+      await sb.from('user_profiles').update({'is_active': false}).eq('id', m.dbId as Object);
+    } else {
+      await sb.from('pending_role_invites').delete().eq('phone', m.phone);
+    }
+    await loadCommitteeMembers();
+    return null;
+  } catch (_) {
+    return 'Could not remove. Check your internet connection and try again.';
+  }
 }
 
 // ---------------- Custom roles (public.roles / public.role_permissions) ----------------
@@ -2194,7 +2256,7 @@ class _StaffHomeState extends State<StaffHome> {
           tile('Average syllabus', '${st.avgSylAll()}%', icon: Icons.menu_book),
           tile('Leave requests', '$pendingLeave pending', icon: Icons.event_busy, onTap: () => pushPage(context, 'Teachers & Leave', const TeachersView())),
           tile('Complaints open', '$open', icon: Icons.report_problem, onTap: () => pushPage(context, 'Complaints', const ComplaintsView())),
-          tile('Committee members', '${st.committee().length}', icon: Icons.diversity_3, onTap: () => pushPage(context, 'Committee', const CommitteeAdmin())),
+          tile('Committee members', '${st.committeeAccounts.where((m) => !m.pending).length}', icon: Icons.diversity_3, onTap: () => pushPage(context, 'Committee', const CommitteeAdmin())),
         ]),
         h('Post common announcement (all madrasas, all roles)'),
         field(title, 'Title'),
@@ -2993,43 +3055,64 @@ class _CommitteeAdminState extends State<CommitteeAdmin> {
   final phone = TextEditingController();
   final name = TextEditingController();
   final Set<String> br = {};
+  bool busy = false;
   @override
   Widget build(BuildContext context) {
-    return page([
-      h('Add committee member (read-only)'),
-      field(phone, 'Mobile number', number: true),
-      field(name, 'Name'),
-      const Text('Branches this member can see:'),
-      ...kBranches.map((b) => CheckboxListTile(
-            title: Text(b),
-            value: br.contains(b),
-            onChanged: (v) => setState(() {
-              if (v == true) {
-                br.add(b);
-              } else {
-                br.remove(b);
-              }
-            }),
-          )),
-      ElevatedButton(
-        onPressed: () {
-          final e = st.addCommittee(digits(phone.text), name.text, br.toList());
-          toast(context, e ?? 'Member added. They see only student progress.');
-        },
-        child: const Text('Add member'),
-      ),
-      h('Members'),
-      ...st.committee().map((m) => Card(
-            child: ListTile(
-              title: Text(m.name),
-              subtitle: Text('${m.phone} - ${m.branches.join(', ')}'),
-              trailing: TextButton(onPressed: () => st.removeMember(m.phone), child: const Text('Remove')),
-            ),
-          )),
-      h('View log'),
-      if (st.viewLog.isEmpty) const Text('No student views yet. Log in as Working Committee and open a student.'),
-      ...st.viewLog.reversed.map((l) => Text(l)),
-    ]);
+    return AnimatedBuilder(
+      animation: st,
+      builder: (context, _) => page([
+        h('Add committee member (read-only)'),
+        field(phone, 'Mobile number', number: true),
+        field(name, 'Name'),
+        const Text('Madrasas this member can see:'),
+        ...st.activeMadrasaNames.map((b) => CheckboxListTile(
+              title: Text(b),
+              value: br.contains(b),
+              onChanged: (v) => setState(() {
+                if (v == true) {
+                  br.add(b);
+                } else {
+                  br.remove(b);
+                }
+              }),
+            )),
+        ElevatedButton(
+          onPressed: busy
+              ? null
+              : () async {
+                  setState(() => busy = true);
+                  final e = await addCommitteeRemote(phone.text, name.text, br.toList());
+                  if (!mounted) return;
+                  setState(() => busy = false);
+                  toast(context, e ?? 'Member invited. They see only student progress, the moment they log in with OTP.');
+                  if (e == null) {
+                    phone.clear();
+                    name.clear();
+                    setState(br.clear);
+                  }
+                },
+          child: busy ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2)) : const Text('Add member'),
+        ),
+        h('Members'),
+        if (st.committeeAccounts.isEmpty) const Text('No committee members yet.', style: TextStyle(color: Colors.black54)),
+        ...st.committeeAccounts.map((m) => Card(
+              child: ListTile(
+                title: Text(m.name),
+                subtitle: Text('${m.phone} - ${m.branches.join(', ')}${m.pending ? ' - invited, waiting for first login' : ''}'),
+                trailing: TextButton(
+                  onPressed: () async {
+                    final e = await removeCommitteeRemote(m);
+                    if (context.mounted) toast(context, e ?? 'Removed.');
+                  },
+                  child: const Text('Remove'),
+                ),
+              ),
+            )),
+        h('View log'),
+        if (st.viewLog.isEmpty) const Text('No student views yet. Log in as Working Committee and open a student.'),
+        ...st.viewLog.reversed.map((l) => Text(l)),
+      ]),
+    );
   }
 }
 
