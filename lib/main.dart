@@ -158,6 +158,7 @@ Future<void> loadMasterData() async {
     await loadComplaints();
     await loadCustomRoles();
     await loadCommitteeMembers();
+    await loadFees();
   } catch (_) {
     // Swallow - see note above. The Master Data screen still works off
     // whatever was already loaded; a retry happens next time this is
@@ -201,6 +202,8 @@ void subscribeRealtime() {
     'chapters',
     'roles',
     'role_permissions',
+    'fees_monthly',
+    'receipts',
   ];
   var channel = sb.channel('app-data-sync');
   for (final t in tables) {
@@ -530,6 +533,60 @@ Future<void> resolveRemote(Complaint c) async {
     } catch (_) {}
   }
   st.resolve(c);
+}
+
+// ---------------- Fees (public.fees_monthly / public.receipts) ----------------
+// Rs. 200/month flat, same as the old local demo (public.fee_plans has
+// that seeded per class). Only "paid in full" is tracked here, matching
+// what the UI actually shows (Complete vs due) - partial payments aren't
+// a thing in this app yet.
+Future<void> loadFees() async {
+  final idByDbId = {for (final s in st.students) if (s.dbId != null) s.dbId!: s};
+  if (idByDbId.isEmpty) return;
+  try {
+    final rows = await sb.from('fees_monthly').select('student_id, month, status').eq('year', 2026).eq('status', 'complete');
+    final monthNameByNo = {for (final e in AppState.monthNo.entries) e.value: e.key};
+    final byStudent = <int, Set<String>>{};
+    for (final r in (rows as List)) {
+      final s = idByDbId[r['student_id'] as String?];
+      if (s == null) continue;
+      final mn = monthNameByNo[r['month'] as int?];
+      if (mn == null) continue;
+      byStudent.putIfAbsent(s.id, () => {}).add(mn);
+    }
+    st.setPaidFromDb(byStudent);
+  } catch (_) {
+    // Not every role can see fees (RLS) - the screen just shows nothing
+    // marked paid instead of erroring.
+  }
+}
+
+Future<String> payRemote(Student s, String m) async {
+  final msg = st.pay(s, m);
+  final monthNo = AppState.monthNo[m];
+  if (s.dbId != null && monthNo != null) {
+    try {
+      final row = await sb.from('fees_monthly').upsert({
+        'student_id': s.dbId,
+        'year': 2026,
+        'month': monthNo,
+        'amount_due': 200,
+        'amount_paid': 200,
+        'status': 'complete',
+      }, onConflict: 'student_id,year,month').select().single();
+      await sb.from('receipts').insert({
+        'receipt_no': 'R-2026-${st.receiptNo}',
+        'fees_monthly_id': row['id'],
+        'amount': 200,
+        'mode': 'cash',
+        'collected_by': sb.auth.currentUser?.id,
+      });
+    } catch (_) {
+      // Already reflected locally; the next reload (realtime or manual)
+      // will just show it still due if this save actually failed.
+    }
+  }
+  return msg;
 }
 
 // ---------------- Committee members ----------------
@@ -2288,14 +2345,18 @@ class _StaffHomeState extends State<StaffHome> {
     if (u.role == 'admin') {
       final present = st.teacherAtt.values.where((v) => v.startsWith('Present')).length;
       final onLeave = st.teacherAtt.values.where((v) => v == 'On leave').length;
+      // Was hardcoded to "Hanfi" only - now scoped to whichever madrasa(s)
+      // this admin actually manages (u.branches, loaded for real from
+      // public.user_madrasa_scope at login).
+      final myStudentsActive = st.students.where((s) => u.branches.contains(s.madrasa) && s.status == 'Active').toList();
       return page([
         banner(),
         grid([
-          tile('Students', '${st.inBranch('Hanfi').length}', icon: Icons.groups, onTap: () => pushPage(context, 'Students', const StudentsView())),
+          tile('Students', '${myStudentsActive.length}', icon: Icons.groups, onTap: () => pushPage(context, 'Students', const StudentsView())),
           tile('Teachers today', '$present present, $onLeave on leave', icon: Icons.co_present, onTap: () => pushPage(context, 'Teachers & Leave', const TeachersView())),
           tile('Pending registrations', '${st.pending.length}', icon: Icons.how_to_reg, onTap: () => pushPage(context, 'Pending Registrations', const ApprovalsView())),
           tile('Leave requests', '$pendingLeave pending', icon: Icons.event_busy, onTap: () => pushPage(context, 'Teachers & Leave', const TeachersView())),
-          tile('Fees Sep', '${st.completeCount('Sep')} of ${st.totalFor('Sep')} complete', icon: Icons.payments, onTap: () => pushPage(context, 'Fees', const FeesAdmin())),
+          tile('Fees Sep', '${myStudentsActive.where((s) => st.isPaid(s.id, 'Sep')).length} of ${myStudentsActive.where((s) => st.feeMonths(s).contains('Sep')).length} complete', icon: Icons.payments, onTap: () => pushPage(context, 'Fees', const FeesAdmin())),
           tile('Complaints open', '$open', icon: Icons.report_problem, onTap: () => pushPage(context, 'Complaints', const ComplaintsView())),
         ]),
         h('Ready to promote'),
@@ -2724,20 +2785,33 @@ class FeesAdmin extends StatelessWidget {
   const FeesAdmin({super.key});
   @override
   Widget build(BuildContext context) {
+    final u = st.user!;
+    // Was hardcoded to the "Hanfi" branch only, regardless of which
+    // madrasa(s) the admin actually manages - a Super Admin now sees every
+    // active student, everyone else only their own madrasa(s).
+    final scope = u.role == 'super' ? st.students : st.students.where((s) => u.branches.contains(s.madrasa)).toList();
+    final list = scope.where((s) => s.status == 'Active').toList();
     return page([
       h('Fees (month-wise)', icon: Icons.payments),
-      grid([for (final m in ['Jun', 'Jul', 'Aug', 'Sep']) tile('$m 2026', '${st.completeCount(m)} of ${st.totalFor(m)} complete')]),
+      grid([for (final m in ['Jun', 'Jul', 'Aug', 'Sep']) tile('$m 2026', '${list.where((s) => st.isPaid(s.id, m)).length} of ${list.where((s) => st.feeMonths(s).contains(m)).length} complete')]),
       const Text('Tap a due month to record a payment of Rs. 200.'),
-      ...st.inBranch('Hanfi').where((s) => s.status == 'Active').map((s) => Card(
+      ...list.map((s) => Card(
             child: Padding(
               padding: const EdgeInsets.all(12),
               child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text('${s.name} - ${st.className(s.cls)}', style: const TextStyle(fontWeight: FontWeight.bold)),
+                Text('${s.name} - ${s.madrasa} - ${st.className(s.cls)}', style: const TextStyle(fontWeight: FontWeight.bold)),
                 Wrap(spacing: 6, children: [
                   for (final m in st.feeMonths(s))
                     st.isPaid(s.id, m)
                         ? Chip(label: Text('$m - Complete'), backgroundColor: const Color(0xFFDFF3DA))
-                        : ActionChip(label: Text('$m due - Pay'), backgroundColor: const Color(0xFFFFE3E0), onPressed: () => toast(context, st.pay(s, m))),
+                        : ActionChip(
+                            label: Text('$m due - Pay'),
+                            backgroundColor: const Color(0xFFFFE3E0),
+                            onPressed: () async {
+                              final msg = await payRemote(s, m);
+                              if (context.mounted) toast(context, msg);
+                            },
+                          ),
                 ]),
               ]),
             ),

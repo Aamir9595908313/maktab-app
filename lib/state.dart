@@ -910,6 +910,14 @@ class AppState extends ChangeNotifier {
 
   bool isPaid(int id, String m) => paid[id]?.contains(m) ?? false;
 
+  // Replaces the whole paid-months model with what the database has.
+  void setPaidFromDb(Map<int, Set<String>> byStudentId) {
+    paid
+      ..clear()
+      ..addAll(byStudentId);
+    notifyListeners();
+  }
+
   String pay(Student s, String m) {
     paid.putIfAbsent(s.id, () => <String>{}).add(m);
     receiptNo++;
