@@ -150,6 +150,7 @@ Future<void> loadMasterData() async {
     ]);
 
     await loadTeachers();
+    await loadChapters();
     await loadAttendance();
     await loadSyllabusProgress();
     await loadMyTeacherAttendance();
@@ -195,6 +196,7 @@ void subscribeRealtime() {
     'teacher_attendance',
     'syllabus_progress',
     'complaints',
+    'chapters',
   ];
   var channel = sb.channel('app-data-sync');
   for (final t in tables) {
@@ -349,35 +351,96 @@ Future<void> markSelfRemote(String v) async {
   } catch (_) {}
 }
 
-// ---------------- Syllabus page-progress (public.syllabus_progress) ----------------
-// Chapter-based (Class 4+) syllabus still runs on local-only demo chapters
-// for now - public.chapters has no rows seeded yet, so there's nothing in
-// the database to read from or write to for that half. Page-based (Classes
-// 1-3, the book/page students) is fully wired below.
+// ---------------- Syllabus (public.syllabus_progress / public.chapters) ----------------
+// Page-based (Classes 1-3) writes page_no rows; chapter-based (Class 4+)
+// writes chapter_id rows against public.chapters (seeded below). Both live
+// in the same syllabus_progress table.
+
+Future<void> loadChapters() async {
+  try {
+    final rows = await sb.from('chapters').select('id, class_id, title, days, sort_order').eq('is_active', true).order('sort_order');
+    final classNoById = {for (final cd in st.classDefs.values) if (cd.dbId != null) cd.dbId!: cd.id};
+    final byClass = <int, List<Chapter>>{};
+    for (final r in (rows as List)) {
+      final cls = classNoById[r['class_id'] as String?];
+      if (cls == null) continue;
+      byClass.putIfAbsent(cls, () => []).add(Chapter((r['title'] as String?) ?? '', (r['days'] as int?) ?? 30, dbId: r['id'] as String?));
+    }
+    st.setChaptersFromDb(byClass);
+  } catch (_) {}
+}
+
+Future<String?> addChapterRemote(int cls, String title, int days) async {
+  final classId = _classDbId(cls);
+  if (classId == null) return 'That class is not saved to the database yet.';
+  try {
+    final sortOrder = (st.chapters[cls] ?? []).length;
+    await sb.from('chapters').insert({'class_id': classId, 'title': title, 'days': days, 'sort_order': sortOrder});
+    await loadChapters();
+    return null;
+  } on PostgrestException catch (e) {
+    return 'Could not save: ${e.message}';
+  } catch (_) {
+    return 'Could not save. Check your internet connection and try again.';
+  }
+}
 
 Future<void> loadSyllabusProgress() async {
   final idByDbId = {for (final s in st.students) if (s.dbId != null) s.dbId!: s};
   if (idByDbId.isEmpty) return;
   try {
-    final rows = await sb.from('syllabus_progress').select('student_id, page_no, completed_on, grade').not('page_no', 'is', null);
+    final rows = await sb.from('syllabus_progress').select('student_id, page_no, chapter_id, completed_on, grade');
     final byStudent = <int, List<Map<String, dynamic>>>{};
     for (final r in (rows as List)) {
       final s = idByDbId[r['student_id'] as String?];
       if (s != null) byStudent.putIfAbsent(s.id, () => []).add(r as Map<String, dynamic>);
     }
+    final chapterIndexByDbId = <String, int>{};
+    for (final list in st.chapters.values) {
+      for (var i = 0; i < list.length; i++) {
+        final dbId = list[i].dbId;
+        if (dbId != null) chapterIndexByDbId[dbId] = i;
+      }
+    }
     for (final s in st.students) {
       final rs = byStudent[s.id];
       if (rs == null) continue;
-      final dates = <int, String>{};
-      final grades = <int, String>{};
+      final pageDates = <int, String>{};
+      final pageGrades = <int, String>{};
+      final chDates = <int, String>{};
+      final chGrades = <int, String>{};
       for (final r in rs) {
         final no = r['page_no'] as int?;
-        if (no == null) continue;
-        dates[no] = (r['completed_on'] as String?) ?? kToday;
-        grades[no] = (r['grade'] as String?) ?? '';
+        final chapterId = r['chapter_id'] as String?;
+        if (no != null) {
+          pageDates[no] = (r['completed_on'] as String?) ?? kToday;
+          pageGrades[no] = (r['grade'] as String?) ?? '';
+        } else if (chapterId != null && chapterIndexByDbId.containsKey(chapterId)) {
+          final i = chapterIndexByDbId[chapterId]!;
+          chDates[i] = (r['completed_on'] as String?) ?? kToday;
+          chGrades[i] = (r['grade'] as String?) ?? '';
+        }
       }
-      st.setPageProgressFromDb(s, dates, grades);
+      st.setPageProgressFromDb(s, pageDates, pageGrades);
+      st.setChapterProgressFromDb(s, chDates, chGrades);
     }
+  } catch (_) {}
+}
+
+Future<void> tickChapterRemote(Student s, int i, String date, String grade) async {
+  st.tickChapter(s, i, date, grade);
+  if (s.dbId == null) return;
+  final chapterId = st.chapters[s.cls]?[i].dbId;
+  if (chapterId == null) return;
+  try {
+    await sb.from('syllabus_progress').upsert({
+      'student_id': s.dbId,
+      'chapter_id': chapterId,
+      'status': 'completed',
+      'completed_on': validDate(date) ? date : kToday,
+      'grade': grade,
+      'created_by': sb.auth.currentUser?.id,
+    }, onConflict: 'student_id,chapter_id');
   } catch (_) {}
 }
 
@@ -1867,7 +1930,7 @@ Future<void> tickChapterDialog(BuildContext c, Student s, int i) async {
           TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
           ElevatedButton(
             onPressed: () {
-              st.tickChapter(s, i, date.text.trim(), grade);
+              tickChapterRemote(s, i, date.text.trim(), grade);
               Navigator.pop(ctx);
             },
             child: const Text('Save'),
@@ -2669,12 +2732,16 @@ class _SuperSyllabusState extends State<SuperSyllabus> {
         field(title, 'Chapter title'),
         field(days, 'Days needed', number: true),
         ElevatedButton(
-          onPressed: () {
+          onPressed: () async {
             if (title.text.trim().isEmpty) {
               toast(context, 'Enter a title');
               return;
             }
-            st.addChapter(cls, title.text.trim(), int.tryParse(days.text) ?? 30);
+            final e = await addChapterRemote(cls, title.text.trim(), int.tryParse(days.text) ?? 30);
+            if (e != null) {
+              toast(context, e);
+              return;
+            }
             title.clear();
             toast(context, 'Chapter added. Every student plan is recalculated from their own start date.');
           },

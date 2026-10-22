@@ -27,7 +27,9 @@ bool validDate(String s) {
 class Chapter {
   String title;
   int days;
-  Chapter(this.title, this.days);
+  // public.chapters row id, once loaded from (or saved to) the database.
+  String? dbId;
+  Chapter(this.title, this.days, {this.dbId});
 }
 
 class ClassDef {
@@ -727,6 +729,22 @@ class AppState extends ChangeNotifier {
 
   void addChapter(int cls, String title, int days) {
     chapters.putIfAbsent(cls, () => <Chapter>[]).add(Chapter(title, days));
+    notifyListeners();
+  }
+
+  // Replaces the whole chapter plan (all chapter-based classes) with what
+  // the database has - called after loading or adding a chapter.
+  void setChaptersFromDb(Map<int, List<Chapter>> byClass) {
+    chapters
+      ..clear()
+      ..addAll(byClass);
+    notifyListeners();
+  }
+
+  // Replaces one student's chapter-progress with what the database has.
+  void setChapterProgressFromDb(Student s, Map<int, String> dates, Map<int, String> grades) {
+    s.chDate = dates;
+    s.chGrade = grades;
     notifyListeners();
   }
 
