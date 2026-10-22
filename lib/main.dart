@@ -156,6 +156,7 @@ Future<void> loadMasterData() async {
     await loadMyTeacherAttendance();
     await loadAllTeacherAttendanceToday();
     await loadComplaints();
+    await loadCustomRoles();
   } catch (_) {
     // Swallow - see note above. The Master Data screen still works off
     // whatever was already loaded; a retry happens next time this is
@@ -197,6 +198,8 @@ void subscribeRealtime() {
     'syllabus_progress',
     'complaints',
     'chapters',
+    'roles',
+    'role_permissions',
   ];
   var channel = sb.channel('app-data-sync');
   for (final t in tables) {
@@ -526,6 +529,83 @@ Future<void> resolveRemote(Complaint c) async {
     } catch (_) {}
   }
   st.resolve(c);
+}
+
+// ---------------- Custom roles (public.roles / public.role_permissions) ----------------
+// A Super Admin can read/write every custom role (RLS: roles_super_all /
+// role_permissions_super_all); anyone holding a custom role can read only
+// their own role's permissions (roles_self_read / role_permissions_self_read)
+// - enough for tabsFor() to work out which screens to show them.
+Future<void> loadCustomRoles() async {
+  final u = st.user;
+  if (u == null) return;
+  try {
+    if (u.role == 'super') {
+      final roleRows = await sb.from('roles').select('id, name').eq('is_builtin', false);
+      final byName = <String, Set<String>>{};
+      for (final r in (roleRows as List)) {
+        final permRows = await sb.from('role_permissions').select('screen_key').eq('role_id', r['id'] as Object).eq('can_view', true);
+        byName[(r['name'] as String?) ?? ''] = {for (final p in (permRows as List)) (p['screen_key'] as String?) ?? ''}..removeWhere((x) => x.isEmpty);
+      }
+      st.setCustomRolesFromDb(byName);
+    } else if (u.role == 'custom' && u.roleName.isNotEmpty) {
+      final roleRow = await sb.from('roles').select('id').eq('name', u.roleName).maybeSingle();
+      if (roleRow != null) {
+        final permRows = await sb.from('role_permissions').select('screen_key').eq('role_id', roleRow['id'] as Object).eq('can_view', true);
+        final perms = {for (final p in (permRows as List)) (p['screen_key'] as String?) ?? ''}..removeWhere((x) => x.isEmpty);
+        st.setCustomRolesFromDb({u.roleName: perms});
+      }
+    }
+  } catch (_) {}
+}
+
+Future<String?> createRoleRemote(String name, Set<String> perms) async {
+  final n = name.trim();
+  if (n.isEmpty) return 'Enter a role name';
+  if (perms.isEmpty) return 'Tick at least one screen';
+  try {
+    final row = await sb.from('roles').insert({'name': n, 'is_builtin': false}).select().single();
+    final roleId = row['id'];
+    await sb.from('role_permissions').insert([
+      for (final p in perms) {'role_id': roleId, 'screen_key': p, 'can_view': true, 'can_edit': true},
+    ]);
+    await loadCustomRoles();
+    return null;
+  } on PostgrestException catch (e) {
+    if (e.code == '23505') return 'A role with that name already exists.';
+    return 'Could not save: ${e.message}';
+  } catch (_) {
+    return 'Could not save. Check your internet connection and try again.';
+  }
+}
+
+// Gives someone a custom role the same way Teacher/Admin/Committee invites
+// already work: a pending_role_invites row (base_role='custom', plus the
+// role's id) that the handle_new_auth_user trigger turns into a real
+// account - with the right custom_role_id and madrasa scope - the moment
+// that phone number signs in with OTP.
+Future<String?> assignRoleRemote(String phone, String name, String roleName, String branch) async {
+  final p = digits(phone);
+  if (p.length != 10) return 'Enter a 10-digit mobile number';
+  if (name.trim().isEmpty) return 'Enter the name';
+  if (roleName.isEmpty) return 'Choose a role';
+  try {
+    final roleRow = await sb.from('roles').select('id').eq('name', roleName).maybeSingle();
+    if (roleRow == null) return 'That role was not found - try Create role again.';
+    await sb.from('pending_role_invites').upsert({
+      'phone': '91$p',
+      'base_role': 'custom',
+      'full_name': name.trim(),
+      'madrasa_names': [branch],
+      'custom_role_id': roleRow['id'],
+    });
+    return null;
+  } on PostgrestException catch (e) {
+    if (e.code == '42501') return 'Only a Super Admin can assign a role.';
+    return 'Could not save: ${e.message}';
+  } catch (_) {
+    return 'Could not save. Check your internet connection and try again.';
+  }
 }
 
 // Loads the real Teachers list: actual accounts (public.user_profiles
@@ -2821,7 +2901,8 @@ class _RolesViewState extends State<RolesView> {
   final aName = TextEditingController();
   final Set<String> perms = {};
   String? pick;
-  String branch = 'Hanfi';
+  String? branch;
+  bool busy = false;
   static const List<String> screens = ['Students', 'Fees', 'Reports', 'Leave'];
 
   @override
@@ -2843,15 +2924,20 @@ class _RolesViewState extends State<RolesView> {
             }),
           )),
       ElevatedButton(
-        onPressed: () {
-          final e = st.createRole(roleName.text, perms);
-          toast(context, e ?? 'Role saved');
-          if (e == null) {
-            roleName.clear();
-            setState(perms.clear);
-          }
-        },
-        child: const Text('Save role'),
+        onPressed: busy
+            ? null
+            : () async {
+                setState(() => busy = true);
+                final e = await createRoleRemote(roleName.text, perms);
+                if (!mounted) return;
+                setState(() => busy = false);
+                toast(context, e ?? 'Role saved');
+                if (e == null) {
+                  roleName.clear();
+                  setState(perms.clear);
+                }
+              },
+        child: busy ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2)) : const Text('Save role'),
       ),
       h('Existing custom roles', icon: Icons.admin_panel_settings),
       ...names.map((n) => Card(child: ListTile(title: Text(n), subtitle: Text('Screens: ${(st.customRoles[n] ?? <String>{}).join(', ')}')))),
@@ -2868,16 +2954,30 @@ class _RolesViewState extends State<RolesView> {
       DropdownButtonFormField<String>(
         value: branch,
         decoration: const InputDecoration(labelText: 'Madrasa', border: OutlineInputBorder()),
-        items: [for (final b in kBranches) DropdownMenuItem<String>(value: b, child: Text(b))],
-        onChanged: (v) => setState(() => branch = v ?? branch),
+        items: [for (final m in st.activeMadrasaNames) DropdownMenuItem<String>(value: m, child: Text(m))],
+        onChanged: (v) => setState(() => branch = v),
       ),
       const SizedBox(height: 8),
       ElevatedButton(
-        onPressed: () {
-          final e = st.assignRole(digits(aPhone.text), aName.text, pick ?? '', branch);
-          toast(context, e ?? 'Role given. That person now sees only the ticked screens after login.');
-        },
-        child: const Text('Assign role'),
+        onPressed: busy
+            ? null
+            : () async {
+                if (branch == null) {
+                  toast(context, 'Choose a madrasa');
+                  return;
+                }
+                setState(() => busy = true);
+                final e = await assignRoleRemote(digits(aPhone.text), aName.text, pick ?? '', branch!);
+                if (!mounted) return;
+                setState(() => busy = false);
+                toast(context, e ?? 'Role given. That person now sees only the ticked screens, the moment they log in with OTP.');
+                if (e == null) {
+                  aPhone.clear();
+                  aName.clear();
+                  setState(() => pick = null);
+                }
+              },
+        child: busy ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2)) : const Text('Assign role'),
       ),
     ]);
   }

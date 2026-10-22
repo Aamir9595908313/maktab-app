@@ -975,6 +975,13 @@ class AppState extends ChangeNotifier {
   }
 
   // ---------- roles and committee ----------
+  void setCustomRolesFromDb(Map<String, Set<String>> roles) {
+    customRoles
+      ..clear()
+      ..addAll(roles);
+    notifyListeners();
+  }
+
   String? createRole(String name, Set<String> perms) {
     if (name.trim().isEmpty) return 'Enter a role name';
     if (perms.isEmpty) return 'Tick at least one screen';
