@@ -1419,10 +1419,11 @@ Future<void> editStudentDialog(BuildContext context, Student s) async {
   if (context.mounted) toast(context, e ?? 'Student updated.');
 }
 
-Widget field(TextEditingController c, String label, {bool number = false, int lines = 1}) => Padding(
+Widget field(TextEditingController c, String label, {bool number = false, int lines = 1, bool autofocus = false}) => Padding(
       padding: const EdgeInsets.only(bottom: 8),
       child: TextField(
         controller: c,
+        autofocus: autofocus,
         maxLines: lines,
         keyboardType: number ? TextInputType.number : TextInputType.text,
         decoration: InputDecoration(labelText: label, border: const OutlineInputBorder()),
@@ -1572,7 +1573,7 @@ class _GuestHomeState extends State<GuestHome> {
             Center(child: Image.asset('assets/logo.png', height: 84)),
             const SizedBox(height: 24),
             if (!step2) ...[
-              field(phone, 'Mobile number', number: true),
+              field(phone, 'Mobile number', number: true, autofocus: true),
               const SizedBox(height: 4),
               msgBox(err),
               SizedBox(
@@ -1593,7 +1594,7 @@ class _GuestHomeState extends State<GuestHome> {
             ] else ...[
               Text('OTP sent to +91 ${digits(phone.text)}', textAlign: TextAlign.center),
               const SizedBox(height: 10),
-              field(otp, 'Enter OTP', number: true),
+              field(otp, 'Enter OTP', number: true, autofocus: true),
               const SizedBox(height: 4),
               msgBox(err),
               SizedBox(
@@ -2376,10 +2377,15 @@ class _StaffHomeState extends State<StaffHome> {
           ),
         ),
       grid([
-        tile('My attendance', st.teacherAtt[u.name] ?? 'Not marked', icon: Icons.event_available),
-        tile('Students (${st.teacherMadrasa})', '${st.inBranch(st.teacherMadrasa).length}', icon: Icons.groups),
-        tile('Ready to promote', '${st.students.where((s) => st.eligible(s)).length}', icon: Icons.trending_up),
-        tile('Complaints open', '$open', icon: Icons.report_problem),
+        tile('My attendance', st.teacherAtt[u.name] ?? 'Not marked', icon: Icons.event_available, onTap: () => pushPage(context, 'My Attendance & Leave', const TeacherSelf())),
+        tile(
+          'Students (${st.teacherMadrasa})',
+          '${st.inBranch(st.teacherMadrasa).where((s) => s.status == 'Active').length}',
+          icon: Icons.groups,
+          onTap: () => pushPage(context, 'Students & Promotion', const StudentsView()),
+        ),
+        tile('Ready to promote', '${st.students.where((s) => st.eligible(s)).length}', icon: Icons.trending_up, onTap: () => pushPage(context, 'Students & Promotion', const StudentsView())),
+        tile('Complaints open', '$open', icon: Icons.report_problem, onTap: () => pushPage(context, 'Complaints', const ComplaintsView())),
       ]),
       const Text('Use the menu (top left) to open Attendance, Syllabus and more.'),
     ]);
