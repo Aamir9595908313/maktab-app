@@ -422,6 +422,22 @@ class _GuestHomeState extends State<GuestHome> {
   bool busy = false;
   String err = '';
 
+  @override
+  void initState() {
+    super.initState();
+    // Re-render as the person types so the buttons below can light up
+    // only once there's something valid to submit.
+    phone.addListener(() => setState(() {}));
+    otp.addListener(() => setState(() {}));
+  }
+
+  @override
+  void dispose() {
+    phone.dispose();
+    otp.dispose();
+    super.dispose();
+  }
+
   Future<void> _sendOtp() async {
     final p = digits(phone.text);
     if (p.length != 10) {
@@ -532,8 +548,13 @@ class _GuestHomeState extends State<GuestHome> {
               SizedBox(
                 width: double.infinity,
                 child: ElevatedButton(
-                  style: ElevatedButton.styleFrom(backgroundColor: kGreen, padding: const EdgeInsets.symmetric(vertical: 14)),
-                  onPressed: busy ? null : _sendOtp,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: digits(phone.text).length == 10 ? kGreen : Colors.grey.shade300,
+                    foregroundColor: digits(phone.text).length == 10 ? Colors.white : Colors.black38,
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    elevation: digits(phone.text).length == 10 ? 2 : 0,
+                  ),
+                  onPressed: (busy || digits(phone.text).length != 10) ? null : _sendOtp,
                   child: busy ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white)) : const Text('Login'),
                 ),
               ),
@@ -548,8 +569,13 @@ class _GuestHomeState extends State<GuestHome> {
               SizedBox(
                 width: double.infinity,
                 child: ElevatedButton(
-                  style: ElevatedButton.styleFrom(backgroundColor: kGreen, padding: const EdgeInsets.symmetric(vertical: 14)),
-                  onPressed: busy ? null : _verifyOtp,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: otp.text.trim().isNotEmpty ? kGreen : Colors.grey.shade300,
+                    foregroundColor: otp.text.trim().isNotEmpty ? Colors.white : Colors.black38,
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    elevation: otp.text.trim().isNotEmpty ? 2 : 0,
+                  ),
+                  onPressed: (busy || otp.text.trim().isEmpty) ? null : _verifyOtp,
                   child: busy ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white)) : const Text('Verify & Login'),
                 ),
               ),
