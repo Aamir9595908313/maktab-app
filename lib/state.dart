@@ -37,7 +37,12 @@ class ClassDef {
   final String? bookName;
   int totalPages;
   final int paceDays; // expected days per page, page-based classes only
-  ClassDef(this.id, this.name, {this.pageBased = false, this.bookName, this.totalPages = 0, this.paceDays = 2});
+  bool active;
+  // The matching row's id in Supabase public.classes, once this record has
+  // been loaded from (or successfully saved to) the real database. Null
+  // means this is still local-only demo data that hasn't been synced.
+  String? dbId;
+  ClassDef(this.id, this.name, {this.pageBased = false, this.bookName, this.totalPages = 0, this.paceDays = 2, this.active = true, this.dbId});
 }
 
 class Student {
@@ -368,6 +373,22 @@ class AppState extends ChangeNotifier {
   final Map<int, List<Chapter>> chapters = {
     4: [Chapter('Namaz basics', 30), Chapter('Duas', 30)],
   };
+
+  // Replaces classDefs wholesale with what was just loaded from Supabase
+  // (public.classes), keyed by the same class_no the rest of the app
+  // already uses as the map key (student.cls, promotion logic, etc).
+  void setClassDefsFromDb(List<ClassDef> list) {
+    classDefs.clear();
+    for (final cd in list) {
+      classDefs[cd.id] = cd;
+    }
+    notifyListeners();
+  }
+
+  void setClassActive(ClassDef cd, bool v) {
+    cd.active = v;
+    notifyListeners();
+  }
 
   // Which classes a teacher is assigned to, per madrasa
   final Map<String, Map<String, List<int>>> teacherAssignments = {

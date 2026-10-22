@@ -107,6 +107,20 @@ Future<void> loadMasterData() async {
           dbId: r['id'] as String?,
         ),
     ]);
+
+    final classRows = await sb.from('classes').select().order('class_no');
+    st.setClassDefsFromDb([
+      for (final r in (classRows as List))
+        ClassDef(
+          r['class_no'] as int,
+          (r['name'] as String?) ?? '',
+          pageBased: (r['page_based'] as bool?) ?? false,
+          bookName: r['book_name'] as String?,
+          totalPages: (r['total_pages'] as int?) ?? 0,
+          active: (r['is_active'] as bool?) ?? true,
+          dbId: r['id'] as String?,
+        ),
+    ]);
   } catch (_) {
     // Swallow - see note above. The Master Data screen still works off
     // whatever was already loaded; a retry happens next time this is
@@ -146,6 +160,48 @@ Future<String?> setMadrasaActiveRemote(MadrasaRec m, bool v) async {
   try {
     await sb.from('madrasas').update({'is_active': v}).eq('id', m.dbId as Object);
     st.setMadrasaActive(m, v);
+    return null;
+  } catch (_) {
+    return 'Could not save. Check your internet connection and try again.';
+  }
+}
+
+// Same pattern as addMadrasaRemote, for public.classes. class_no is picked
+// as one past the highest class number currently loaded, matching how the
+// app already uses that number everywhere else (promotion moves a student
+// from classDefs[n] to classDefs[n+1], so classes must stay numbered in
+// order with no gaps).
+Future<String?> addClassRemote(String name, {required bool pageBased, String? bookName, int totalPages = 0}) async {
+  final n = name.trim();
+  if (n.isEmpty) return 'Enter a class name';
+  final nextNo = (st.classDefs.keys.isEmpty ? 0 : st.classDefs.keys.reduce((a, b) => a > b ? a : b)) + 1;
+  try {
+    final row = await sb.from('classes').insert({
+      'class_no': nextNo,
+      'name': n,
+      'page_based': pageBased,
+      'book_name': pageBased ? bookName?.trim() : null,
+      'total_pages': pageBased ? totalPages : null,
+    }).select().single();
+    st.setClassDefsFromDb([
+      ...st.classDefs.values,
+      ClassDef(nextNo, n, pageBased: pageBased, bookName: pageBased ? bookName?.trim() : null, totalPages: pageBased ? totalPages : 0, dbId: row['id'] as String?),
+    ]);
+    return null;
+  } on PostgrestException catch (e) {
+    return 'Could not save: ${e.message}';
+  } catch (_) {
+    return 'Could not save. Check your internet connection and try again.';
+  }
+}
+
+Future<String?> setClassActiveRemote(ClassDef cd, bool v) async {
+  if (cd.dbId == null) {
+    return 'This class was not saved to the database yet.';
+  }
+  try {
+    await sb.from('classes').update({'is_active': v}).eq('id', cd.dbId as Object);
+    st.setClassActive(cd, v);
     return null;
   } catch (_) {
     return 'Could not save. Check your internet connection and try again.';
@@ -2312,6 +2368,10 @@ class _MasterDataViewState extends State<MasterDataView> {
   final madrasaName = TextEditingController();
   final courseName = TextEditingController();
   final courseDesc = TextEditingController();
+  final className = TextEditingController();
+  final classBookName = TextEditingController();
+  final classTotalPages = TextEditingController();
+  bool classPageBased = true;
   bool busy = false;
 
   @override
@@ -2353,8 +2413,49 @@ class _MasterDataViewState extends State<MasterDataView> {
         child: busy ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2)) : const Text('Add Madrasa / Branch'),
       ),
       h('Classes', icon: Icons.menu_book),
-      const Text('Classes and their syllabus (pages / chapters) are managed from the "Classes & Syllabus" screen.', style: TextStyle(color: Colors.black54, fontSize: 12.5)),
-      ...st.classDefs.values.map((cd) => Card(child: ListTile(title: Text(cd.name), subtitle: Text(cd.pageBased ? 'Book: ${cd.bookName} - ${cd.totalPages} pages' : 'Chapter-based'))),),
+      ...st.classDefs.values.map((cd) => Card(
+            child: SwitchListTile(
+              title: Text(cd.name),
+              subtitle: Text(cd.pageBased ? 'Book: ${cd.bookName} - ${cd.totalPages} pages${cd.active ? '' : ' - Deactivated'}' : 'Chapter-based${cd.active ? '' : ' - Deactivated'}'),
+              value: cd.active,
+              onChanged: (v) async {
+                final e = await setClassActiveRemote(cd, v);
+                if (!mounted) return;
+                if (e != null) toast(context, e);
+              },
+            ),
+          )),
+      field(className, 'New class name (e.g. Class 5 - ...)'),
+      Row(children: [
+        Checkbox(value: classPageBased, onChanged: (v) => setState(() => classPageBased = v ?? true)),
+        const Expanded(child: Text('Page-based (has a book with a page count). Leave unchecked for a chapter-based class.')),
+      ]),
+      if (classPageBased) ...[
+        field(classBookName, 'Book name'),
+        field(classTotalPages, 'Total pages', number: true),
+      ],
+      ElevatedButton(
+        onPressed: busy
+            ? null
+            : () async {
+                setState(() => busy = true);
+                final e = await addClassRemote(
+                  className.text,
+                  pageBased: classPageBased,
+                  bookName: classBookName.text,
+                  totalPages: int.tryParse(classTotalPages.text.trim()) ?? 0,
+                );
+                if (!mounted) return;
+                setState(() => busy = false);
+                toast(context, e ?? 'Class added.');
+                if (e == null) {
+                  className.clear();
+                  classBookName.clear();
+                  classTotalPages.clear();
+                }
+              },
+        child: busy ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2)) : const Text('Add Class'),
+      ),
       h('Teachers', icon: Icons.groups),
       ...st.teachers().map((t) => Card(
             child: SwitchListTile(
