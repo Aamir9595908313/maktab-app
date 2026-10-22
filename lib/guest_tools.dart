@@ -1,24 +1,30 @@
+import 'dart:async';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:geolocator/geolocator.dart';
+import 'package:flutter_compass/flutter_compass.dart';
 
 const Color _kGreen = Color(0xFF054D00);
 const Color _kGold = Color(0xFFD4A72C);
 
-// A sample fixed location, since this demo has no GPS/compass plugin wired up.
-// A production build reads the phone's real GPS location and live compass
-// heading (e.g. with the geolocator and flutter_compass packages) instead.
-const double _sampleLat = 18.5204; // Pune, India (sample location)
-const double _sampleLng = 73.8567;
-const String _sampleCity = 'Pune, India (sample location)';
 const double _kaabaLat = 21.4225;
 const double _kaabaLng = 39.8262;
 
-double _qiblaBearing() {
-  final phi1 = _sampleLat * math.pi / 180;
+// True bearing (degrees from true North) from (lat,lng) to the Kaaba.
+// Note: this is the bearing relative to TRUE north. The device compass
+// (flutter_compass) reports heading relative to MAGNETIC north, which is
+// offset from true north by a location-dependent amount (magnetic
+// declination, typically a few degrees). Correcting for that exactly needs
+// a geomagnetic model (e.g. the WMM) that isn't wired up here - for most
+// users the resulting error is small enough not to matter for prayer
+// direction, but it means the arrow can be a few degrees off true in
+// locations with high declination. Flagged as a known limitation.
+double _qiblaBearing(double lat, double lng) {
+  final phi1 = lat * math.pi / 180;
   final phi2 = _kaabaLat * math.pi / 180;
-  final dLambda = (_kaabaLng - _sampleLng) * math.pi / 180;
+  final dLambda = (_kaabaLng - lng) * math.pi / 180;
   final y = math.sin(dLambda) * math.cos(phi2);
   final x = math.cos(phi1) * math.sin(phi2) - math.sin(phi1) * math.cos(phi2) * math.cos(dLambda);
   var theta = math.atan2(y, x) * 180 / math.pi;
@@ -39,67 +45,173 @@ PreferredSizeWidget guestAppBar(BuildContext context, String title) => AppBar(
     );
 
 // ---------------- Qibla ----------------
-class QiblaScreen extends StatelessWidget {
+// Real GPS location + live compass heading. Needs the ACCESS_FINE_LOCATION
+// permission at runtime, which this screen requests itself the first time
+// it opens. If the user has no GPS fix yet, denies the permission, or the
+// device has no magnetometer, that is shown as a clear in-screen message
+// with a Retry button rather than a blank/frozen screen.
+class QiblaScreen extends StatefulWidget {
   const QiblaScreen({super.key});
   @override
+  State<QiblaScreen> createState() => _QiblaScreenState();
+}
+
+enum _QiblaStatus { loading, noService, permissionDenied, noSensor, ready }
+
+class _QiblaScreenState extends State<QiblaScreen> {
+  _QiblaStatus status = _QiblaStatus.loading;
+  double? lat, lng;
+  double? heading; // device compass heading, degrees from magnetic north
+  StreamSubscription<CompassEvent>? _compassSub;
+
+  @override
+  void initState() {
+    super.initState();
+    _init();
+  }
+
+  @override
+  void dispose() {
+    _compassSub?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _init() async {
+    setState(() => status = _QiblaStatus.loading);
+
+    final serviceOn = await Geolocator.isLocationServiceEnabled();
+    if (!serviceOn) {
+      setState(() => status = _QiblaStatus.noService);
+      return;
+    }
+
+    var perm = await Geolocator.checkPermission();
+    if (perm == LocationPermission.denied) {
+      perm = await Geolocator.requestPermission();
+    }
+    if (perm == LocationPermission.denied || perm == LocationPermission.deniedForever) {
+      setState(() => status = _QiblaStatus.permissionDenied);
+      return;
+    }
+
+    if (FlutterCompass.events == null) {
+      setState(() => status = _QiblaStatus.noSensor);
+      return;
+    }
+
+    try {
+      final pos = await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(accuracy: LocationAccuracy.medium),
+      ).timeout(const Duration(seconds: 15));
+      if (!mounted) return;
+      setState(() {
+        lat = pos.latitude;
+        lng = pos.longitude;
+        status = _QiblaStatus.ready;
+      });
+      _compassSub = FlutterCompass.events?.listen((event) {
+        if (!mounted || event.heading == null) return;
+        setState(() => heading = event.heading);
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => status = _QiblaStatus.noService);
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final bearing = _qiblaBearing();
     return Scaffold(
       appBar: guestAppBar(context, 'Qibla Direction'),
-      body: ListView(
+      body: switch (status) {
+        _QiblaStatus.loading => const Center(child: CircularProgressIndicator(color: _kGreen)),
+        _QiblaStatus.noService => _message(Icons.location_off, 'Location is turned off', 'Turn on Location / GPS for this device, then retry.'),
+        _QiblaStatus.permissionDenied => _message(Icons.location_disabled, 'Location permission needed', 'Qibla direction needs your location to calculate the bearing to Makkah. Allow location access in the app\'s permissions, then retry.'),
+        _QiblaStatus.noSensor => _message(Icons.explore_off, 'No compass sensor found', 'This device does not appear to have a magnetometer, so a live compass direction isn\'t available here.'),
+        _QiblaStatus.ready => _ready(),
+      },
+    );
+  }
+
+  Widget _message(IconData icon, String title, String body) => ListView(
         padding: const EdgeInsets.all(20),
         children: [
-          const Text('Detected location', style: TextStyle(color: Colors.black54, fontSize: 12)),
-          Text(_sampleCity, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-          const SizedBox(height: 24),
-          Center(
-            child: SizedBox(
-              width: 240,
-              height: 240,
-              child: Stack(alignment: Alignment.center, children: [
-                Container(
-                  width: 240,
-                  height: 240,
-                  decoration: BoxDecoration(shape: BoxShape.circle, border: Border.all(color: _kGreen, width: 3)),
-                ),
-                const Positioned(top: 6, child: Text('N', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.black54))),
-                const Positioned(bottom: 6, child: Text('S', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.black54))),
-                const Positioned(left: 10, child: Text('W', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.black54))),
-                const Positioned(right: 10, child: Text('E', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.black54))),
-                Transform.rotate(
-                  angle: bearing * math.pi / 180,
-                  child: const Icon(Icons.navigation, size: 90, color: _kGold),
-                ),
-              ]),
-            ),
-          ),
-          const SizedBox(height: 18),
-          Center(
-            child: Column(children: [
-              Text('${bearing.toStringAsFixed(0)} deg (${_compassPoint(bearing)}) from North', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: _kGreen)),
-              const SizedBox(height: 4),
-              const Text('Direction to the Kaaba, Makkah', style: TextStyle(color: Colors.black54)),
+          const SizedBox(height: 40),
+          Icon(icon, size: 56, color: Colors.black38),
+          const SizedBox(height: 16),
+          Text(title, textAlign: TextAlign.center, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+          const SizedBox(height: 8),
+          Text(body, textAlign: TextAlign.center, style: const TextStyle(color: Colors.black54)),
+          const SizedBox(height: 20),
+          Center(child: ElevatedButton.icon(onPressed: _init, icon: const Icon(Icons.refresh), label: const Text('Retry'))),
+        ],
+      );
+
+  Widget _ready() {
+    final qibla = _qiblaBearing(lat!, lng!);
+    final h = heading;
+    // Arrow angle on screen: how far to rotate the pointer, relative to the
+    // top of the screen, so it points at the Kaaba. If the live heading
+    // isn't available yet, fall back to showing the bearing from north
+    // (phone assumed flat and pointing north) rather than nothing.
+    final arrowAngle = h == null ? qibla : (qibla - h + 360) % 360;
+    return ListView(
+      padding: const EdgeInsets.all(20),
+      children: [
+        const Text('Your location', style: TextStyle(color: Colors.black54, fontSize: 12)),
+        Text('${lat!.toStringAsFixed(4)}, ${lng!.toStringAsFixed(4)}', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+        const SizedBox(height: 24),
+        Center(
+          child: SizedBox(
+            width: 240,
+            height: 240,
+            child: Stack(alignment: Alignment.center, children: [
+              Container(
+                width: 240,
+                height: 240,
+                decoration: BoxDecoration(shape: BoxShape.circle, border: Border.all(color: _kGreen, width: 3)),
+              ),
+              const Positioned(top: 6, child: Text('N', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.black54))),
+              const Positioned(bottom: 6, child: Text('S', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.black54))),
+              const Positioned(left: 10, child: Text('W', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.black54))),
+              const Positioned(right: 10, child: Text('E', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.black54))),
+              AnimatedRotation(
+                turns: arrowAngle / 360,
+                duration: const Duration(milliseconds: 150),
+                child: const Icon(Icons.navigation, size: 90, color: _kGold),
+              ),
             ]),
           ),
-          const SizedBox(height: 24),
-          OutlinedButton.icon(
-            onPressed: () => ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Move the phone in a figure-8 to recalibrate the compass.'))),
-            icon: const Icon(Icons.explore),
-            label: const Text('Recalibrate compass'),
-          ),
-          const SizedBox(height: 16),
-          const Card(
-            child: Padding(
-              padding: EdgeInsets.all(12),
-              child: Text(
-                'This works fully offline once the location is known, and no login is needed. '
-                'This demo uses a fixed sample location; the finished app reads the phone\'s live GPS and compass heading so the arrow rotates as you turn the phone.',
-                style: TextStyle(fontSize: 12.5, color: Colors.black54),
-              ),
+        ),
+        const SizedBox(height: 18),
+        Center(
+          child: Column(children: [
+            Text('${qibla.toStringAsFixed(0)} deg (${_compassPoint(qibla)}) from North', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: _kGreen)),
+            const SizedBox(height: 4),
+            const Text('Direction to the Kaaba, Makkah', style: TextStyle(color: Colors.black54)),
+            if (h == null) ...[
+              const SizedBox(height: 4),
+              const Text('Waiting for compass heading - hold the phone flat and move it in a figure-8 if this stays blank.', style: TextStyle(fontSize: 11.5, color: Colors.black45), textAlign: TextAlign.center),
+            ],
+          ]),
+        ),
+        const SizedBox(height: 24),
+        OutlinedButton.icon(
+          onPressed: () => ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Move the phone in a figure-8 to recalibrate the compass.'))),
+          icon: const Icon(Icons.explore),
+          label: const Text('Recalibrate compass'),
+        ),
+        const SizedBox(height: 16),
+        const Card(
+          child: Padding(
+            padding: EdgeInsets.all(12),
+            child: Text(
+              'Uses your phone\'s live GPS location and compass heading, so the arrow rotates as you turn the phone. No login needed. The bearing is relative to magnetic north; true-north correction (magnetic declination) is not applied, so it can be a few degrees off in some locations.',
+              style: TextStyle(fontSize: 12.5, color: Colors.black54),
             ),
           ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 }
@@ -141,8 +253,11 @@ class CalendarScreen extends StatefulWidget {
 
 class _CalendarScreenState extends State<CalendarScreen> {
   bool urdu = false;
-  DateTime shown = DateTime.parse('2026-09-19');
-  final DateTime today = DateTime.parse('2026-09-19');
+  // Was hardcoded to a fixed sample date (2026-09-19) regardless of the
+  // device's actual date - that was the "wrong current date" bug. Both now
+  // use the device's real current date.
+  late DateTime shown = DateTime(DateTime.now().year, DateTime.now().month, 1);
+  final DateTime today = DateTime.now();
 
   @override
   Widget build(BuildContext context) {

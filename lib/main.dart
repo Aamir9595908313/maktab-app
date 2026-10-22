@@ -203,9 +203,31 @@ class _MaktabAppState extends State<MaktabApp> {
     return MaterialApp(
       title: 'Maktab E Tajushshriah',
       debugShowCheckedModeBanner: false,
+      // themeMode defaults to following the OS; without an explicit
+      // darkTheme, Flutter would otherwise keep using this same light
+      // theme either way, so this alone wasn't the "black field" cause -
+      // that turned out to be Android's own system-level Force Dark
+      // feature (fixed in the CI workflow's AndroidManifest step, see
+      // android:forceDarkAllowed). Still setting brightness explicitly and
+      // giving every field a real white fill + visible border here, so the
+      // look is consistent and deliberate rather than relying on Material
+      // 3 defaults.
+      themeMode: ThemeMode.light,
       theme: ThemeData(
         useMaterial3: true,
-        colorScheme: ColorScheme.fromSeed(seedColor: kGreen, secondary: kGold),
+        brightness: Brightness.light,
+        scaffoldBackgroundColor: const Color(0xFFF7F8F5),
+        colorScheme: ColorScheme.fromSeed(seedColor: kGreen, secondary: kGold, brightness: Brightness.light),
+        inputDecorationTheme: InputDecorationTheme(
+          filled: true,
+          fillColor: Colors.white,
+          border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: Color(0xFFBFC7BC))),
+          enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: Color(0xFFBFC7BC))),
+          focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: kGreen, width: 2)),
+          labelStyle: const TextStyle(color: Colors.black54),
+          hintStyle: const TextStyle(color: Colors.black38),
+        ),
+        cardTheme: const CardThemeData(color: Colors.white),
       ),
       home: FutureBuilder<void>(
         future: _init,
@@ -269,7 +291,34 @@ class _ConnectErrorScreen extends StatelessWidget {
 }
 
 // ---------------- helpers ----------------
-void toast(BuildContext c, String m) => ScaffoldMessenger.of(c).showSnackBar(SnackBar(content: Text(m)));
+void toast(BuildContext c, String m) => ScaffoldMessenger.of(c).showSnackBar(SnackBar(content: Text(m, style: const TextStyle(fontSize: 13.5))));
+
+// Compact, consistently-styled inline message strip for errors/warnings/
+// info, instead of a bare red Text() at whatever the surrounding default
+// font size happens to be (the inconsistent-size, too-much-space problem
+// flagged in testing). Small icon + colored tint + tight padding, one line
+// of visual hierarchy instead of plain red text competing with the form.
+enum MsgKind { error, warning, info, success }
+
+Widget msgBox(String text, {MsgKind kind = MsgKind.error}) {
+  if (text.isEmpty) return const SizedBox.shrink();
+  final (Color bg, Color fg, IconData icon) = switch (kind) {
+    MsgKind.error => (const Color(0xFFFDEAEA), const Color(0xFFB3261E), Icons.error_outline),
+    MsgKind.warning => (const Color(0xFFFFF4DE), const Color(0xFF8A5A00), Icons.warning_amber_rounded),
+    MsgKind.info => (const Color(0xFFE8F0FE), const Color(0xFF1A4FAD), Icons.info_outline),
+    MsgKind.success => (const Color(0xFFE6F4EA), kGreen, Icons.check_circle_outline),
+  };
+  return Container(
+    margin: const EdgeInsets.only(bottom: 10),
+    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+    decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(6)),
+    child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Icon(icon, size: 16, color: fg),
+      const SizedBox(width: 6),
+      Expanded(child: Text(text, style: TextStyle(fontSize: 12.5, color: fg, height: 1.3))),
+    ]),
+  );
+}
 
 // onTap is optional: dashboards that only show a number (e.g. "Average
 // attendance") leave it out, while anything that's really a shortcut to a
@@ -303,9 +352,12 @@ Widget grid(List<Widget> tiles) => GridView.count(
       children: tiles,
     );
 
-Widget h(String t) => Padding(
+Widget h(String t, {IconData? icon}) => Padding(
       padding: const EdgeInsets.fromLTRB(0, 14, 0, 6),
-      child: Text(t, style: const TextStyle(fontSize: 17, fontWeight: FontWeight.bold, color: kGreen)),
+      child: Row(children: [
+        if (icon != null) ...[Icon(icon, size: 18, color: kGreen), const SizedBox(width: 6)],
+        Expanded(child: Text(t, style: const TextStyle(fontSize: 17, fontWeight: FontWeight.bold, color: kGreen))),
+      ]),
     );
 
 Widget page(List<Widget> children) => ListView(padding: const EdgeInsets.all(14), children: children);
@@ -475,7 +527,8 @@ class _GuestHomeState extends State<GuestHome> {
             const SizedBox(height: 24),
             if (!step2) ...[
               field(phone, 'Mobile number', number: true),
-              if (err.isNotEmpty) Padding(padding: const EdgeInsets.only(bottom: 8), child: Text(err, style: const TextStyle(color: Colors.red))),
+              const SizedBox(height: 4),
+              msgBox(err),
               SizedBox(
                 width: double.infinity,
                 child: ElevatedButton(
@@ -490,7 +543,8 @@ class _GuestHomeState extends State<GuestHome> {
               Text('OTP sent to +91 ${digits(phone.text)}', textAlign: TextAlign.center),
               const SizedBox(height: 10),
               field(otp, 'Enter OTP', number: true),
-              if (err.isNotEmpty) Text(err, style: const TextStyle(color: Colors.red)),
+              const SizedBox(height: 4),
+              msgBox(err),
               SizedBox(
                 width: double.infinity,
                 child: ElevatedButton(
@@ -714,9 +768,28 @@ class _ShellState extends State<Shell> {
               leading: const Icon(Icons.logout),
               title: const Text('Logout'),
               onTap: () async {
-                Navigator.pop(context);
-                await sb.auth.signOut();
+                final nav = Navigator.of(context);
+                nav.pop(); // close the drawer
+                // Clear local session first and unconditionally: this used
+                // to await sb.auth.signOut() with no try/catch or timeout,
+                // so on any network hiccup the whole tap silently did
+                // nothing and the user stayed logged in with no feedback.
+                // The remote sign-out is still attempted (so the server
+                // session is invalidated too when possible), but a slow or
+                // failed network call can no longer block the local logout.
                 st.logout();
+                // Drop any screens pushed via Navigator.push (Roles,
+                // student details, etc.) so the back button can't walk
+                // back into authenticated screens after logging out.
+                nav.popUntil((r) => r.isFirst);
+                try {
+                  await sb.auth.signOut().timeout(const Duration(seconds: 8));
+                } catch (_) {
+                  // Local session is already cleared above; a failed
+                  // remote sign-out just means the old server-side session
+                  // lingers until it expires on its own - not visible to
+                  // this user, who is already back at the login screen.
+                }
               },
             ),
           ]),
@@ -771,9 +844,14 @@ class KidHome extends StatelessWidget {
         tile('Attendance Sep', '${st.attPct(k)}%'),
         tile('Syllabus', p.label ?? '${p.n} of ${p.total} (${p.pct}%)'),
         tile('Plan status', p.behind > 0 ? 'Behind ${p.behind} days' : 'On pace', color: p.behind > 0 ? Colors.red : Colors.green),
-        tile('Latest result', '60 / 70 - rank 3'),
+        // There is no exam/marks feature anywhere in the app yet to source
+        // a real result from - showing a fixed "60/70 - rank 3" here would
+        // be exactly the kind of fabricated statistic flagged in testing.
+        // Being honest that this isn't wired up yet, rather than a fake
+        // number, until a real Exams/Results feature exists.
+        tile('Latest result', 'Not recorded yet'),
       ]),
-      if (st.showFees) h('Fees (month-wise)'),
+      if (st.showFees) h('Fees (month-wise)', icon: Icons.payments),
       if (st.showFees)
         Wrap(spacing: 6, children: [
           for (final m in st.feeMonths(k))
@@ -797,7 +875,7 @@ class KidAttendance extends StatelessWidget {
     if (k == null) return page([const Text('No child is linked to this number.')]);
     return page([
       KidPicker(),
-      h('Attendance - ${k.name}'),
+      h('Attendance - ${k.name}', icon: Icons.event_available),
       grid([tile('Attendance Sep', '${st.attPct(k)}%'), tile('Absent days', '${k.absent.length}')]),
       h('Absent days'),
       if (k.absent.isEmpty) const Text('None'),
@@ -1046,7 +1124,7 @@ class KidDocs extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return page([
-      h('Student documents'),
+      h('Student documents', icon: Icons.badge),
       ...st.kids().map((k) => Card(
             child: ListTile(
               leading: const Icon(Icons.badge),
@@ -1105,7 +1183,7 @@ class _ComplaintsViewState extends State<ComplaintsView> {
     if (u.role == 'parent') {
       final mine = st.complaints.where((c) => c.phone == u.phone).toList();
       return page([
-        h('New complaint'),
+        h('New complaint', icon: Icons.report_problem),
         DropdownButtonFormField<String>(
           value: to,
           decoration: const InputDecoration(labelText: 'Send to', border: OutlineInputBorder()),
@@ -1139,7 +1217,7 @@ class _ComplaintsViewState extends State<ComplaintsView> {
     }
     final inbox = st.complaints.where((c) => c.to == u.role).toList();
     return page([
-      h('Complaints inbox'),
+      h('Complaints inbox', icon: Icons.report_problem),
       const Text('You see only complaints addressed to your level. A complaint about a teacher sent to the Admin is hidden from the teacher.'),
       if (inbox.isEmpty) const Text('Nothing here.'),
       ...inbox.map((c) => card(c, true)),
@@ -1171,8 +1249,8 @@ class _StaffHomeState extends State<StaffHome> {
           tile('Madrasas', '${st.madrasas.length}', onTap: () => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const MasterDataView()))),
           tile('Students', '${st.students.length}', onTap: () => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const StudentsView()))),
           tile('Teachers', '${st.teachers().length}', onTap: () => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const TeachersView()))),
-          tile('Average attendance', '86%'),
-          tile('Average syllabus', '68%'),
+          tile('Average attendance', '${st.avgAttAll()}%'),
+          tile('Average syllabus', '${st.avgSylAll()}%'),
           tile('Leave requests', '$pendingLeave pending', onTap: () => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const TeachersView()))),
           tile('Complaints open', '$open', onTap: () => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const ComplaintsView()))),
           tile('Committee members', '${st.committee().length}', onTap: () => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const CommitteeAdmin()))),
@@ -1283,7 +1361,7 @@ class _TeacherSelfState extends State<TeacherSelf> {
     final u = st.user!;
     final mine = st.leaves.where((l) => l.teacher == u.name).toList();
     return page([
-      h('My attendance - ${nice(kToday)}'),
+      h('My attendance - ${nice(kToday)}', icon: Icons.event_available),
       const Text('This is one record for the teacher, even when teaching at more than one madrasa.', style: TextStyle(fontSize: 12, color: Colors.black54)),
       Card(child: ListTile(title: Text(st.teacherAtt[u.name] ?? 'Not marked'), subtitle: const Text('Tap Present or Absent for today'))),
       Row(children: [
@@ -1330,7 +1408,7 @@ class StudentAttendanceMark extends StatelessWidget {
     // Deactivated students never appear here, so they can't be marked and never get an alert.
     final list = st.myStudents().where((s) => s.status == 'Active').toList();
     return page([
-      h('Mark attendance - ${st.teacherMadrasa} - ${nice(kToday)}'),
+      h('Mark attendance - ${st.teacherMadrasa} - ${nice(kToday)}', icon: Icons.event_available),
       const Text('Tap Present or Absent for each student, then Final Submit once. Absent students\' parents get a WhatsApp alert only after Final Submit.', style: TextStyle(color: Colors.black54, fontSize: 12.5)),
       const SizedBox(height: 8),
       ...list.map((s) {
@@ -1426,7 +1504,7 @@ class _StudentsViewState extends State<StudentsView> {
     final ready = list.where((s) => st.eligible(s)).toList();
     regMadrasa ??= canPickMadrasa ? st.activeMadrasaNames.first : st.teacherMadrasa;
     return page([
-      h('Add new student'),
+      h('Add new student', icon: Icons.school),
       field(name, 'Student name *'),
       if (canPickMadrasa) ...[
         DropdownButtonFormField<String>(
@@ -1477,7 +1555,7 @@ class _StudentsViewState extends State<StudentsView> {
         },
         child: const Text('Save student'),
       ),
-      h('Pass and promote'),
+      h('Pass and promote', icon: Icons.school),
       const Text('Classes 1-3: eligible once every page of the book is Completed. Class 4+: eligible once every chapter is Completed.'),
       if (ready.isEmpty) const Text('No student is eligible yet. Mark pages/chapters complete in Syllabus.'),
       ...ready.map((s) => Card(
@@ -1524,7 +1602,7 @@ class ApprovalsView extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return page([
-      h('Pending registrations'),
+      h('Pending registrations', icon: Icons.school),
       if (st.pending.isEmpty) const Text('No pending registrations.'),
       for (var i = 0; i < st.pending.length; i++)
         Card(
@@ -1547,9 +1625,9 @@ class TeachersView extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return page([
-      h('Teacher attendance - ${nice(kToday)}'),
+      h('Teacher attendance - ${nice(kToday)}', icon: Icons.groups),
       ...st.teacherAtt.entries.map((e) => Card(child: ListTile(title: Text(e.key), trailing: Text(e.value)))),
-      h('Teacher leave requests'),
+      h('Teacher leave requests', icon: Icons.event_busy),
       if (st.leaves.isEmpty) const Text('No leave requests yet. Log in as Teacher and apply for leave.'),
       ...st.leaves.map((l) => Card(
             child: Padding(
@@ -1587,7 +1665,7 @@ class FeesAdmin extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return page([
-      h('Fees (month-wise)'),
+      h('Fees (month-wise)', icon: Icons.payments),
       grid([for (final m in ['Jun', 'Jul', 'Aug', 'Sep']) tile('$m 2026', '${st.completeCount(m)} of ${st.totalFor(m)} complete')]),
       const Text('Tap a due month to record a payment of Rs. 200.'),
       ...st.inBranch('Hanfi').where((s) => s.status == 'Active').map((s) => Card(
@@ -1623,7 +1701,7 @@ class _TeacherMadrasasAdminState extends State<TeacherMadrasasAdmin> {
   Widget build(BuildContext context) {
     final teachers = st.users.values.where((u) => u.role == 'teacher').toList();
     return page([
-      h('Teacher madrasas and classes'),
+      h('Teacher madrasas and classes', icon: Icons.groups),
       ...teachers.map((t) => Card(
             child: ListTile(
               title: Text(t.name),
@@ -1683,7 +1761,7 @@ class _SuperSyllabusState extends State<SuperSyllabus> {
   Widget build(BuildContext context) {
     final chapterClasses = st.classDefs.values.where((c) => !c.pageBased).toList();
     return page([
-      h('Classes and syllabus'),
+      h('Classes and syllabus', icon: Icons.menu_book),
       ...st.classDefs.values.map((cd) => Card(
             child: Padding(
               padding: const EdgeInsets.all(12),
@@ -1739,7 +1817,7 @@ class _ReportsViewState extends State<ReportsView> {
   Widget build(BuildContext context) {
     final rows = st.reports.where((r) => r.name.toLowerCase().contains(q.toLowerCase())).toList();
     return page([
-      h('Reports centre'),
+      h('Reports centre', icon: Icons.assessment),
       TextField(decoration: const InputDecoration(labelText: 'Search report name', border: OutlineInputBorder()), onChanged: (v) => setState(() => q = v)),
       const SizedBox(height: 8),
       SingleChildScrollView(
@@ -1784,7 +1862,7 @@ class _RolesViewState extends State<RolesView> {
   Widget build(BuildContext context) {
     final names = st.customRoles.keys.toList();
     return page([
-      h('Create role'),
+      h('Create role', icon: Icons.admin_panel_settings),
       field(roleName, 'Role name (for example Accountant)'),
       const Text('Tick the screens this role can see and add/edit:'),
       ...screens.map((s) => CheckboxListTile(
@@ -1809,9 +1887,9 @@ class _RolesViewState extends State<RolesView> {
         },
         child: const Text('Save role'),
       ),
-      h('Existing custom roles'),
+      h('Existing custom roles', icon: Icons.admin_panel_settings),
       ...names.map((n) => Card(child: ListTile(title: Text(n), subtitle: Text('Screens: ${(st.customRoles[n] ?? <String>{}).join(', ')}')))),
-      h('Give role to a person'),
+      h('Give role to a person', icon: Icons.admin_panel_settings),
       field(aPhone, 'Mobile number', number: true),
       field(aName, 'Name'),
       DropdownButtonFormField<String>(
@@ -1896,7 +1974,7 @@ class CommitteeDashboard extends StatelessWidget {
   Widget build(BuildContext context) {
     final totalActive = st.students.where((s) => s.status == 'Active').length;
     return page([
-      h('Working Committee dashboard'),
+      h('Working Committee dashboard', icon: Icons.dashboard),
       Card(
         child: ListTile(
           leading: const CircleAvatar(backgroundColor: Color(0xFFEEF4E8), child: Icon(Icons.groups, color: kGreen)),
@@ -2075,10 +2153,16 @@ class StudentDetail extends StatelessWidget {
               }),
           ]),
           page([
-            Card(child: ListTile(title: Text('Jun 96% - Jul 92% - Aug 90% - Sep ${st.attPct(s)}%'), subtitle: const Text('Attendance by month'))),
+            // Only this app-tracked month has a real number behind it; the
+            // other months and the "Monthly Test" card below were
+            // fabricated sample figures with no data model backing them -
+            // replaced with an honest "not recorded" note rather than
+            // invented statistics (see the dashboard-stats fix for the
+            // same issue elsewhere).
+            Card(child: ListTile(title: Text('This month: ${st.attPct(s)}%'), subtitle: const Text('Attendance - prior months not tracked yet'))),
           ]),
           page([
-            const Card(child: ListTile(title: Text('Monthly Test Sep 2026'), subtitle: Text('60 / 70 - 85.7% - rank 3'))),
+            const Card(child: ListTile(title: Text('Exam results'), subtitle: Text('Not recorded yet - no exam/marks feature exists in the app yet'))),
             const Text('Fees, teachers, phone numbers, address, Aadhaar and complaints are never shown to committee members.'),
           ]),
           CoursesTabBody(s: s),
@@ -2181,7 +2265,7 @@ class _MasterDataViewState extends State<MasterDataView> {
   @override
   Widget build(BuildContext context) {
     return page([
-      h('Madrasa / Branch'),
+      h('Madrasa / Branch', icon: Icons.account_balance),
       ...st.madrasas.map((m) => Card(
             child: SwitchListTile(
               title: Text(m.name),
@@ -2208,10 +2292,10 @@ class _MasterDataViewState extends State<MasterDataView> {
               },
         child: busy ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2)) : const Text('Add Madrasa / Branch'),
       ),
-      h('Classes'),
+      h('Classes', icon: Icons.menu_book),
       const Text('Classes and their syllabus (pages / chapters) are managed from the "Classes & Syllabus" screen.', style: TextStyle(color: Colors.black54, fontSize: 12.5)),
       ...st.classDefs.values.map((cd) => Card(child: ListTile(title: Text(cd.name), subtitle: Text(cd.pageBased ? 'Book: ${cd.bookName} - ${cd.totalPages} pages' : 'Chapter-based'))),),
-      h('Teachers'),
+      h('Teachers', icon: Icons.groups),
       ...st.teachers().map((t) => Card(
             child: SwitchListTile(
               title: Text(t.name),
@@ -2221,13 +2305,13 @@ class _MasterDataViewState extends State<MasterDataView> {
             ),
           )),
       const Padding(padding: EdgeInsets.only(top: 4), child: Text('Add a new teacher from "Teacher Madrasas" (assign) or give them a login via Roles.', style: TextStyle(color: Colors.black54, fontSize: 12.5))),
-      h('Users and Roles'),
+      h('Users and Roles', icon: Icons.admin_panel_settings),
       ElevatedButton.icon(
         onPressed: () => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const RolesView())),
         icon: const Icon(Icons.admin_panel_settings),
         label: const Text('Open Roles & Permissions'),
       ),
-      h('Courses'),
+      h('Courses', icon: Icons.auto_stories),
       ...st.courses.map((c) => Card(
             child: SwitchListTile(
               title: Text(c.name),
@@ -2303,7 +2387,7 @@ class CourseApprovalsView extends StatelessWidget {
       }
     }
     return page([
-      h('Course completion requests'),
+      h('Course completion requests', icon: Icons.verified),
       const Text('Teachers submit a course as complete for a student here; Admin or Super Admin approves or rejects it. Approved courses show a green "Completed" badge in the Courses tab and the Parent Course Progress tab.', style: TextStyle(color: Colors.black54, fontSize: 12.5)),
       const SizedBox(height: 8),
       if (rows.isEmpty) const Text('Nothing is waiting for approval right now.'),
@@ -2325,7 +2409,7 @@ class _FeeQrAdminState extends State<FeeQrAdmin> {
   @override
   Widget build(BuildContext context) {
     return page([
-      h('Fee payment QR code'),
+      h('Fee payment QR code', icon: Icons.qr_code),
       Card(
         child: ListTile(
           leading: const Icon(Icons.qr_code_2),
@@ -2342,7 +2426,7 @@ class _FeeQrAdminState extends State<FeeQrAdmin> {
         icon: const Icon(Icons.upload_file),
         label: const Text('Upload / replace QR code'),
       ),
-      h('Monthly fee reminder (1st of every month)'),
+      h('Monthly fee reminder (1st of every month)', icon: Icons.payments),
       const Text(
         'This runs automatically on the 1st once a real WhatsApp Business API provider (for example MSG91) is configured per the migration plan. Use the button below to simulate one run now.',
         style: TextStyle(color: Colors.black54, fontSize: 12.5),

@@ -28,13 +28,37 @@ jobs:
           flutter create --org com.faizeraza --project-name maktab_app --platforms=android /tmp/scaffold
           cp -r /tmp/scaffold/android ./android
           sed -i 's/android:label="[^"]*"/android:label="Maktab Madrasa"/' android/app/src/main/AndroidManifest.xml
-          # The app now calls Supabase over the network (OTP login, data
-          # sync), so the release build must declare internet access
-          # explicitly - without this the app would build fine but every
-          # network call would silently fail on a real device.
-          if ! grep -q 'android.permission.INTERNET' android/app/src/main/AndroidManifest.xml; then
-            sed -i '0,/<application/s//<uses-permission android:name="android.permission.INTERNET"\/>\n    <application/' android/app/src/main/AndroidManifest.xml
-          fi
+          python3 - <<'PYEOF'
+          path = "android/app/src/main/AndroidManifest.xml"
+          with open(path) as f:
+              xml = f.read()
+
+          # The app calls Supabase over the network (OTP login, data sync)
+          # and reads GPS location (Qibla direction), so the release build
+          # must declare both explicitly - without this the app would build
+          # fine but the relevant feature would silently fail on a real
+          # device, or the OS would never even show a permission prompt.
+          perms = [
+              "android.permission.INTERNET",
+              "android.permission.ACCESS_FINE_LOCATION",
+              "android.permission.ACCESS_COARSE_LOCATION",
+          ]
+          insert = "".join(f'    <uses-permission android:name="{p}"/>\n' for p in perms if p not in xml)
+          if insert:
+              xml = xml.replace("<application", insert + "    <application", 1)
+
+          # Many Android devices/skins have a system-level "Force Dark"
+          # feature that auto-inverts colors in apps that don't explicitly
+          # support dark mode - this is what was making every text field
+          # render with a black background on some phones even though the
+          # app's own theme is a normal light theme. Opting out at the
+          # manifest level stops the OS from doing that.
+          if "forceDarkAllowed" not in xml:
+              xml = xml.replace("<application", '<application\n        android:forceDarkAllowed="false"', 1)
+
+          with open(path, "w") as f:
+              f.write(xml)
+          PYEOF
       - run: flutter pub get
       - run: flutter build apk --release
       - uses: actions/upload-artifact@v4

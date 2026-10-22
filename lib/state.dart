@@ -899,6 +899,28 @@ class AppState extends ChangeNotifier {
     return (t / l.length).round();
   }
 
+  // Same as avgAtt/avgSyl above but across every madrasa, for the Super
+  // Admin dashboard - that tile used to show a hardcoded "86%"/"68%"
+  // regardless of the real data.
+  int avgAttAll() {
+    if (students.isEmpty) return 0;
+    var t = 0;
+    for (final s in students) {
+      t += attPct(s);
+    }
+    return (t / students.length).round();
+  }
+
+  int avgSylAll() {
+    if (students.isEmpty) return 0;
+    var t = 0;
+    for (final s in students) {
+      final cd = classDefs[s.cls]!;
+      t += cd.pageBased ? pageProg(s).pct : chapterProg(s).pct;
+    }
+    return (t / students.length).round();
+  }
+
   // ---------- teacher: assign to another madrasa ----------
   String? assignTeacherMadrasa(String teacherName, String madrasa, List<int> classIds) {
     if (madrasa.isEmpty || classIds.isEmpty) return 'Choose a madrasa and at least one class';
