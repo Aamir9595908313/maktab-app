@@ -2316,7 +2316,15 @@ class _MasterDataViewState extends State<MasterDataView> {
 
   @override
   Widget build(BuildContext context) {
-    return page([
+    // Toggling a switch below updates `st` (the shared app state) and
+    // calls notifyListeners(), but this screen's own setState() is only
+    // triggered by the Add buttons - without this AnimatedBuilder the
+    // switch's real new value only became visible once something else
+    // (like clicking Add Madrasa) happened to force a rebuild, which is
+    // exactly the delayed-toggle behavior that was reported.
+    return AnimatedBuilder(
+      animation: st,
+      builder: (context, _) => page([
       h('Madrasa / Branch', icon: Icons.account_balance),
       ...st.madrasas.map((m) => Card(
             child: SwitchListTile(
@@ -2394,7 +2402,8 @@ class _MasterDataViewState extends State<MasterDataView> {
               },
         child: busy ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2)) : const Text('Add course'),
       ),
-    ]);
+      ]),
+    );
   }
 }
 
