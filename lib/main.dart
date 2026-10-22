@@ -324,12 +324,20 @@ Widget msgBox(String text, {MsgKind kind = MsgKind.error}) {
 // attendance") leave it out, while anything that's really a shortcut to a
 // list screen (Madrasas, Students, Teachers...) passes one so the tile is
 // an actual way to get there, not just a static stat card.
-Widget tile(String label, String value, {Color? color, VoidCallback? onTap}) {
+Widget tile(String label, String value, {Color? color, VoidCallback? onTap, IconData? icon}) {
   final card = Card(
     child: Padding(
       padding: const EdgeInsets.all(10),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisAlignment: MainAxisAlignment.center, children: [
         Row(children: [
+          if (icon != null) ...[
+            Container(
+              padding: const EdgeInsets.all(6),
+              decoration: BoxDecoration(color: kGreen.withOpacity(0.1), borderRadius: BorderRadius.circular(8)),
+              child: Icon(icon, size: 16, color: kGreen),
+            ),
+            const SizedBox(width: 8),
+          ],
           Expanded(child: Text(label, style: const TextStyle(fontSize: 11, color: Colors.black54))),
           if (onTap != null) const Icon(Icons.chevron_right, size: 14, color: Colors.black38),
         ]),
@@ -1272,14 +1280,14 @@ class _StaffHomeState extends State<StaffHome> {
       return page([
         banner(),
         grid([
-          tile('Madrasas', '${st.madrasas.length}', onTap: () => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const MasterDataView()))),
-          tile('Students', '${st.students.length}', onTap: () => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const StudentsView()))),
-          tile('Teachers', '${st.teachers().length}', onTap: () => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const TeachersView()))),
-          tile('Average attendance', '${st.avgAttAll()}%'),
-          tile('Average syllabus', '${st.avgSylAll()}%'),
-          tile('Leave requests', '$pendingLeave pending', onTap: () => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const TeachersView()))),
-          tile('Complaints open', '$open', onTap: () => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const ComplaintsView()))),
-          tile('Committee members', '${st.committee().length}', onTap: () => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const CommitteeAdmin()))),
+          tile('Madrasas', '${st.madrasas.length}', icon: Icons.account_balance, onTap: () => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const MasterDataView()))),
+          tile('Students', '${st.students.length}', icon: Icons.groups, onTap: () => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const StudentsView()))),
+          tile('Teachers', '${st.teachers().length}', icon: Icons.co_present, onTap: () => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const TeachersView()))),
+          tile('Average attendance', '${st.avgAttAll()}%', icon: Icons.event_available),
+          tile('Average syllabus', '${st.avgSylAll()}%', icon: Icons.menu_book),
+          tile('Leave requests', '$pendingLeave pending', icon: Icons.event_busy, onTap: () => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const TeachersView()))),
+          tile('Complaints open', '$open', icon: Icons.report_problem, onTap: () => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const ComplaintsView()))),
+          tile('Committee members', '${st.committee().length}', icon: Icons.diversity_3, onTap: () => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const CommitteeAdmin()))),
         ]),
         h('Post common announcement (all madrasas, all roles)'),
         field(title, 'Title'),
@@ -1314,12 +1322,12 @@ class _StaffHomeState extends State<StaffHome> {
       return page([
         banner(),
         grid([
-          tile('Students', '${st.inBranch('Hanfi').length}', onTap: () => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const StudentsView()))),
-          tile('Teachers today', '$present present, $onLeave on leave', onTap: () => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const TeachersView()))),
-          tile('Pending registrations', '${st.pending.length}', onTap: () => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const ApprovalsView()))),
-          tile('Leave requests', '$pendingLeave pending', onTap: () => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const TeachersView()))),
-          tile('Fees Sep', '${st.completeCount('Sep')} of ${st.totalFor('Sep')} complete', onTap: () => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const FeesAdmin()))),
-          tile('Complaints open', '$open', onTap: () => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const ComplaintsView()))),
+          tile('Students', '${st.inBranch('Hanfi').length}', icon: Icons.groups, onTap: () => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const StudentsView()))),
+          tile('Teachers today', '$present present, $onLeave on leave', icon: Icons.co_present, onTap: () => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const TeachersView()))),
+          tile('Pending registrations', '${st.pending.length}', icon: Icons.how_to_reg, onTap: () => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const ApprovalsView()))),
+          tile('Leave requests', '$pendingLeave pending', icon: Icons.event_busy, onTap: () => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const TeachersView()))),
+          tile('Fees Sep', '${st.completeCount('Sep')} of ${st.totalFor('Sep')} complete', icon: Icons.payments, onTap: () => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const FeesAdmin()))),
+          tile('Complaints open', '$open', icon: Icons.report_problem, onTap: () => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const ComplaintsView()))),
         ]),
         h('Ready to promote'),
         Text('${st.students.where((s) => st.eligible(s)).length} student(s)'),
@@ -1338,10 +1346,10 @@ class _StaffHomeState extends State<StaffHome> {
           ),
         ),
       grid([
-        tile('My attendance', st.teacherAtt[u.name] ?? 'Not marked'),
-        tile('Students (${st.teacherMadrasa})', '${st.inBranch(st.teacherMadrasa).length}'),
-        tile('Ready to promote', '${st.students.where((s) => st.eligible(s)).length}'),
-        tile('Complaints open', '$open'),
+        tile('My attendance', st.teacherAtt[u.name] ?? 'Not marked', icon: Icons.event_available),
+        tile('Students (${st.teacherMadrasa})', '${st.inBranch(st.teacherMadrasa).length}', icon: Icons.groups),
+        tile('Ready to promote', '${st.students.where((s) => st.eligible(s)).length}', icon: Icons.trending_up),
+        tile('Complaints open', '$open', icon: Icons.report_problem),
       ]),
       const Text('Use the menu (top left) to open Attendance, Syllabus and more.'),
     ]);
