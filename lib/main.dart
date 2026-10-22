@@ -2121,9 +2121,24 @@ class TeachersView extends StatelessWidget {
   const TeachersView({super.key});
   @override
   Widget build(BuildContext context) {
+    // Same reason as MasterDataView/StudentsView: st.teacherAccounts is
+    // only populated once loadTeachers() resolves after this screen first
+    // renders, so without listening to st this screen would need some
+    // unrelated rebuild to ever actually show the real teachers.
+    return AnimatedBuilder(animation: st, builder: (context, _) => _body(context));
+  }
+
+  Widget _body(BuildContext context) {
     return page([
       h('Teacher attendance - ${nice(kToday)}', icon: Icons.groups),
-      ...st.teacherAtt.entries.map((e) => Card(child: ListTile(title: Text(e.key), trailing: Text(e.value)))),
+      // Was reading st.teacherAtt.entries directly - a hardcoded local demo
+      // map that never had any of the real teachers added through Master
+      // Data in it, so only the original seed name ever showed up here.
+      // The real teacher list is st.teacherAccounts; attendance marking
+      // itself still isn't wired to the database, so "Not marked" is still
+      // just a local default per name until that's built.
+      if (st.teacherAccounts.where((t) => !t.pending).isEmpty) const Text('No teachers yet.', style: TextStyle(color: Colors.black54)),
+      ...st.teacherAccounts.where((t) => !t.pending).map((t) => Card(child: ListTile(title: Text(t.name), subtitle: Text(t.teachMadrasas.join(', ')), trailing: Text(st.teacherAtt[t.name] ?? 'Not marked')))),
       h('Teacher leave requests', icon: Icons.event_busy),
       if (st.leaves.isEmpty) const Text('No leave requests yet. Log in as Teacher and apply for leave.'),
       ...st.leaves.map((l) => Card(
