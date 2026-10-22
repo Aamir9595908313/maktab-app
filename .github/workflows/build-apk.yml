@@ -65,3 +65,20 @@ jobs:
         with:
           name: maktab-app-apk
           path: build/app/outputs/flutter-apk/app-release.apk
+      - name: Publish APK to a GitHub Release
+        # Build artifacts (actions/upload-artifact) are only downloadable
+        # from Azure Blob Storage, which some networks/sandboxes can't
+        # reach. A Release asset is served straight from github.com, so
+        # it's downloadable from anywhere. "latest-apk" is reused/updated
+        # on every push rather than piling up a new release each time.
+        run: |
+          mv build/app/outputs/flutter-apk/app-release.apk maktab-app.apk
+          gh release delete latest-apk --yes || true
+          git tag -f latest-apk
+          git push -f origin latest-apk
+          gh release create latest-apk maktab-app.apk \
+            --title "Maktab App (latest build)" \
+            --notes "Auto-built from commit ${{ github.sha }}" \
+            --latest
+        env:
+          GH_TOKEN: ${{ github.token }}
