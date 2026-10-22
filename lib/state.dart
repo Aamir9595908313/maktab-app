@@ -518,10 +518,12 @@ class AppState extends ChangeNotifier {
     return '${s.name} reactivated.';
   }
 
-  void editStudent(Student s, {String? name, String? parentPhone, String? address}) {
+  void editStudent(Student s, {String? name, String? parentPhone, String? address, String? madrasa, int? cls}) {
     if (name != null && name.trim().isNotEmpty) s.name = name.trim();
     if (parentPhone != null && parentPhone.trim().isNotEmpty) s.parentPhone = parentPhone.trim();
     if (address != null) s.address = address.trim();
+    if (madrasa != null) s.madrasa = madrasa;
+    if (cls != null) s.cls = cls;
     notifyListeners();
   }
 

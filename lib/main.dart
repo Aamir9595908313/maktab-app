@@ -353,7 +353,7 @@ Future<String> reactivateStudentRemote(Student s) async {
   return st.reactivateStudent(s);
 }
 
-Future<String?> editStudentRemote(Student s, {String? name, String? parentPhone, String? address}) async {
+Future<String?> editStudentRemote(Student s, {String? name, String? parentPhone, String? address, String? madrasa, int? cls}) async {
   final patch = <String, Object?>{};
   if (name != null && name.trim().isNotEmpty) patch['name'] = name.trim();
   if (parentPhone != null && parentPhone.trim().isNotEmpty) {
@@ -361,6 +361,16 @@ Future<String?> editStudentRemote(Student s, {String? name, String? parentPhone,
     patch['parent_phone'] = digits(parentPhone);
   }
   if (address != null) patch['address'] = address.trim().isEmpty ? null : address.trim();
+  if (madrasa != null) {
+    final m = st.madrasas.where((x) => x.name == madrasa).toList();
+    if (m.isEmpty || m.first.dbId == null) return 'This Madrasa was not saved to the database yet.';
+    patch['madrasa_id'] = m.first.dbId;
+  }
+  if (cls != null) {
+    final cd = st.classDefs[cls];
+    if (cd?.dbId == null) return 'This class was not saved to the database yet.';
+    patch['class_id'] = cd!.dbId;
+  }
   if (patch.isEmpty) return null;
   if (s.dbId != null) {
     try {
@@ -369,7 +379,7 @@ Future<String?> editStudentRemote(Student s, {String? name, String? parentPhone,
       return 'Could not save. Check your internet connection and try again.';
     }
   }
-  st.editStudent(s, name: name, parentPhone: parentPhone == null ? null : digits(parentPhone), address: address);
+  st.editStudent(s, name: name, parentPhone: parentPhone == null ? null : digits(parentPhone), address: address, madrasa: madrasa, cls: cls);
   return null;
 }
 
@@ -755,6 +765,57 @@ Future<String?> askText(BuildContext c, String title, {String initial = ''}) {
       ],
     ),
   );
+}
+
+// Full edit dialog for a student - name, parent mobile, address, plus the
+// Madrasa/Class dropdowns that were missing entirely before (the only way
+// to fix a student put under the wrong madrasa/class was to delete and
+// re-add them). Stateful so the Madrasa/Class dropdown selections persist
+// while the dialog is open.
+Future<void> editStudentDialog(BuildContext context, Student s) async {
+  final name = TextEditingController(text: s.name);
+  final parent = TextEditingController(text: s.parentPhone);
+  final address = TextEditingController(text: s.address);
+  String madrasa = s.madrasa;
+  int cls = s.cls;
+  final result = await showDialog<bool>(
+    context: context,
+    builder: (ctx) => StatefulBuilder(
+      builder: (ctx, setD) => AlertDialog(
+        title: const Text('Edit student'),
+        content: SingleChildScrollView(
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            TextField(controller: name, decoration: const InputDecoration(labelText: 'Name')),
+            const SizedBox(height: 8),
+            TextField(controller: parent, decoration: const InputDecoration(labelText: 'Parent mobile number'), keyboardType: TextInputType.phone),
+            const SizedBox(height: 8),
+            TextField(controller: address, decoration: const InputDecoration(labelText: 'Address')),
+            const SizedBox(height: 8),
+            DropdownButtonFormField<String>(
+              value: st.madrasas.any((m) => m.name == madrasa) ? madrasa : null,
+              decoration: const InputDecoration(labelText: 'Madrasa / Branch'),
+              items: [for (final m in st.activeMadrasaNames) DropdownMenuItem(value: m, child: Text(m))],
+              onChanged: (v) => setD(() => madrasa = v ?? madrasa),
+            ),
+            const SizedBox(height: 8),
+            DropdownButtonFormField<int>(
+              value: st.classDefs.containsKey(cls) ? cls : null,
+              decoration: const InputDecoration(labelText: 'Class'),
+              items: [for (final e in st.classDefs.entries) DropdownMenuItem(value: e.key, child: Text(e.value.name))],
+              onChanged: (v) => setD(() => cls = v ?? cls),
+            ),
+          ]),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          ElevatedButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Save')),
+        ],
+      ),
+    ),
+  );
+  if (result != true) return;
+  final e = await editStudentRemote(s, name: name.text, parentPhone: parent.text, address: address.text, madrasa: madrasa, cls: cls);
+  if (context.mounted) toast(context, e ?? 'Student updated.');
 }
 
 Widget field(TextEditingController c, String label, {bool number = false, int lines = 1}) => Padding(
@@ -2004,22 +2065,7 @@ class _StudentsViewState extends State<StudentsView> {
                 Padding(
                   padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
                   child: Wrap(alignment: WrapAlignment.end, spacing: 4, children: [
-                    if (canDeactivate)
-                      TextButton(
-                        onPressed: () async {
-                          final n = await askText(context, 'Student name', initial: s.name);
-                          if (n == null) return;
-                          if (!context.mounted) return;
-                          final p = await askText(context, 'Parent mobile number', initial: s.parentPhone);
-                          if (p == null) return;
-                          if (!context.mounted) return;
-                          final a = await askText(context, 'Address', initial: s.address);
-                          if (a == null) return;
-                          final e = await editStudentRemote(s, name: n, parentPhone: p, address: a);
-                          if (context.mounted && e != null) toast(context, e);
-                        },
-                        child: const Text('Edit'),
-                      ),
+                    if (canDeactivate) TextButton(onPressed: () => editStudentDialog(context, s), child: const Text('Edit')),
                     if (canSeeAadhaar) TextButton(onPressed: () => toast(context, 'Demo: Aadhaar card opens here (view is logged)'), child: const Text('View Aadhaar')),
                     if (canDeactivate && s.status == 'Active')
                       TextButton(
