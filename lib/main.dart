@@ -3157,10 +3157,56 @@ class StudentAttendanceMark extends StatelessWidget {
     }
     Widget studentTile(Student s) {
       final v = st.todayAtt[s.id] ?? 'P';
+      final cd = st.classDefs[s.cls]!;
+      // Lets the teacher log today's syllabus page/chapter right here while
+      // marking attendance, instead of having to leave this screen and find
+      // the student again in the separate Syllabus tab. Reuses the same
+      // markPageDialog/tickChapterDialog already used there, so progress
+      // logged here shows up identically in Syllabus.
+      Widget progressRow;
+      if (cd.pageBased) {
+        final cur = st.currentPageNo(s);
+        progressRow = cur == null
+            ? const Text('All pages complete', style: TextStyle(fontSize: 12.5, color: Colors.green))
+            : Row(children: [
+                Text('Page $cur of ${cd.totalPages}', style: const TextStyle(fontSize: 12.5, color: Colors.black54)),
+                IconButton(
+                  icon: const Icon(Icons.add_circle, size: 20, color: kGreen),
+                  tooltip: 'Mark page $cur complete',
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(),
+                  onPressed: () => markPageDialog(context, s, cur),
+                ),
+              ]);
+      } else {
+        final plan = st.chapterPlan(s);
+        var nextIdx = -1;
+        for (var i = 0; i < plan.length; i++) {
+          if (plan[i].done == null) {
+            nextIdx = i;
+            break;
+          }
+        }
+        progressRow = nextIdx == -1
+            ? const Text('All chapters complete', style: TextStyle(fontSize: 12.5, color: Colors.green))
+            : Row(children: [
+                Flexible(child: Text('Next: ${plan[nextIdx].title}', style: const TextStyle(fontSize: 12.5, color: Colors.black54), overflow: TextOverflow.ellipsis)),
+                IconButton(
+                  icon: const Icon(Icons.add_circle, size: 20, color: kGreen),
+                  tooltip: 'Mark chapter complete',
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(),
+                  onPressed: () => tickChapterDialog(context, s, nextIdx),
+                ),
+              ]);
+      }
       return Card(
         child: ListTile(
           title: Text(s.name),
-          subtitle: Text(st.className(s.cls)),
+          subtitle: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(st.className(s.cls)),
+            progressRow,
+          ]),
           trailing: Row(mainAxisSize: MainAxisSize.min, children: [
             OutlinedButton(
               style: OutlinedButton.styleFrom(backgroundColor: v == 'P' ? Colors.green : null, foregroundColor: v == 'P' ? Colors.white : Colors.green),
