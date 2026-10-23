@@ -3180,21 +3180,30 @@ class StudentAttendanceMark extends StatelessWidget {
 
     return page([
       h('Mark attendance - ${st.teacherMadrasa} - ${nice(kToday)}', icon: Icons.event_available),
-      const Text('Tap Present or Absent for each student, then Final Submit once. Absent students\' parents get a WhatsApp alert only after Final Submit.', style: TextStyle(color: Colors.black54, fontSize: 12.5)),
+      const Text(
+        'Tap Present or Absent, then Final Submit for that batch once its session is over. Each batch has its own Final Submit - submitting Morning never touches Afternoon or Evening, so a batch whose session hasn\'t happened yet is left alone instead of being marked. Absent students\' parents get a WhatsApp alert only after that batch\'s Final Submit.',
+        style: TextStyle(color: Colors.black54, fontSize: 12.5),
+      ),
       const SizedBox(height: 8),
       for (final b in kBatches)
         if (groups[b]!.isNotEmpty) ...[
           h('$b batch (${groups[b]!.length})'),
           ...groups[b]!.map(studentTile),
+          const SizedBox(height: 4),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: ElevatedButton(
+              onPressed: () async {
+                final n = await submitAttRemote(groups[b]!);
+                if (context.mounted) {
+                  toast(context, '$b batch Final Submitted. $n absence WhatsApp alert(s) sent to parents.');
+                }
+              },
+              child: Text('Final Submit - $b batch'),
+            ),
+          ),
+          const SizedBox(height: 16),
         ],
-      const SizedBox(height: 8),
-      ElevatedButton(
-        onPressed: () async {
-          final n = await submitAttRemote(list);
-          toast(context, 'Attendance Final Submitted. $n absence WhatsApp alert(s) sent to parents.');
-        },
-        child: const Text('Final Submit'),
-      ),
     ]);
   }
 }
