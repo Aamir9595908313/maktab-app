@@ -145,6 +145,8 @@ Future<void> loadMasterData() async {
           aadhaar: (r['aadhaar_file_ref'] as String?) != null && r['aadhaar_file_ref'] != 'not_uploaded',
           address: (r['address'] as String?) ?? '',
           status: (r['is_active'] as bool?) ?? true ? 'Active' : 'Inactive',
+          dob: r['dob'] as String?,
+          fatherName: (r['father_name'] as String?) ?? '',
           dbId: r['id'] as String?,
         ),
     ]);
@@ -904,6 +906,10 @@ Future<String?> setTeacherActiveRemote(Account a, bool v) async {
 // old local-only addStudent(), plus it needs the chosen Madrasa and Class
 // to already have a real database id (they will, once Master Data has
 // loaded) to satisfy the students table's foreign keys.
+// A return value starting with "DUPLICATE:" is not an error - it's the
+// Section 3.2.3 warning. The caller shows it as a confirm dialog and, if
+// the person confirms, calls this again with confirmDuplicate: true to
+// actually save.
 Future<String?> addStudentRemote({
   required String name,
   required String gender,
@@ -913,6 +919,9 @@ Future<String?> addStudentRemote({
   required bool aadhaar,
   String address = '',
   required String madrasa,
+  String? dob,
+  String fatherName = '',
+  bool confirmDuplicate = false,
 }) async {
   final n = name.trim();
   if (n.isEmpty) return 'Enter the student name';
@@ -922,6 +931,9 @@ Future<String?> addStudentRemote({
   if (studentPhone.isNotEmpty) {
     if (studentPhone.length != 10) return 'Student mobile must be 10 digits, or leave it blank';
     if (studentPhone == parentPhone) return 'Student mobile must differ from the parent mobile';
+  }
+  if (!confirmDuplicate && st.findActiveDuplicate(n, dob) != null) {
+    return 'DUPLICATE:A student with the same name and date of birth already exists in the system. Please verify the details before proceeding.';
   }
   final m = st.madrasas.where((x) => x.name == madrasa).toList();
   final cd = st.classDefs[cls];
@@ -952,6 +964,8 @@ Future<String?> addStudentRemote({
       'address': address.trim().isEmpty ? null : address.trim(),
       'aadhaar_file_ref': 'uploaded_demo',
       'admission_date': start,
+      'dob': (dob == null || dob.trim().isEmpty) ? null : dob.trim(),
+      'father_name': fatherName.trim().isEmpty ? null : fatherName.trim(),
     }).select().single();
     st.addStudentFromRemote(
       key: key,
@@ -964,6 +978,8 @@ Future<String?> addStudentRemote({
       studentPhone: studentPhone,
       aadhaar: true,
       address: address.trim(),
+      dob: (dob == null || dob.trim().isEmpty) ? null : dob.trim(),
+      fatherName: fatherName.trim(),
       dbId: row['id'] as String?,
     );
     return null;
@@ -980,10 +996,21 @@ Future<String?> addStudentRemote({
 // save-then-reflect order as setMadrasaActiveRemote. If this student was
 // never synced to the database (dbId null), falls back to the old
 // local-only behaviour so nothing breaks for leftover demo data.
+// Section 4.1/4.3: who may deactivate is enforced twice now - the UI only
+// shows the button to admin/super (see StudentsView), and a database
+// trigger (trg_enforce_student_status_change) rejects the UPDATE outright
+// for any other role, stamping deactivated_by/deactivated_at itself. The
+// reason typed here is sent in the same UPDATE so it lands in
+// deactivation_reason for that audit trail.
 Future<String> deactivateStudentRemote(Student s, String reason) async {
   if (s.dbId != null) {
     try {
-      await sb.from('students').update({'is_active': false}).eq('id', s.dbId as Object);
+      await sb.from('students').update({
+        'is_active': false,
+        'deactivation_reason': reason.trim().isEmpty ? null : reason.trim(),
+      }).eq('id', s.dbId as Object);
+    } on PostgrestException catch (e) {
+      return e.message;
     } catch (_) {
       return 'Could not save. Check your internet connection and try again.';
     }
@@ -991,10 +1018,15 @@ Future<String> deactivateStudentRemote(Student s, String reason) async {
   return st.deactivateStudent(s, reason);
 }
 
+// Section 4.2: only Super Admin may reactivate - enforced in the UI (the
+// button is hidden otherwise) and again by trg_enforce_student_status_change,
+// which rejects the UPDATE for any other role.
 Future<String> reactivateStudentRemote(Student s) async {
   if (s.dbId != null) {
     try {
       await sb.from('students').update({'is_active': true}).eq('id', s.dbId as Object);
+    } on PostgrestException catch (e) {
+      return e.message;
     } catch (_) {
       return 'Could not save. Check your internet connection and try again.';
     }
@@ -1002,7 +1034,18 @@ Future<String> reactivateStudentRemote(Student s) async {
   return st.reactivateStudent(s);
 }
 
-Future<String?> editStudentRemote(Student s, {String? name, String? parentPhone, String? address, String? madrasa, int? cls}) async {
+// Section 3.2.3/5: re-runs the active-duplicate check if name or DOB
+// changed. A return value starting with "DUPLICATE:" is the warning, not
+// an error - same confirm-and-retry pattern as addStudentRemote.
+Future<String?> editStudentRemote(Student s, {String? name, String? parentPhone, String? address, String? madrasa, int? cls, String? dob, String? fatherName, bool confirmDuplicate = false}) async {
+  final newName = (name != null && name.trim().isNotEmpty) ? name.trim() : s.name;
+  final newDob = dob != null ? (dob.trim().isEmpty ? null : dob.trim()) : s.dob;
+  if (!confirmDuplicate && (newName != s.name || newDob != s.dob)) {
+    final dup = st.findActiveDuplicate(newName, newDob, excludeId: s.id);
+    if (dup != null) {
+      return 'DUPLICATE:A student with the same name and date of birth already exists in the system. Please verify the details before proceeding.';
+    }
+  }
   final patch = <String, Object?>{};
   if (name != null && name.trim().isNotEmpty) patch['name'] = name.trim();
   if (parentPhone != null && parentPhone.trim().isNotEmpty) {
@@ -1010,6 +1053,8 @@ Future<String?> editStudentRemote(Student s, {String? name, String? parentPhone,
     patch['parent_phone'] = digits(parentPhone);
   }
   if (address != null) patch['address'] = address.trim().isEmpty ? null : address.trim();
+  if (dob != null) patch['dob'] = dob.trim().isEmpty ? null : dob.trim();
+  if (fatherName != null) patch['father_name'] = fatherName.trim().isEmpty ? null : fatherName.trim();
   if (madrasa != null) {
     final m = st.madrasas.where((x) => x.name == madrasa).toList();
     if (m.isEmpty || m.first.dbId == null) return 'This Maktab was not saved to the database yet.';
@@ -1033,7 +1078,7 @@ Future<String?> editStudentRemote(Student s, {String? name, String? parentPhone,
       return 'Could not save. Check your internet connection and try again.';
     }
   }
-  st.editStudent(s, name: name, parentPhone: parentPhone == null ? null : digits(parentPhone), address: address, madrasa: madrasa, cls: cls);
+  st.editStudent(s, name: name, parentPhone: parentPhone == null ? null : digits(parentPhone), address: address, madrasa: madrasa, cls: cls, dob: dob, fatherName: fatherName);
   return null;
 }
 
@@ -1430,6 +1475,8 @@ Future<void> editStudentDialog(BuildContext context, Student s) async {
   final name = TextEditingController(text: s.name);
   final parent = TextEditingController(text: s.parentPhone);
   final address = TextEditingController(text: s.address);
+  final fatherName = TextEditingController(text: s.fatherName);
+  final dob = TextEditingController(text: s.dob ?? '');
   String madrasa = s.madrasa;
   int cls = s.cls;
   final result = await showDialog<bool>(
@@ -1440,6 +1487,25 @@ Future<void> editStudentDialog(BuildContext context, Student s) async {
         content: SingleChildScrollView(
           child: Column(mainAxisSize: MainAxisSize.min, children: [
             TextField(controller: name, decoration: const InputDecoration(labelText: 'Name')),
+            const SizedBox(height: 8),
+            TextField(controller: fatherName, decoration: const InputDecoration(labelText: "Father's name")),
+            const SizedBox(height: 8),
+            GestureDetector(
+              onTap: () async {
+                final picked = await showDatePicker(
+                  context: ctx,
+                  initialDate: DateTime.tryParse(dob.text) ?? DateTime(2016, 1, 1),
+                  firstDate: DateTime(1990, 1, 1),
+                  lastDate: DateTime.now(),
+                );
+                if (picked != null) {
+                  setD(() => dob.text = '${picked.year}-${picked.month.toString().padLeft(2, '0')}-${picked.day.toString().padLeft(2, '0')}');
+                }
+              },
+              child: AbsorbPointer(
+                child: TextField(controller: dob, decoration: const InputDecoration(labelText: 'Date of birth (tap to pick)')),
+              ),
+            ),
             const SizedBox(height: 8),
             TextField(controller: parent, decoration: const InputDecoration(labelText: 'Parent mobile number'), keyboardType: TextInputType.phone),
             const SizedBox(height: 8),
@@ -1468,7 +1534,24 @@ Future<void> editStudentDialog(BuildContext context, Student s) async {
     ),
   );
   if (result != true) return;
-  final e = await editStudentRemote(s, name: name.text, parentPhone: parent.text, address: address.text, madrasa: madrasa, cls: cls);
+  var e = await editStudentRemote(s, name: name.text, parentPhone: parent.text, address: address.text, madrasa: madrasa, cls: cls, dob: dob.text, fatherName: fatherName.text);
+  if (e != null && e.startsWith('DUPLICATE:')) {
+    if (!context.mounted) return;
+    final proceed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Possible duplicate'),
+        content: Text(e!.substring('DUPLICATE:'.length)),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          ElevatedButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Save anyway')),
+        ],
+      ),
+    );
+    if (proceed != true) return;
+    if (!context.mounted) return;
+    e = await editStudentRemote(s, name: name.text, parentPhone: parent.text, address: address.text, madrasa: madrasa, cls: cls, dob: dob.text, fatherName: fatherName.text, confirmDuplicate: true);
+  }
   if (context.mounted) toast(context, e ?? 'Student updated.');
 }
 
@@ -2616,6 +2699,8 @@ class _StudentsViewState extends State<StudentsView> {
   final parent = TextEditingController();
   final stuPhone = TextEditingController();
   final address = TextEditingController();
+  final fatherName = TextEditingController();
+  final dob = TextEditingController();
   String gender = '';
   int cls = 1;
   bool aadhaar = false;
@@ -2631,14 +2716,38 @@ class _StudentsViewState extends State<StudentsView> {
     return AnimatedBuilder(animation: st, builder: (context, _) => _body(context));
   }
 
+  Future<void> _pickDob(BuildContext context, TextEditingController c) async {
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: DateTime(2016, 1, 1),
+      firstDate: DateTime(1990, 1, 1),
+      lastDate: DateTime.now(),
+    );
+    if (picked != null) {
+      c.text = '${picked.year}-${picked.month.toString().padLeft(2, '0')}-${picked.day.toString().padLeft(2, '0')}';
+      setState(() {});
+    }
+  }
+
   Widget _body(BuildContext context) {
     final u = st.user!;
     final canSeeAadhaar = u.role == 'admin' || u.role == 'super';
-    final canDeactivate = u.role == 'admin' || u.role == 'super' || u.role == 'teacher';
+    // Section 3.2.1/3.2.4: Teacher and Maktab Admin can both admit/edit
+    // students. Section 4.1/4.2: deactivate is admin/super only, reactivate
+    // is super-admin only - two separate flags, not the old single
+    // canDeactivate that incorrectly let teachers do both.
+    final canEdit = u.role == 'admin' || u.role == 'super' || u.role == 'teacher';
+    final canDeactivate = u.role == 'admin' || u.role == 'super';
+    final canReactivate = u.role == 'super';
     final canPickMadrasa = u.role == 'admin' || u.role == 'super';
     final list = st.myStudents();
     final ready = list.where((s) => st.eligible(s)).toList();
-    regMadrasa ??= canPickMadrasa ? st.activeMadrasaNames.first : st.teacherMadrasa;
+    // Super Admin picks from every active Maktab; a Maktab Admin only from
+    // the one(s) they're actually scoped to (same fix already applied to
+    // Fees Admin earlier) - without this an admin could pick a Maktab that
+    // RLS then silently refuses to save a student under.
+    final pickableMadrasas = u.role == 'super' ? st.activeMadrasaNames : st.activeMadrasaNames.where(u.branches.contains).toList();
+    regMadrasa ??= canPickMadrasa ? (pickableMadrasas.isNotEmpty ? pickableMadrasas.first : null) : st.teacherMadrasa;
     return page([
       h('Add new student', icon: Icons.school),
       field(name, 'Student name *'),
@@ -2646,7 +2755,7 @@ class _StudentsViewState extends State<StudentsView> {
         DropdownButtonFormField<String>(
           value: regMadrasa,
           decoration: const InputDecoration(labelText: 'Maktab *', border: OutlineInputBorder()),
-          items: [for (final m in st.activeMadrasaNames) DropdownMenuItem<String>(value: m, child: Text(m))],
+          items: [for (final m in pickableMadrasas) DropdownMenuItem<String>(value: m, child: Text(m))],
           onChanged: (v) => setState(() => regMadrasa = v),
         ),
         const SizedBox(height: 8),
@@ -2667,6 +2776,13 @@ class _StudentsViewState extends State<StudentsView> {
       const SizedBox(height: 8),
       field(parent, 'Parent mobile number * (mandatory)', number: true),
       field(stuPhone, 'Student mobile number (optional)', number: true),
+      field(fatherName, "Father's name (optional)"),
+      GestureDetector(
+        onTap: () => _pickDob(context, dob),
+        child: AbsorbPointer(
+          child: field(dob, 'Date of birth (optional, tap to pick)'),
+        ),
+      ),
       field(address, 'Address (optional)', lines: 2),
       OutlinedButton.icon(
         onPressed: () => setState(() => aadhaar = true),
@@ -2679,7 +2795,8 @@ class _StudentsViewState extends State<StudentsView> {
             ? null
             : () async {
                 setState(() => busy = true);
-                final e = await addStudentRemote(
+                final madrasaToUse = u.role == 'teacher' ? st.teacherMadrasa : (regMadrasa ?? 'Hanfi');
+                var e = await addStudentRemote(
                   name: name.text,
                   gender: gender,
                   cls: cls,
@@ -2687,9 +2804,42 @@ class _StudentsViewState extends State<StudentsView> {
                   studentPhone: digits(stuPhone.text),
                   aadhaar: aadhaar,
                   address: address.text,
-                  madrasa: u.role == 'teacher' ? st.teacherMadrasa : (regMadrasa ?? 'Hanfi'),
+                  madrasa: madrasaToUse,
+                  dob: dob.text,
+                  fatherName: fatherName.text,
                 );
                 if (!mounted) return;
+                if (e != null && e.startsWith('DUPLICATE:')) {
+                  setState(() => busy = false);
+                  final proceed = await showDialog<bool>(
+                    context: context,
+                    builder: (ctx) => AlertDialog(
+                      title: const Text('Possible duplicate'),
+                      content: Text(e!.substring('DUPLICATE:'.length)),
+                      actions: [
+                        TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+                        ElevatedButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Save anyway')),
+                      ],
+                    ),
+                  );
+                  if (proceed != true) return;
+                  if (!mounted) return;
+                  setState(() => busy = true);
+                  e = await addStudentRemote(
+                    name: name.text,
+                    gender: gender,
+                    cls: cls,
+                    parentPhone: digits(parent.text),
+                    studentPhone: digits(stuPhone.text),
+                    aadhaar: aadhaar,
+                    address: address.text,
+                    madrasa: madrasaToUse,
+                    dob: dob.text,
+                    fatherName: fatherName.text,
+                    confirmDuplicate: true,
+                  );
+                  if (!mounted) return;
+                }
                 setState(() => busy = false);
                 toast(context, e ?? 'Student added and saved.');
                 if (e == null) {
@@ -2697,6 +2847,8 @@ class _StudentsViewState extends State<StudentsView> {
                   parent.clear();
                   stuPhone.clear();
                   address.clear();
+                  fatherName.clear();
+                  dob.clear();
                   setState(() {
                     gender = '';
                     aadhaar = false;
@@ -2737,11 +2889,29 @@ class _StudentsViewState extends State<StudentsView> {
                 Padding(
                   padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
                   child: Wrap(alignment: WrapAlignment.end, spacing: 4, children: [
-                    if (canDeactivate) TextButton(onPressed: () => editStudentDialog(context, s), child: const Text('Edit')),
+                    if (canEdit) TextButton(onPressed: () => editStudentDialog(context, s), child: const Text('Edit')),
                     if (canSeeAadhaar) TextButton(onPressed: () => toast(context, 'Demo: Aadhaar card opens here (view is logged)'), child: const Text('View Aadhaar')),
                     if (canDeactivate && s.status == 'Active')
                       TextButton(
                         onPressed: () async {
+                          // Section 4.3: warn (don't block) if an active sibling exists -
+                          // might be the wrong one of two kids picked by mistake.
+                          final siblings = st.activeSiblings(s);
+                          if (siblings.isNotEmpty) {
+                            final proceed = await showDialog<bool>(
+                              context: context,
+                              builder: (ctx) => AlertDialog(
+                                title: const Text('Active sibling found'),
+                                content: Text('${s.name} has ${siblings.length} other active student(s) under the same parent mobile number (${siblings.map((x) => x.name).join(', ')}). Deactivate ${s.name} anyway?'),
+                                actions: [
+                                  TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+                                  ElevatedButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Deactivate anyway')),
+                                ],
+                              ),
+                            );
+                            if (proceed != true) return;
+                            if (!context.mounted) return;
+                          }
                           final r = await askText(context, 'Reason for deactivating ${s.name} (optional)');
                           if (r == null) return;
                           final msg = await deactivateStudentRemote(s, r);
@@ -2749,7 +2919,7 @@ class _StudentsViewState extends State<StudentsView> {
                         },
                         child: const Text('Deactivate', style: TextStyle(color: Colors.red)),
                       ),
-                    if (canDeactivate && s.status == 'Inactive')
+                    if (canReactivate && s.status == 'Inactive')
                       TextButton(
                         onPressed: () async {
                           final msg = await reactivateStudentRemote(s);
@@ -3151,6 +3321,17 @@ class _RolesViewState extends State<RolesView> {
       ),
       const Padding(padding: EdgeInsets.only(top: 4, bottom: 4), child: Text('Makatib this person can see:', style: TextStyle(color: Colors.black54, fontSize: 12.5))),
       Wrap(spacing: 4, children: [
+        FilterChip(
+          label: const Text('All Makatib'),
+          selected: st.activeMadrasaNames.isNotEmpty && branches.length == st.activeMadrasaNames.length,
+          onSelected: (v) => setState(() {
+            if (v) {
+              branches..clear()..addAll(st.activeMadrasaNames);
+            } else {
+              branches.clear();
+            }
+          }),
+        ),
         for (final m in st.activeMadrasaNames)
           FilterChip(
             label: Text(m),

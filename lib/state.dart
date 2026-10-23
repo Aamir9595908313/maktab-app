@@ -60,6 +60,8 @@ class Student {
   bool aadhaar;
   String address;
   String status;
+  String? dob; // yyyy-MM-dd, matches public.students.dob
+  String fatherName;
   // page-based progress (Classes 1-3): pageNo -> date / grade / remark
   Map<int, String> pageDate;
   Map<int, String> pageGrade;
@@ -87,6 +89,8 @@ class Student {
     this.aadhaar = true,
     this.address = '',
     this.status = 'Active',
+    this.dob,
+    this.fatherName = '',
     Map<int, String>? pageDate,
     Map<int, String>? pageGrade,
     Map<int, String>? chDate,
@@ -524,14 +528,35 @@ class AppState extends ChangeNotifier {
     return '${s.name} reactivated.';
   }
 
-  void editStudent(Student s, {String? name, String? parentPhone, String? address, String? madrasa, int? cls}) {
+  void editStudent(Student s, {String? name, String? parentPhone, String? address, String? madrasa, int? cls, String? dob, String? fatherName}) {
     if (name != null && name.trim().isNotEmpty) s.name = name.trim();
     if (parentPhone != null && parentPhone.trim().isNotEmpty) s.parentPhone = parentPhone.trim();
     if (address != null) s.address = address.trim();
     if (madrasa != null) s.madrasa = madrasa;
     if (cls != null) s.cls = cls;
+    if (dob != null) s.dob = dob.trim().isEmpty ? null : dob.trim();
+    if (fatherName != null) s.fatherName = fatherName.trim();
     notifyListeners();
   }
+
+  // Section 3.2.3: duplicate check on Name + DOB among ACTIVE students only
+  // (an inactive record with the same name/DOB is not a duplicate - it's
+  // history). excludeId lets Edit Student skip matching itself.
+  Student? findActiveDuplicate(String name, String? dob, {int? excludeId}) {
+    final n = name.trim().toLowerCase();
+    if (n.isEmpty || dob == null || dob.isEmpty) return null;
+    for (final s in students) {
+      if (s.id == excludeId) continue;
+      if (s.status != 'Active') continue;
+      if (s.name.trim().toLowerCase() == n && s.dob == dob) return s;
+    }
+    return null;
+  }
+
+  // Section 4.3: warn when deactivating a student who has an active
+  // sibling (same parent mobile number) still enrolled, in case it's a
+  // mistake (e.g. the wrong one of two siblings was picked).
+  List<Student> activeSiblings(Student s) => students.where((x) => x.id != s.id && x.status == 'Active' && x.parentPhone.isNotEmpty && x.parentPhone == s.parentPhone).toList();
 
   final Map<int, String> todayAtt = {};
   final Map<String, String> teacherAtt = {
@@ -862,10 +887,12 @@ class AppState extends ChangeNotifier {
     String studentPhone = '',
     bool aadhaar = true,
     String address = '',
+    String? dob,
+    String fatherName = '',
     String? dbId,
   }) {
     final id = nextId++;
-    students.add(Student(id: id, key: key, name: name, gender: gender, cls: cls, madrasa: madrasa, start: start, parentPhone: parentPhone, studentPhone: studentPhone, aadhaar: aadhaar, address: address, dbId: dbId));
+    students.add(Student(id: id, key: key, name: name, gender: gender, cls: cls, madrasa: madrasa, start: start, parentPhone: parentPhone, studentPhone: studentPhone, aadhaar: aadhaar, address: address, dob: dob, fatherName: fatherName, dbId: dbId));
     notifyListeners();
   }
 
