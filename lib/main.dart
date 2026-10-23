@@ -680,15 +680,17 @@ Future<void> loadFees() async {
   final idByDbId = {for (final s in st.students) if (s.dbId != null) s.dbId!: s};
   if (idByDbId.isEmpty) return;
   try {
-    final rows = await sb.from('fees_monthly').select('student_id, month, status').eq('year', 2026).eq('status', 'complete');
-    final monthNameByNo = {for (final e in AppState.monthNo.entries) e.value: e.key};
+    // No .eq('year', ...) - fees aren't limited to one hardcoded year any
+    // more, so every year a student has a complete row for is loaded.
+    final rows = await sb.from('fees_monthly').select('student_id, month, year, status').eq('status', 'complete');
     final byStudent = <int, Set<String>>{};
     for (final r in (rows as List)) {
       final s = idByDbId[r['student_id'] as String?];
       if (s == null) continue;
-      final mn = monthNameByNo[r['month'] as int?];
-      if (mn == null) continue;
-      byStudent.putIfAbsent(s.id, () => {}).add(mn);
+      final mNo = r['month'] as int?;
+      final yr = r['year'] as int?;
+      if (mNo == null || mNo < 1 || mNo > 12 || yr == null) continue;
+      byStudent.putIfAbsent(s.id, () => {}).add('${AppState.kMonthAbbrevs[mNo - 1]} $yr');
     }
     st.setPaidFromDb(byStudent);
   } catch (_) {
@@ -699,19 +701,20 @@ Future<void> loadFees() async {
 
 Future<String> payRemote(Student s, String m) async {
   final msg = st.pay(s, m);
-  final monthNo = AppState.monthNo[m];
-  if (s.dbId != null && monthNo != null) {
+  final monthNo = AppState.monthNumFromKey(m);
+  final year = AppState.yearFromKey(m);
+  if (s.dbId != null && monthNo >= 1) {
     try {
       final row = await sb.from('fees_monthly').upsert({
         'student_id': s.dbId,
-        'year': 2026,
+        'year': year,
         'month': monthNo,
         'amount_due': 200,
         'amount_paid': 200,
         'status': 'complete',
       }, onConflict: 'student_id,year,month').select().single();
       await sb.from('receipts').insert({
-        'receipt_no': 'R-2026-${st.receiptNo}',
+        'receipt_no': 'R-$year-${st.receiptNo}',
         'fees_monthly_id': row['id'],
         'amount': 200,
         'mode': 'cash',
@@ -2634,8 +2637,8 @@ class KidFees extends StatelessWidget {
       ...st.feeMonths(k).map((m) => Card(
             child: ListTile(
               leading: Icon(st.isPaid(k.id, m) ? Icons.check_circle : Icons.pending, color: st.isPaid(k.id, m) ? Colors.green : Colors.orange),
-              title: Text('$m 2026'),
-              subtitle: Text(st.isPaid(k.id, m) ? 'Paid - month complete' : 'Due Rs. 200 by 10 $m'),
+              title: Text(m),
+              subtitle: Text(st.isPaid(k.id, m) ? 'Paid - month complete' : 'Due Rs. 200 by the 10th'),
             ),
           )),
     ]);
@@ -2946,6 +2949,9 @@ class _StaffHomeState extends State<StaffHome> {
       // this admin actually manages (u.branches, loaded for real from
       // public.user_madrasa_scope at login).
       final myStudentsActive = st.students.where((s) => u.branches.contains(s.madrasa) && s.status == 'Active').toList();
+      // Was hardcoded to 'Sep' - now whichever month it actually is, so
+      // this tile still means something after September.
+      final curMonth = '${AppState.kMonthAbbrevs[pd(kToday).month - 1]} ${pd(kToday).year}';
       return page([
         banner(),
         grid([
@@ -2954,7 +2960,7 @@ class _StaffHomeState extends State<StaffHome> {
           tile('Teachers today', '$present present, $onLeave on leave', icon: Icons.co_present, onTap: () => pushPage(context, 'Teachers & Leave', const TeachersView())),
           tile('Pending registrations', '${st.pending.length}', icon: Icons.how_to_reg, onTap: () => pushPage(context, 'Pending Registrations', const ApprovalsView())),
           tile('Leave requests', '$pendingLeave pending', icon: Icons.event_busy, onTap: () => pushPage(context, 'Teachers & Leave', const TeachersView())),
-          tile('Fees Sep', '${myStudentsActive.where((s) => st.isPaid(s.id, 'Sep')).length} of ${myStudentsActive.where((s) => st.feeMonths(s).contains('Sep')).length} complete', icon: Icons.payments, onTap: () => pushPage(context, 'Fees', const FeesAdmin())),
+          tile('Fees $curMonth', '${myStudentsActive.where((s) => st.isPaid(s.id, curMonth)).length} of ${myStudentsActive.where((s) => st.feeMonths(s).contains(curMonth)).length} complete', icon: Icons.payments, onTap: () => pushPage(context, 'Fees', const FeesAdmin())),
           tile('Complaints open', '$open', icon: Icons.report_problem, onTap: () => pushPage(context, 'Complaints', const ComplaintsView())),
         ]),
         h('Ready to promote'),
@@ -3907,9 +3913,18 @@ class FeesAdmin extends StatelessWidget {
     // active student, everyone else only their own madrasa(s).
     final scope = u.role == 'super' ? st.students : st.students.where((s) => u.branches.contains(s.madrasa)).toList();
     final list = scope.where((s) => s.status == 'Active').toList();
+    // Was hardcoded to ['Jun','Jul','Aug','Sep'] - now every month that
+    // actually applies to at least one of these students (from their own
+    // admission through the current month), sorted chronologically, so
+    // this keeps showing real data instead of going stale after September.
+    final allMonths = list.expand((s) => st.feeMonths(s)).toSet().toList()
+      ..sort((a, b) {
+        final y = AppState.yearFromKey(a).compareTo(AppState.yearFromKey(b));
+        return y != 0 ? y : AppState.monthNumFromKey(a).compareTo(AppState.monthNumFromKey(b));
+      });
     return page([
       h('Fees (month-wise)', icon: Icons.payments),
-      grid([for (final m in ['Jun', 'Jul', 'Aug', 'Sep']) tile('$m 2026', '${list.where((s) => st.isPaid(s.id, m)).length} of ${list.where((s) => st.feeMonths(s).contains(m)).length} complete')]),
+      grid([for (final m in allMonths) tile(m, '${list.where((s) => st.isPaid(s.id, m)).length} of ${list.where((s) => st.feeMonths(s).contains(m)).length} complete')]),
       const Text('Tap a due month to record a payment of Rs. 200.'),
       ...list.map((s) => Card(
             child: Padding(

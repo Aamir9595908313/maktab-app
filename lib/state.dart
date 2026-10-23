@@ -500,7 +500,15 @@ class AppState extends ChangeNotifier {
     11: {'Jul', 'Aug', 'Sep'},
     45: {'Jun', 'Jul', 'Aug'},
   };
-  static const Map<String, int> monthNo = {'Jun': 6, 'Jul': 7, 'Aug': 8, 'Sep': 9};
+  // Replaces the old fixed Jun-Sep-only window: fees are Rs. 200/month
+  // starting the month a student is admitted (or promoted - admission_date
+  // resets then) and continuing every month after, indefinitely, not just
+  // within one hardcoded 4-month range. Keys are "Mon YYYY" (e.g. "Oct
+  // 2026") so they stay unique across year boundaries - plain "Oct" alone
+  // would collide between this year's October and next year's.
+  static const List<String> kMonthAbbrevs = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  static int monthNumFromKey(String key) => kMonthAbbrevs.indexOf(key.split(' ').first) + 1;
+  static int yearFromKey(String key) => int.parse(key.split(' ').last);
 
   // ---------- WhatsApp notifications (stub) ----------
   // No real WhatsApp Business API provider is configured yet - sending here
@@ -988,9 +996,24 @@ class AppState extends ChangeNotifier {
   }
 
   // ---------- fees ----------
+  // Every month from the student's own admission (or last promotion, which
+  // resets admission_date to a fresh start) through the current real month,
+  // inclusive - not a fixed list, so this keeps working next year without
+  // another code change.
   List<String> feeMonths(Student s) {
-    final start = pd(s.start).month;
-    return monthNo.keys.where((m) => monthNo[m]! >= start).toList();
+    final start = pd(s.start);
+    final now = pd(kToday);
+    var y = start.year, m = start.month;
+    final months = <String>[];
+    while (y < now.year || (y == now.year && m <= now.month)) {
+      months.add('${kMonthAbbrevs[m - 1]} $y');
+      m++;
+      if (m > 12) {
+        m = 1;
+        y++;
+      }
+    }
+    return months;
   }
 
   bool isPaid(int id, String m) => paid[id]?.contains(m) ?? false;
@@ -1006,9 +1029,10 @@ class AppState extends ChangeNotifier {
   String pay(Student s, String m) {
     paid.putIfAbsent(s.id, () => <String>{}).add(m);
     receiptNo++;
-    notes.add(Note(s.parentPhone, 'Fee for $m 2026 received (Rs. 200). $m is complete.'));
+    final yr = pd(kToday).year;
+    notes.add(Note(s.parentPhone, 'Fee for $m received (Rs. 200). $m is complete.'));
     notifyListeners();
-    return 'Receipt R-2026-$receiptNo created. $m marked Complete for ${s.name}.';
+    return 'Receipt R-$yr-$receiptNo created. $m marked Complete for ${s.name}.';
   }
 
   int completeCount(String m) => inBranch('Hanfi').where((s) => feeMonths(s).contains(m) && isPaid(s.id, m)).length;
