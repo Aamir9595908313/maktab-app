@@ -8,6 +8,7 @@ import 'package:flutter/material.dart';
 String get kToday => fd(DateTime.now());
 const List<String> kMon = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const List<String> kBranches = ['Hanfi', 'Jama', 'Khwajapiya', 'Bagwanpura'];
+const List<String> kBatches = ['Morning', 'Afternoon', 'Evening'];
 
 DateTime pd(String s) => DateTime.parse('${s}T00:00:00Z');
 String fd(DateTime d) => '${d.year.toString().padLeft(4, '0')}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
@@ -67,6 +68,10 @@ class Student {
   String status;
   String? dob; // yyyy-MM-dd, matches public.students.dob
   String fatherName;
+  // 'Morning' / 'Afternoon' / 'Evening' - same class, split by session, so
+  // Mark Attendance can group students who attend different times of day
+  // instead of silently defaulting everyone to Present on Final Submit.
+  String batch;
   // page-based progress (Classes 1-3): pageNo -> date / grade / remark
   Map<int, String> pageDate;
   Map<int, String> pageGrade;
@@ -96,6 +101,7 @@ class Student {
     this.status = 'Active',
     this.dob,
     this.fatherName = '',
+    this.batch = 'Morning',
     Map<int, String>? pageDate,
     Map<int, String>? pageGrade,
     Map<int, String>? chDate,
@@ -550,7 +556,7 @@ class AppState extends ChangeNotifier {
     return '${s.name} reactivated.';
   }
 
-  void editStudent(Student s, {String? name, String? parentPhone, String? address, String? madrasa, int? cls, String? dob, String? fatherName}) {
+  void editStudent(Student s, {String? name, String? parentPhone, String? address, String? madrasa, int? cls, String? dob, String? fatherName, String? batch}) {
     if (name != null && name.trim().isNotEmpty) s.name = name.trim();
     if (parentPhone != null && parentPhone.trim().isNotEmpty) s.parentPhone = parentPhone.trim();
     if (address != null) s.address = address.trim();
@@ -558,6 +564,7 @@ class AppState extends ChangeNotifier {
     if (cls != null) s.cls = cls;
     if (dob != null) s.dob = dob.trim().isEmpty ? null : dob.trim();
     if (fatherName != null) s.fatherName = fatherName.trim();
+    if (batch != null && batch.isNotEmpty) s.batch = batch;
     notifyListeners();
   }
 
@@ -914,10 +921,12 @@ class AppState extends ChangeNotifier {
     String address = '',
     String? dob,
     String fatherName = '',
+    String batch = 'Morning',
     String? dbId,
   }) {
     final id = nextId++;
-    students.add(Student(id: id, key: key, name: name, gender: gender, cls: cls, madrasa: madrasa, start: start, parentPhone: parentPhone, studentPhone: studentPhone, aadhaar: aadhaar, address: address, dob: dob, fatherName: fatherName, dbId: dbId));
+    students.add(Student(
+        id: id, key: key, name: name, gender: gender, cls: cls, madrasa: madrasa, start: start, parentPhone: parentPhone, studentPhone: studentPhone, aadhaar: aadhaar, address: address, dob: dob, fatherName: fatherName, batch: batch, dbId: dbId));
     notifyListeners();
   }
 

@@ -160,6 +160,7 @@ Future<void> loadMasterData() async {
           status: (r['is_active'] as bool?) ?? true ? 'Active' : 'Inactive',
           dob: r['dob'] as String?,
           fatherName: (r['father_name'] as String?) ?? '',
+          batch: (r['batch'] as String?) ?? 'Morning',
           dbId: r['id'] as String?,
         ),
     ]);
@@ -1044,6 +1045,7 @@ Future<String?> addStudentRemote({
   required String madrasa,
   String? dob,
   String fatherName = '',
+  String batch = 'Morning',
   bool confirmDuplicate = false,
 }) async {
   final n = name.trim();
@@ -1089,6 +1091,7 @@ Future<String?> addStudentRemote({
       'admission_date': start,
       'dob': (dob == null || dob.trim().isEmpty) ? null : dob.trim(),
       'father_name': fatherName.trim().isEmpty ? null : fatherName.trim(),
+      'batch': batch,
     }).select().single();
     st.addStudentFromRemote(
       key: key,
@@ -1103,6 +1106,7 @@ Future<String?> addStudentRemote({
       address: address.trim(),
       dob: (dob == null || dob.trim().isEmpty) ? null : dob.trim(),
       fatherName: fatherName.trim(),
+      batch: batch,
       dbId: row['id'] as String?,
     );
     return null;
@@ -1160,7 +1164,7 @@ Future<String> reactivateStudentRemote(Student s) async {
 // Section 3.2.3/5: re-runs the active-duplicate check if name or DOB
 // changed. A return value starting with "DUPLICATE:" is the warning, not
 // an error - same confirm-and-retry pattern as addStudentRemote.
-Future<String?> editStudentRemote(Student s, {String? name, String? parentPhone, String? address, String? madrasa, int? cls, String? dob, String? fatherName, bool confirmDuplicate = false}) async {
+Future<String?> editStudentRemote(Student s, {String? name, String? parentPhone, String? address, String? madrasa, int? cls, String? dob, String? fatherName, String? batch, bool confirmDuplicate = false}) async {
   final newName = (name != null && name.trim().isNotEmpty) ? name.trim() : s.name;
   final newDob = dob != null ? (dob.trim().isEmpty ? null : dob.trim()) : s.dob;
   if (!confirmDuplicate && (newName != s.name || newDob != s.dob)) {
@@ -1178,6 +1182,7 @@ Future<String?> editStudentRemote(Student s, {String? name, String? parentPhone,
   if (address != null) patch['address'] = address.trim().isEmpty ? null : address.trim();
   if (dob != null) patch['dob'] = dob.trim().isEmpty ? null : dob.trim();
   if (fatherName != null) patch['father_name'] = fatherName.trim().isEmpty ? null : fatherName.trim();
+  if (batch != null && batch.isNotEmpty) patch['batch'] = batch;
   if (madrasa != null) {
     final m = st.madrasas.where((x) => x.name == madrasa).toList();
     if (m.isEmpty || m.first.dbId == null) return 'This Maktab was not saved to the database yet.';
@@ -1201,7 +1206,7 @@ Future<String?> editStudentRemote(Student s, {String? name, String? parentPhone,
       return 'Could not save. Check your internet connection and try again.';
     }
   }
-  st.editStudent(s, name: name, parentPhone: parentPhone == null ? null : digits(parentPhone), address: address, madrasa: madrasa, cls: cls, dob: dob, fatherName: fatherName);
+  st.editStudent(s, name: name, parentPhone: parentPhone == null ? null : digits(parentPhone), address: address, madrasa: madrasa, cls: cls, dob: dob, fatherName: fatherName, batch: batch);
   return null;
 }
 
@@ -1602,6 +1607,7 @@ Future<void> editStudentDialog(BuildContext context, Student s) async {
   final dob = TextEditingController(text: s.dob ?? '');
   String madrasa = s.madrasa;
   int cls = s.cls;
+  String batch = kBatches.contains(s.batch) ? s.batch : 'Morning';
   final result = await showDialog<bool>(
     context: context,
     builder: (ctx) => StatefulBuilder(
@@ -1657,6 +1663,13 @@ Future<void> editStudentDialog(BuildContext context, Student s) async {
               items: [for (final e in st.classDefs.entries) DropdownMenuItem(value: e.key, child: Text(e.value.name))],
               onChanged: (v) => setD(() => cls = v ?? cls),
             ),
+            const SizedBox(height: 8),
+            DropdownButtonFormField<String>(
+              value: batch,
+              decoration: const InputDecoration(labelText: 'Batch'),
+              items: [for (final b in kBatches) DropdownMenuItem(value: b, child: Text(b))],
+              onChanged: (v) => setD(() => batch = v ?? batch),
+            ),
           ]),
         ),
         actions: [
@@ -1667,7 +1680,7 @@ Future<void> editStudentDialog(BuildContext context, Student s) async {
     ),
   );
   if (result != true) return;
-  var e = await editStudentRemote(s, name: name.text, parentPhone: parent.text, address: address.text, madrasa: madrasa, cls: cls, dob: dob.text, fatherName: fatherName.text);
+  var e = await editStudentRemote(s, name: name.text, parentPhone: parent.text, address: address.text, madrasa: madrasa, cls: cls, dob: dob.text, fatherName: fatherName.text, batch: batch);
   if (e != null && e.startsWith('DUPLICATE:')) {
     if (!context.mounted) return;
     final proceed = await showDialog<bool>(
@@ -1683,7 +1696,7 @@ Future<void> editStudentDialog(BuildContext context, Student s) async {
     );
     if (proceed != true) return;
     if (!context.mounted) return;
-    e = await editStudentRemote(s, name: name.text, parentPhone: parent.text, address: address.text, madrasa: madrasa, cls: cls, dob: dob.text, fatherName: fatherName.text, confirmDuplicate: true);
+    e = await editStudentRemote(s, name: name.text, parentPhone: parent.text, address: address.text, madrasa: madrasa, cls: cls, dob: dob.text, fatherName: fatherName.text, batch: batch, confirmDuplicate: true);
   }
   if (context.mounted) toast(context, e ?? 'Student updated.');
 }
@@ -3083,32 +3096,46 @@ class StudentAttendanceMark extends StatelessWidget {
   Widget _body(BuildContext context) {
     // Deactivated students never appear here, so they can't be marked and never get an alert.
     final list = st.myStudents().where((s) => s.status == 'Active').toList();
+    // Same class can run more than one session a day (e.g. Morning and
+    // Evening batches) - grouping by batch keeps the roster the teacher is
+    // physically looking at distinct from students due in at another time,
+    // so nobody gets lost in one undifferentiated list.
+    final groups = <String, List<Student>>{for (final b in kBatches) b: []};
+    for (final s in list) {
+      (groups[kBatches.contains(s.batch) ? s.batch : 'Morning'] ??= []).add(s);
+    }
+    Widget studentTile(Student s) {
+      final v = st.todayAtt[s.id] ?? 'P';
+      return Card(
+        child: ListTile(
+          title: Text(s.name),
+          subtitle: Text(st.className(s.cls)),
+          trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+            OutlinedButton(
+              style: OutlinedButton.styleFrom(backgroundColor: v == 'P' ? Colors.green : null, foregroundColor: v == 'P' ? Colors.white : Colors.green),
+              onPressed: () => setAttRemote(s, 'P'),
+              child: const Text('Present'),
+            ),
+            const SizedBox(width: 6),
+            OutlinedButton(
+              style: OutlinedButton.styleFrom(backgroundColor: v == 'A' ? Colors.red : null, foregroundColor: v == 'A' ? Colors.white : Colors.red),
+              onPressed: () => setAttRemote(s, 'A'),
+              child: const Text('Absent'),
+            ),
+          ]),
+        ),
+      );
+    }
+
     return page([
       h('Mark attendance - ${st.teacherMadrasa} - ${nice(kToday)}', icon: Icons.event_available),
       const Text('Tap Present or Absent for each student, then Final Submit once. Absent students\' parents get a WhatsApp alert only after Final Submit.', style: TextStyle(color: Colors.black54, fontSize: 12.5)),
       const SizedBox(height: 8),
-      ...list.map((s) {
-        final v = st.todayAtt[s.id] ?? 'P';
-        return Card(
-          child: ListTile(
-            title: Text(s.name),
-            subtitle: Text(st.className(s.cls)),
-            trailing: Row(mainAxisSize: MainAxisSize.min, children: [
-              OutlinedButton(
-                style: OutlinedButton.styleFrom(backgroundColor: v == 'P' ? Colors.green : null, foregroundColor: v == 'P' ? Colors.white : Colors.green),
-                onPressed: () => setAttRemote(s, 'P'),
-                child: const Text('Present'),
-              ),
-              const SizedBox(width: 6),
-              OutlinedButton(
-                style: OutlinedButton.styleFrom(backgroundColor: v == 'A' ? Colors.red : null, foregroundColor: v == 'A' ? Colors.white : Colors.red),
-                onPressed: () => setAttRemote(s, 'A'),
-                child: const Text('Absent'),
-              ),
-            ]),
-          ),
-        );
-      }),
+      for (final b in kBatches)
+        if (groups[b]!.isNotEmpty) ...[
+          h('$b batch (${groups[b]!.length})'),
+          ...groups[b]!.map(studentTile),
+        ],
       const SizedBox(height: 8),
       ElevatedButton(
         onPressed: () async {
@@ -3169,6 +3196,7 @@ class _StudentsViewState extends State<StudentsView> {
   final dob = TextEditingController();
   String gender = '';
   int cls = 1;
+  String batch = 'Morning';
   bool aadhaar = false;
   bool busy = false;
   String? regMadrasa;
@@ -3250,6 +3278,16 @@ class _StudentsViewState extends State<StudentsView> {
         onChanged: (v) => setState(() => cls = v ?? cls),
       ),
       const SizedBox(height: 8),
+      // Same class can run more than one session a day - this is what lets
+      // Mark Attendance group students by session instead of defaulting
+      // everyone not physically in front of the current teacher to Present.
+      DropdownButtonFormField<String>(
+        value: batch,
+        decoration: const InputDecoration(labelText: 'Batch', border: OutlineInputBorder()),
+        items: [for (final b in kBatches) DropdownMenuItem<String>(value: b, child: Text(b))],
+        onChanged: (v) => setState(() => batch = v ?? batch),
+      ),
+      const SizedBox(height: 8),
       field(parent, 'Parent mobile number * (mandatory)', number: true),
       field(stuPhone, 'Student mobile number (optional)', number: true),
       field(fatherName, "Father's name (optional)"),
@@ -3283,6 +3321,7 @@ class _StudentsViewState extends State<StudentsView> {
                   madrasa: madrasaToUse,
                   dob: dob.text,
                   fatherName: fatherName.text,
+                  batch: batch,
                 );
                 if (!mounted) return;
                 if (e != null && e.startsWith('DUPLICATE:')) {
@@ -3312,6 +3351,7 @@ class _StudentsViewState extends State<StudentsView> {
                     madrasa: madrasaToUse,
                     dob: dob.text,
                     fatherName: fatherName.text,
+                    batch: batch,
                     confirmDuplicate: true,
                   );
                   if (!mounted) return;
