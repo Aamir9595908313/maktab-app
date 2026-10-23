@@ -2686,6 +2686,30 @@ class _ComplaintsViewState extends State<ComplaintsView> {
   }
 }
 
+// A continuously spinning logo used in place of a plain
+// CircularProgressIndicator on the dashboard's loading screen. Runs its
+// own AnimationController rather than depending on st, so it keeps
+// turning smoothly regardless of how often the surrounding screen
+// rebuilds while data is still loading.
+class _SpinningLogo extends StatefulWidget {
+  const _SpinningLogo();
+  @override
+  State<_SpinningLogo> createState() => _SpinningLogoState();
+}
+
+class _SpinningLogoState extends State<_SpinningLogo> with SingleTickerProviderStateMixin {
+  late final AnimationController _c = AnimationController(vsync: this, duration: const Duration(seconds: 2))..repeat();
+
+  @override
+  void dispose() {
+    _c.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => RotationTransition(turns: _c, child: Image.asset('assets/logo.png', height: 96));
+}
+
 // ---------------- staff ----------------
 class StaffHome extends StatefulWidget {
   const StaffHome({super.key});
@@ -2720,10 +2744,8 @@ class _StaffHomeState extends State<StaffHome> {
         child: Padding(
           padding: const EdgeInsets.all(32),
           child: Column(mainAxisSize: MainAxisSize.min, children: [
-            Image.asset('assets/logo.png', height: 96),
+            const _SpinningLogo(),
             const SizedBox(height: 20),
-            const CircularProgressIndicator(),
-            const SizedBox(height: 12),
             const Text('Loading your dashboard...'),
           ]),
         ),
