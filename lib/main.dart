@@ -2258,7 +2258,17 @@ Prog progFor(Student s) {
 class KidHome extends StatelessWidget {
   const KidHome({super.key});
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) =>
+      // Own AnimatedBuilder, same reason as StaffHome/StudentAttendanceMark:
+      // reached via a const widget factory in tabsFor(), so without this it
+      // doesn't reliably rebuild when st changes - in particular right
+      // after login, when st.students is still empty/placeholder on this
+      // screen's very first paint and the real data (which would turn "No
+      // child is linked to this number" into the actual child) only
+      // arrives a moment later once loadMasterData resolves.
+      AnimatedBuilder(animation: st, builder: (context, _) => _body(context));
+
+  Widget _body(BuildContext context) {
     final k = st.currentKid();
     if (k == null) return page([banner(), const Text('No child is linked to this number.')]);
     final p = progFor(k);
@@ -2299,7 +2309,9 @@ class KidHome extends StatelessWidget {
 class KidAttendance extends StatelessWidget {
   const KidAttendance({super.key});
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => AnimatedBuilder(animation: st, builder: (context, _) => _body(context));
+
+  Widget _body(BuildContext context) {
     final k = st.currentKid();
     if (k == null) return page([const Text('No child is linked to this number.')]);
     return page([
@@ -2316,7 +2328,9 @@ class KidAttendance extends StatelessWidget {
 class KidSyllabus extends StatelessWidget {
   const KidSyllabus({super.key});
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => AnimatedBuilder(animation: st, builder: (context, _) => _body(context));
+
+  Widget _body(BuildContext context) {
     final k = st.currentKid();
     if (k == null) return page([const Text('No child is linked to this number.')]);
     return Column(children: [
@@ -2518,7 +2532,9 @@ Future<void> tickChapterDialog(BuildContext c, Student s, int i) async {
 class KidFees extends StatelessWidget {
   const KidFees({super.key});
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => AnimatedBuilder(animation: st, builder: (context, _) => _body(context));
+
+  Widget _body(BuildContext context) {
     final k = st.currentKid();
     if (k == null) return page([const Text('No child is linked to this number.')]);
     return page([
@@ -2540,7 +2556,9 @@ class KidFees extends StatelessWidget {
 class KidCourseProgress extends StatelessWidget {
   const KidCourseProgress({super.key});
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => AnimatedBuilder(animation: st, builder: (context, _) => _body(context));
+
+  Widget _body(BuildContext context) {
     final k = st.currentKid();
     if (k == null) return page([const Text('No child is linked to this number.')]);
     return Column(children: [
@@ -2553,7 +2571,9 @@ class KidCourseProgress extends StatelessWidget {
 class KidDocs extends StatelessWidget {
   const KidDocs({super.key});
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => AnimatedBuilder(animation: st, builder: (context, _) => _body(context));
+
+  Widget _body(BuildContext context) {
     return page([
       h('Student documents', icon: Icons.badge),
       ...st.kids().map((k) => Card(
