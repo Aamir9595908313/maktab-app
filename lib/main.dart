@@ -2716,7 +2716,18 @@ class _StaffHomeState extends State<StaffHome> {
     // "0" for a Maktab that in fact has students once the real data
     // arrives a moment later.
     if (!st.dataLoaded) {
-      return const Center(child: Padding(padding: EdgeInsets.all(32), child: Column(mainAxisSize: MainAxisSize.min, children: [CircularProgressIndicator(), SizedBox(height: 12), Text('Loading your dashboard...')])));
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(32),
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            Image.asset('assets/logo.png', height: 96),
+            const SizedBox(height: 20),
+            const CircularProgressIndicator(),
+            const SizedBox(height: 12),
+            const Text('Loading your dashboard...'),
+          ]),
+        ),
+      );
     }
     final open = st.complaints.where((c) => c.to == u.role && c.status != 'Resolved').length;
     final pendingLeave = st.leaves.where((l) => l.status == 'Pending').length;
