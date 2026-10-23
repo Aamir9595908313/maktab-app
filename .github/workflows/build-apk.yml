@@ -65,7 +65,12 @@ jobs:
       - name: Build release APK
         id: build
         continue-on-error: true
-        run: flutter build apk --release 2>&1 | tee build-log.txt
+        # set -o pipefail: without it, `| tee` makes this step exit 0 (tee's
+        # own exit code) even when flutter build fails, which is exactly
+        # what happened last run - "succeeded" with no APK produced.
+        run: |
+          set -o pipefail
+          flutter build apk --release 2>&1 | tee build-log.txt
       - uses: actions/upload-artifact@v4
         if: steps.build.outcome == 'success'
         with:
