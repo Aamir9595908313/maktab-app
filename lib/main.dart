@@ -2777,7 +2777,7 @@ class _StaffHomeState extends State<StaffHome> {
         banner(),
         grid([
           tile('Search', 'Phone, name, Maktab', icon: Icons.search, onTap: () => pushPage(context, 'Search', const GlobalSearchView())),
-          tile('Makatib', '${st.madrasas.length}', icon: Icons.account_balance, onTap: () => pushPage(context, 'Makatib', const MasterDataView())),
+          tile('Manage Maktab', '${st.madrasas.length}', icon: Icons.account_balance, onTap: () => pushPage(context, 'Manage Maktab', const MasterDataView())),
           // Browse by Maktab, with each student's live attendance/syllabus
           // status (StudentDetail's Status/Syllabus/Attendance tabs) -
           // distinct from the plain "Students" tile below, which is the
