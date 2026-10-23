@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math' show pi;
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -2707,7 +2708,25 @@ class _SpinningLogoState extends State<_SpinningLogo> with SingleTickerProviderS
   }
 
   @override
-  Widget build(BuildContext context) => RotationTransition(turns: _c, child: Image.asset('assets/logo.png', height: 96));
+  Widget build(BuildContext context) {
+    final logo = Image.asset('assets/logo.png', height: 96);
+    // A plain RotationTransition spins flat in the screen's own plane, so
+    // it goes upside-down at the halfway point - a coin spin instead
+    // turns around the vertical (Y) axis, narrowing to an edge-on sliver
+    // at 90/270 degrees and never flipping upside-down. perspective (the
+    // 0.0015 entry) is what gives that narrowing its 3D look instead of
+    // just squashing flat.
+    return AnimatedBuilder(
+      animation: _c,
+      builder: (context, child) {
+        final m = Matrix4.identity()
+          ..setEntry(3, 2, 0.0015)
+          ..rotateY(_c.value * 2 * pi);
+        return Transform(alignment: Alignment.center, transform: m, child: child);
+      },
+      child: logo,
+    );
+  }
 }
 
 // ---------------- staff ----------------
