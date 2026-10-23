@@ -87,7 +87,15 @@ Future<Account?> loadSupabaseProfile(String uid) async {
   ];
 
   return Account(
-    (profile['phone'] as String?) ?? '',
+    // Supabase Auth always stores phone with the country code
+    // (919595908315), but every student record's parent_phone/
+    // student_phone is saved as a plain 10-digit number via this app's
+    // own digits() normalizer (see addStudentRemote/editStudentRemote).
+    // Without normalizing here too, st.kids() (parentPhone == u.phone)
+    // could never match, so a parent or student login always showed "No
+    // child is linked to this number." even though the right student
+    // existed - this is the actual fix for that, not a data problem.
+    digits((profile['phone'] as String?) ?? ''),
     (profile['full_name'] as String?) ?? 'User',
     _mapDbRole((profile['base_role'] as String?) ?? 'student'),
     roleName: roleName,
