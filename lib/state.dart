@@ -291,6 +291,13 @@ class AppState extends ChangeNotifier {
   int receiptNo = 200;
   String teacherMadrasa = 'Hanfi'; // currently selected madrasa for a multi-madrasa teacher
 
+  // False until the first full loadMasterData() (students, attendance,
+  // syllabus, etc.) finishes after login, success or failure. Dashboards
+  // check this before showing a count, so the brief window where
+  // st.students/st.classDefs still hold their built-in placeholder/demo
+  // values doesn't flash a misleading "0" before the real data arrives.
+  bool dataLoaded = false;
+
   final Map<String, Account> users = {
     '9800000001': Account('9800000001', 'Faiz Raza', 'super'),
     '9800000101': Account('9800000101', 'Imam Abdul Kareem', 'admin'),

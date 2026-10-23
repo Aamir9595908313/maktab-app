@@ -66,7 +66,16 @@ Future<Account?> loadSupabaseProfile(String uid) async {
   final scopeRows = await sb.from('user_madrasa_scope').select('madrasas(name)').eq('user_id', uid);
   final branches = [for (final r in (scopeRows as List)) ((r['madrasas'] as Map?)?['name'] as String?) ?? ''].where((n) => n.isNotEmpty).toList();
 
-  final tcaRows = await sb.from('teacher_class_assignments').select('madrasas(name), classes(class_no)').eq('teacher_id', uid);
+  // Ordered (this join table has no created_at to order by, so madrasa_id
+  // is the next best stable key): without an explicit order, Postgres
+  // doesn't guarantee row order, so which Maktab lands first in
+  // teachMadrasas (and therefore which one teacherMadrasa defaults to on
+  // login, further down) was effectively random from one load to the
+  // next - a multi-Maktab teacher could land on a branch with zero
+  // students and see "0" where they expected their usual one. Ordering
+  // makes it the same Maktab every time, even if not always "the first
+  // one assigned".
+  final tcaRows = await sb.from('teacher_class_assignments').select('madrasas(name), classes(class_no)').eq('teacher_id', uid).order('madrasa_id');
   final teachMadrasas = <String>{for (final r in (tcaRows as List)) ((r['madrasas'] as Map?)?['name'] as String?) ?? ''}..removeWhere((n) => n.isEmpty);
   // Real (Maktab, class) pairs this teacher is actually assigned to, for
   // the My Day screen - see ClassAssignment/myDay() in state.dart.
@@ -182,6 +191,15 @@ Future<void> loadMasterData() async {
     // whatever was already loaded; a retry happens next time this is
     // called (e.g. next login) or the user can be told to check their
     // connection if "Add" keeps failing.
+  } finally {
+    // Set even on failure, so a dashboard gated on dataLoaded doesn't get
+    // stuck on a permanent loading screen if Supabase genuinely couldn't
+    // be reached - it falls through to showing whatever counts it has
+    // (0, if nothing loaded) same as before this flag existed.
+    if (!st.dataLoaded) {
+      st.dataLoaded = true;
+      st.notifyListeners();
+    }
   }
 }
 
@@ -2681,8 +2699,25 @@ class _StaffHomeState extends State<StaffHome> {
   String priority = 'Important';
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) =>
+      // Own AnimatedBuilder, same reason as StudentAttendanceMark/MyDayView:
+      // without it this screen (reached via a const widget factory in the
+      // bottom-tab list) doesn't reliably rebuild when st changes - in
+      // particular when loadMasterData's dataLoaded flag flips true just
+      // after login, which is exactly the moment this screen needs to
+      // swap its loading placeholder for the real counts.
+      AnimatedBuilder(animation: st, builder: (context, _) => _body(context));
+
+  Widget _body(BuildContext context) {
     final u = st.user!;
+    // Real counts aren't in yet (first paint right after login, before
+    // loadMasterData resolves) - showing tiles now would read whatever
+    // placeholder/demo data st started with, which can legitimately say
+    // "0" for a Maktab that in fact has students once the real data
+    // arrives a moment later.
+    if (!st.dataLoaded) {
+      return const Center(child: Padding(padding: EdgeInsets.all(32), child: Column(mainAxisSize: MainAxisSize.min, children: [CircularProgressIndicator(), SizedBox(height: 12), Text('Loading your dashboard...')])));
+    }
     final open = st.complaints.where((c) => c.to == u.role && c.status != 'Resolved').length;
     final pendingLeave = st.leaves.where((l) => l.status == 'Pending').length;
     if (u.role == 'super') {
