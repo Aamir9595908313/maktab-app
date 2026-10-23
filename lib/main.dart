@@ -2725,6 +2725,11 @@ class _StaffHomeState extends State<StaffHome> {
         banner(),
         grid([
           tile('Makatib', '${st.madrasas.length}', icon: Icons.account_balance, onTap: () => pushPage(context, 'Makatib', const MasterDataView())),
+          // Browse by Maktab, with each student's live attendance/syllabus
+          // status (StudentDetail's Status/Syllabus/Attendance tabs) -
+          // distinct from the plain "Students" tile below, which is the
+          // admit/edit/promote form, not a status overview.
+          tile('Students by Maktab', '${st.students.length} total', icon: Icons.account_tree, onTap: () => pushPage(context, 'Students by Maktab', const SuperMakatibOverview())),
           tile('Students', '${st.students.length}', icon: Icons.groups, onTap: () => pushPage(context, 'Students', const StudentsView())),
           tile('Teachers', '${st.teacherAccounts.where((t) => !t.pending).length}', icon: Icons.co_present, onTap: () => pushPage(context, 'Teachers & Leave', const TeachersView())),
           tile('Average attendance', '${st.avgAttAll()}%', icon: Icons.event_available),
@@ -4203,6 +4208,31 @@ class _AllStudentsListState extends State<AllStudentsList> {
       ]),
     );
   }
+}
+
+// Super Admin's "pick a Maktab, then see its students with live status"
+// screen - same drill-down as CommitteeBranches/BranchStudents below, but
+// over every Maktab (st.madrasas) rather than one account's scoped
+// u.branches, since a Super Admin isn't restricted to a subset.
+class SuperMakatibOverview extends StatelessWidget {
+  const SuperMakatibOverview({super.key});
+  @override
+  Widget build(BuildContext context) => AnimatedBuilder(
+        animation: st,
+        builder: (context, _) => page([
+          h('All Makatib'),
+          ...st.madrasas.map((m) => Card(
+                child: ListTile(
+                  title: Text(m.name, style: const TextStyle(fontWeight: FontWeight.bold)),
+                  subtitle: Text(
+                    '${m.active ? 'Active' : 'Inactive'} - ${st.inBranch(m.name).where((s) => s.status == 'Active').length} students - avg attendance ${st.avgAtt(m.name)}% - avg syllabus ${st.avgSyl(m.name)}%',
+                  ),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => BranchStudents(branch: m.name))),
+                ),
+              )),
+        ]),
+      );
 }
 
 class CommitteeBranches extends StatelessWidget {
