@@ -162,6 +162,7 @@ Future<void> loadMasterData() async {
     await loadCommitteeMembers();
     await loadFees();
     await loadAnnouncements();
+    await loadLeaves();
   } catch (_) {
     // Swallow - see note above. The Master Data screen still works off
     // whatever was already loaded; a retry happens next time this is
@@ -208,6 +209,7 @@ void subscribeRealtime() {
     'fees_monthly',
     'receipts',
     'announcements',
+    'teacher_leaves',
   ];
   var channel = sb.channel('app-data-sync');
   for (final t in tables) {
@@ -360,6 +362,83 @@ Future<void> markSelfRemote(String v) async {
       'marked_by': sb.auth.currentUser?.id,
     }, onConflict: 'teacher_id,attendance_date');
   } catch (_) {}
+}
+
+// ---------------- Teacher leave, per-Maktab (public.teacher_leaves) ----------------
+// Section 7: a teacher who works at more than one Maktab applies for leave
+// against one specific Maktab; RLS scopes what each admin sees to their
+// own Maktab(s), so approval/reporting naturally uses the right context.
+Future<void> loadLeaves() async {
+  final rows = await sb
+      .from('teacher_leaves')
+      .select('id, teacher_id, madrasa_id, leave_type, from_date, to_date, reason, status, decision_remark, teacher:user_profiles!teacher_leaves_teacher_id_fkey(full_name), decider:user_profiles!teacher_leaves_decided_by_fkey(full_name), madrasas(name)')
+      .order('created_at', ascending: false);
+  final madrasaNameById = {for (final m in st.madrasas) if (m.dbId != null) m.dbId!: m.name};
+  var lid = 1;
+  st.setLeavesFromDb([
+    for (final r in (rows as List))
+      Leave(
+        lid++,
+        ((r['teacher'] as Map?)?['full_name'] as String?) ?? '',
+        (r['leave_type'] as String?) ?? '',
+        (r['from_date'] as String?) ?? '',
+        (r['to_date'] as String?) ?? '',
+        (r['reason'] as String?) ?? '',
+        madrasa: ((r['madrasas'] as Map?)?['name'] as String?) ?? madrasaNameById[r['madrasa_id'] as String?] ?? '',
+        dbId: r['id'] as String?,
+      )..status = (r['status'] as String?) == 'approved'
+          ? 'Approved'
+          : (r['status'] as String?) == 'rejected'
+              ? 'Rejected'
+              : 'Pending'
+        ..remark = (r['decision_remark'] as String?) ?? ''
+        ..by = ((r['decider'] as Map?)?['full_name'] as String?) ?? '',
+  ]);
+}
+
+Future<String?> applyLeaveRemote(String type, String madrasa, String from, String to, String reason) async {
+  final u = st.user;
+  if (u == null) return 'Not logged in';
+  final local = st.applyLeave(type, from, to, reason, madrasa: madrasa);
+  if (local != null) return local;
+  if (u.dbId == null) return null;
+  final madrasaId = _madrasaDbId(madrasa);
+  if (madrasaId == null) return 'That Maktab is not saved to the database yet.';
+  try {
+    await sb.from('teacher_leaves').insert({
+      'teacher_id': u.dbId,
+      'madrasa_id': madrasaId,
+      'leave_type': type,
+      'from_date': from,
+      'to_date': to,
+      'reason': reason.trim(),
+    });
+    await loadLeaves();
+    return null;
+  } on PostgrestException catch (e) {
+    return 'Could not save: ${e.message}';
+  } catch (_) {
+    return 'Could not save. Check your internet connection and try again.';
+  }
+}
+
+Future<String?> decideLeaveRemote(Leave l, bool ok, String remark) async {
+  st.decideLeave(l, ok, remark);
+  if (l.dbId == null) return null;
+  try {
+    await sb.from('teacher_leaves').update({
+      'status': ok ? 'approved' : 'rejected',
+      'decision_remark': remark.trim().isEmpty ? null : remark.trim(),
+      'decided_by': sb.auth.currentUser?.id,
+    }).eq('id', l.dbId as Object);
+    await loadLeaves();
+    return null;
+  } on PostgrestException catch (e) {
+    if (e.code == '42501') return 'Only an admin for that Maktab (or Super Admin) can decide this leave request.';
+    return 'Could not save: ${e.message}';
+  } catch (_) {
+    return 'Could not save. Check your internet connection and try again.';
+  }
 }
 
 // ---------------- Syllabus (public.syllabus_progress / public.chapters) ----------------
@@ -2341,6 +2420,21 @@ class _ComplaintsViewState extends State<ComplaintsView> {
   final subject = TextEditingController();
   final text = TextEditingController();
   String to = 'teacher';
+  static const int kComplaintMaxLen = 500;
+
+  @override
+  void initState() {
+    super.initState();
+    // Section 12: live "0/500" counter below the message field.
+    text.addListener(() => setState(() {}));
+  }
+
+  @override
+  void dispose() {
+    subject.dispose();
+    text.dispose();
+    super.dispose();
+  }
 
   Widget card(Complaint c, bool inbox) {
     return Card(
@@ -2389,11 +2483,31 @@ class _ComplaintsViewState extends State<ComplaintsView> {
         ),
         const SizedBox(height: 8),
         field(subject, 'Subject'),
-        field(text, 'Details', lines: 3),
+        Padding(
+          padding: const EdgeInsets.only(bottom: 8),
+          child: TextField(
+            controller: text,
+            maxLines: 3,
+            maxLength: kComplaintMaxLen,
+            decoration: const InputDecoration(
+              labelText: 'Please describe your complaint briefly (maximum 500 characters).',
+              border: OutlineInputBorder(),
+              counterText: null, // use the built-in "n/500" counter maxLength already shows
+            ),
+          ),
+        ),
         ElevatedButton(
           onPressed: () async {
             if (subject.text.trim().isEmpty) {
               toast(context, 'Enter a subject');
+              return;
+            }
+            if (text.text.trim().isEmpty) {
+              toast(context, 'Enter your complaint details (it cannot be blank)');
+              return;
+            }
+            if (text.text.length > kComplaintMaxLen) {
+              toast(context, 'Your message is over the $kComplaintMaxLen character limit - please shorten it.');
               return;
             }
             final e = await addComplaintRemote(to, subject.text.trim(), text.text.trim());
@@ -2565,11 +2679,24 @@ class _TeacherSelfState extends State<TeacherSelf> {
   final to = TextEditingController(text: '2026-09-25');
   final reason = TextEditingController();
   String type = 'Sick';
+  String? leaveMadrasa;
+  bool busy = false;
 
   @override
   Widget build(BuildContext context) {
+    // AnimatedBuilder: this screen is reached via pushPage (its own route,
+    // not a bottom tab), so it needs its own listener to redraw when
+    // leaves/attendance change from realtime or this screen's own save -
+    // the shell's top-level AnimatedBuilder only covers tab-hosted screens.
+    return AnimatedBuilder(animation: st, builder: (context, _) => _body(context));
+  }
+
+  Widget _body(BuildContext context) {
     final u = st.user!;
     final mine = st.leaves.where((l) => l.teacher == u.name).toList();
+    // Section 7: a teacher at more than one Maktab picks which one the
+    // leave is for; a single-Maktab teacher has nothing to pick.
+    leaveMadrasa ??= u.teachMadrasas.isNotEmpty ? u.teachMadrasas.first : st.teacherMadrasa;
     return page([
       h('My attendance - ${nice(kToday)}', icon: Icons.event_available),
       const Text('This is one record for the teacher, even when teaching at more than one Maktab.', style: TextStyle(fontSize: 12, color: Colors.black54)),
@@ -2579,7 +2706,16 @@ class _TeacherSelfState extends State<TeacherSelf> {
         const SizedBox(width: 8),
         Expanded(child: OutlinedButton(onPressed: () => markSelfRemote('Absent'), child: const Text('Absent'))),
       ]),
-      h('Apply for leave (sent to Super Admin)'),
+      h('Apply for leave'),
+      if (u.teachMadrasas.length > 1) ...[
+        DropdownButtonFormField<String>(
+          value: leaveMadrasa,
+          decoration: const InputDecoration(labelText: 'Which Maktab is this leave for?', border: OutlineInputBorder()),
+          items: [for (final m in u.teachMadrasas) DropdownMenuItem<String>(value: m, child: Text(m))],
+          onChanged: (v) => setState(() => leaveMadrasa = v),
+        ),
+        const SizedBox(height: 8),
+      ],
       DropdownButtonFormField<String>(
         value: type,
         decoration: const InputDecoration(labelText: 'Type', border: OutlineInputBorder()),
@@ -2591,18 +2727,23 @@ class _TeacherSelfState extends State<TeacherSelf> {
       field(to, 'To (yyyy-mm-dd)'),
       field(reason, 'Reason (required)', lines: 2),
       ElevatedButton(
-        onPressed: () {
-          final e = st.applyLeave(type, from.text.trim(), to.text.trim(), reason.text);
-          toast(context, e ?? 'Leave request sent. Status: Pending');
-          if (e == null) reason.clear();
-        },
-        child: const Text('Send request'),
+        onPressed: busy
+            ? null
+            : () async {
+                setState(() => busy = true);
+                final e = await applyLeaveRemote(type, leaveMadrasa ?? st.teacherMadrasa, from.text.trim(), to.text.trim(), reason.text);
+                if (!mounted) return;
+                setState(() => busy = false);
+                toast(context, e ?? 'Leave request sent for $leaveMadrasa. Status: Pending');
+                if (e == null) reason.clear();
+              },
+        child: busy ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2)) : const Text('Send request'),
       ),
       h('My leaves'),
       if (mine.isEmpty) const Text('None yet.'),
       ...mine.map((l) => Card(
             child: ListTile(
-              title: Text('${l.type}: ${nice(l.from)} to ${nice(l.to)}'),
+              title: Text('${l.type}: ${nice(l.from)} to ${nice(l.to)}${l.madrasa.isEmpty ? '' : ' - ${l.madrasa}'}'),
               subtitle: Text('${l.reason}${l.status == 'Pending' ? '' : '\n${l.status} by ${l.by}: ${l.remark}'}'),
               trailing: Chip(label: Text(l.status)),
             ),
@@ -2982,12 +3123,16 @@ class TeachersView extends StatelessWidget {
       if (st.teacherAccounts.where((t) => !t.pending).isEmpty) const Text('No teachers yet.', style: TextStyle(color: Colors.black54)),
       ...st.teacherAccounts.where((t) => !t.pending).map((t) => Card(child: ListTile(title: Text(t.name), subtitle: Text(t.teachMadrasas.join(', ')), trailing: Text(st.teacherAtt[t.name] ?? 'Not marked')))),
       h('Teacher leave requests', icon: Icons.event_busy),
+      // Section 7: st.leaves is already scoped to this admin's own Maktab(s)
+      // by RLS (teacher_leaves_scoped_read) - a request against a Maktab
+      // this admin doesn't manage never reaches this list at all, and a
+      // Super Admin sees every Maktab's requests.
       if (st.leaves.isEmpty) const Text('No leave requests yet. Log in as Teacher and apply for leave.'),
       ...st.leaves.map((l) => Card(
             child: Padding(
               padding: const EdgeInsets.all(12),
               child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text('${l.teacher} - ${l.type}: ${nice(l.from)} to ${nice(l.to)}', style: const TextStyle(fontWeight: FontWeight.bold)),
+                Text('${l.teacher} - ${l.type}: ${nice(l.from)} to ${nice(l.to)}${l.madrasa.isEmpty ? '' : ' - ${l.madrasa}'}', style: const TextStyle(fontWeight: FontWeight.bold)),
                 Text('Reason: ${l.reason}'),
                 Text('Status: ${l.status}${l.status == 'Pending' ? '' : ' by ${l.by} (${l.remark})'}'),
                 if (l.status == 'Pending')
@@ -2995,14 +3140,18 @@ class TeachersView extends StatelessWidget {
                     TextButton(
                       onPressed: () async {
                         final r = await askText(context, 'Remark', initial: 'Approved, take rest');
-                        if (r != null) st.decideLeave(l, true, r);
+                        if (r == null) return;
+                        final e = await decideLeaveRemote(l, true, r);
+                        if (e != null && context.mounted) toast(context, e);
                       },
                       child: const Text('Approve'),
                     ),
                     TextButton(
                       onPressed: () async {
                         final r = await askText(context, 'Reason for rejection');
-                        if (r != null) st.decideLeave(l, false, r);
+                        if (r == null) return;
+                        final e = await decideLeaveRemote(l, false, r);
+                        if (e != null && context.mounted) toast(context, e);
                       },
                       child: const Text('Reject'),
                     ),

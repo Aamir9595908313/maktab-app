@@ -208,7 +208,13 @@ class Leave {
   String status = 'Pending';
   String remark = '';
   String by = '';
-  Leave(this.id, this.teacher, this.type, this.from, this.to, this.reason);
+  // Section 7: which Maktab this leave is for - a teacher who works at
+  // more than one Maktab applies for leave at one of them at a time, and
+  // it must only affect that Maktab's view/approval, not every Maktab
+  // they're assigned to.
+  String madrasa;
+  String? dbId;
+  Leave(this.id, this.teacher, this.type, this.from, this.to, this.reason, {this.madrasa = '', this.dbId});
 }
 
 class Announcement {
@@ -959,10 +965,10 @@ class AppState extends ChangeNotifier {
   int totalFor(String m) => inBranch('Hanfi').where((s) => feeMonths(s).contains(m)).length;
 
   // ---------- leave ----------
-  String? applyLeave(String type, String from, String to, String reason) {
+  String? applyLeave(String type, String from, String to, String reason, {String madrasa = ''}) {
     if (!validDate(from) || !validDate(to)) return 'Enter dates as yyyy-mm-dd';
     if (reason.trim().length < 5) return 'Reason is required';
-    leaves.add(Leave(leaves.length + 1, user!.name, type, from, to, reason.trim()));
+    leaves.add(Leave(leaves.length + 1, user!.name, type, from, to, reason.trim(), madrasa: madrasa));
     notifyListeners();
     return null;
   }
@@ -971,6 +977,13 @@ class AppState extends ChangeNotifier {
     l.status = ok ? 'Approved' : 'Rejected';
     l.remark = remark;
     l.by = user!.name;
+    notifyListeners();
+  }
+
+  void setLeavesFromDb(List<Leave> list) {
+    leaves
+      ..clear()
+      ..addAll(list);
     notifyListeners();
   }
 
