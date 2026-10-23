@@ -50,7 +50,33 @@ class ClassDef {
   // been loaded from (or successfully saved to) the real database. Null
   // means this is still local-only demo data that hasn't been synced.
   String? dbId;
-  ClassDef(this.id, this.name, {this.pageBased = false, this.bookName, this.totalPages = 0, this.paceDays = 2, this.active = true, this.dbId});
+  // Optional Para structure for a page-based book that's split into named
+  // sections with their own page count each (e.g. a Qur'an with 30 Para -
+  // Para 1 might be 40 pages, Para 2 a different count). When this list is
+  // non-empty, totalPages is kept as the sum of every Para's pageCount and
+  // a flat page number is shown to users as "Para N, Page M of <count>"
+  // instead of one long flat count - see AppState.paraPosition. When empty,
+  // the class behaves exactly as a plain flat page-based book always has.
+  List<ParaDef> paras;
+  ClassDef(this.id, this.name, {this.pageBased = false, this.bookName, this.totalPages = 0, this.paceDays = 2, this.active = true, this.dbId, List<ParaDef>? paras}) : paras = paras ?? [];
+}
+
+// One Para (section) of a Para-wise book - public.class_paras.
+class ParaDef {
+  final int paraNo;
+  int pageCount;
+  // public.class_paras row id, once loaded from (or saved to) the database.
+  String? dbId;
+  ParaDef(this.paraNo, this.pageCount, {this.dbId});
+}
+
+// Where a flat, book-wide page number falls inside a Para-wise book: which
+// Para it's in, and its 1-based page number within just that Para.
+class ParaPos {
+  final int paraNo;
+  final int pageInPara;
+  final int paraPageCount;
+  const ParaPos(this.paraNo, this.pageInPara, this.paraPageCount);
 }
 
 class Student {
@@ -470,6 +496,47 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
+  // ---------- Para-wise book structure (optional, page-based classes) ----------
+  // Replaces one class's whole Para list with what the database has, and
+  // keeps totalPages in sync (sum of every Para's page count) so every
+  // existing page-based calculation - pageProg, currentPageNo, eligible,
+  // promotion - keeps working unchanged against one flat page count.
+  void setParasFromDb(ClassDef cd, List<ParaDef> list) {
+    list.sort((a, b) => a.paraNo.compareTo(b.paraNo));
+    cd.paras = list;
+    if (list.isNotEmpty) cd.totalPages = list.fold(0, (t, p) => t + p.pageCount);
+    notifyListeners();
+  }
+
+  void addParaLocal(ClassDef cd, ParaDef p) {
+    cd.paras.add(p);
+    cd.paras.sort((a, b) => a.paraNo.compareTo(b.paraNo));
+    cd.totalPages = cd.paras.fold(0, (t, x) => t + x.pageCount);
+    notifyListeners();
+  }
+
+  void updateParaLocal(ClassDef cd, ParaDef p, int pageCount) {
+    p.pageCount = pageCount;
+    cd.totalPages = cd.paras.fold(0, (t, x) => t + x.pageCount);
+    notifyListeners();
+  }
+
+  // Converts a flat 1-based page number into which Para it falls in and the
+  // 1-based page number within just that Para, using each Para's own page
+  // count. Returns null when this class has no Para structure (plain flat
+  // pages) or the number is out of range.
+  ParaPos? paraPosition(ClassDef cd, int flatPageNo) {
+    if (cd.paras.isEmpty) return null;
+    var seen = 0;
+    for (final p in cd.paras) {
+      if (flatPageNo <= seen + p.pageCount) {
+        return ParaPos(p.paraNo, flatPageNo - seen, p.pageCount);
+      }
+      seen += p.pageCount;
+    }
+    return null;
+  }
+
   // Which classes a teacher is assigned to, per madrasa
   final Map<String, Map<String, List<int>>> teacherAssignments = {
     'Ustaad Salman': {
@@ -757,7 +824,14 @@ class AppState extends ChangeNotifier {
     final expected = (diffDays(kToday, s.start) / cd.paceDays).floor();
     final behind = expected > n ? expected - n : 0;
     final cur = currentPageNo(s);
-    return Prog(n, cd.totalPages, behind, label: cur != null ? 'Page $cur of ${cd.totalPages}' : 'All pages complete');
+    String label;
+    if (cur == null) {
+      label = 'All pages complete';
+    } else {
+      final pos = paraPosition(cd, cur);
+      label = pos != null ? 'Para ${pos.paraNo}, Page ${pos.pageInPara} of ${pos.paraPageCount}' : 'Page $cur of ${cd.totalPages}';
+    }
+    return Prog(n, cd.totalPages, behind, label: label);
   }
 
   void markPageComplete(Student s, int pageNo, String date, String grade, String remark) {

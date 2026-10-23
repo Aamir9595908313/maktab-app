@@ -185,6 +185,7 @@ Future<void> loadMasterData() async {
 
     await loadTeachers();
     await loadChapters();
+    await loadClassParas();
     await loadAttendance();
     await loadSyllabusProgress();
     await loadMyTeacherAttendance();
@@ -508,6 +509,52 @@ Future<String?> addChapterRemote(int cls, String title, int days) async {
     final sortOrder = (st.chapters[cls] ?? []).length;
     await sb.from('chapters').insert({'class_id': classId, 'title': title, 'days': days, 'sort_order': sortOrder});
     await loadChapters();
+    return null;
+  } on PostgrestException catch (e) {
+    return 'Could not save: ${e.message}';
+  } catch (_) {
+    return 'Could not save. Check your internet connection and try again.';
+  }
+}
+
+// Para-wise book structure (public.class_paras) - optional, for a
+// page-based class whose book is split into named sections (e.g. a Qur'an
+// with 30 Para) each with its own page count, instead of one flat count.
+Future<void> loadClassParas() async {
+  try {
+    final rows = await sb.from('class_paras').select('id, class_id, para_no, page_count').order('para_no');
+    final classByDbId = {for (final cd in st.classDefs.values) if (cd.dbId != null) cd.dbId!: cd};
+    final byClass = <ClassDef, List<ParaDef>>{};
+    for (final r in (rows as List)) {
+      final cd = classByDbId[r['class_id'] as String?];
+      if (cd == null) continue;
+      byClass.putIfAbsent(cd, () => []).add(ParaDef((r['para_no'] as int?) ?? 0, (r['page_count'] as int?) ?? 0, dbId: r['id'] as String?));
+    }
+    for (final cd in st.classDefs.values) {
+      st.setParasFromDb(cd, byClass[cd] ?? []);
+    }
+  } catch (_) {}
+}
+
+Future<String?> addParaRemote(ClassDef cd, int pageCount) async {
+  if (cd.dbId == null) return 'This class is not saved to the database yet.';
+  final paraNo = cd.paras.isEmpty ? 1 : (cd.paras.map((p) => p.paraNo).reduce((a, b) => a > b ? a : b) + 1);
+  try {
+    final row = await sb.from('class_paras').insert({'class_id': cd.dbId, 'para_no': paraNo, 'page_count': pageCount}).select().single();
+    st.addParaLocal(cd, ParaDef(paraNo, pageCount, dbId: row['id'] as String?));
+    return null;
+  } on PostgrestException catch (e) {
+    return 'Could not save: ${e.message}';
+  } catch (_) {
+    return 'Could not save. Check your internet connection and try again.';
+  }
+}
+
+Future<String?> updateParaPageCountRemote(ClassDef cd, ParaDef p, int pageCount) async {
+  if (p.dbId == null) return 'This Para is not saved to the database yet.';
+  try {
+    await sb.from('class_paras').update({'page_count': pageCount}).eq('id', p.dbId as Object);
+    st.updateParaLocal(cd, p, pageCount);
     return null;
   } on PostgrestException catch (e) {
     return 'Could not save: ${e.message}';
@@ -2466,34 +2513,7 @@ class SyllabusBody extends StatelessWidget {
       const SizedBox(height: 4),
       const Text('Legend: green = Completed (with date), amber = In progress, grey = Pending', style: TextStyle(fontSize: 11.5, color: Colors.black54)),
       const SizedBox(height: 8),
-      GridView.builder(
-        shrinkWrap: true,
-        physics: const NeverScrollableScrollPhysics(),
-        gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: 6, mainAxisSpacing: 6, crossAxisSpacing: 6, childAspectRatio: 1),
-        itemCount: cd.totalPages,
-        itemBuilder: (context, i) {
-          final pageNo = i + 1;
-          final status = st.pageStatus(s, pageNo);
-          final color = status == 'Completed' ? const Color(0xFF2E7D32) : (status == 'In progress' ? kGold : const Color(0xFFDADFD3));
-          final textColor = status == 'Pending' ? Colors.black54 : Colors.white;
-          return GestureDetector(
-            onTap: () {
-              if (status == 'Completed') {
-                _showPageInfo(context, pageNo);
-              } else if (edit && status == 'In progress') {
-                markPageDialog(context, s, pageNo);
-              } else if (status == 'Pending') {
-                toast(context, 'Page $pageNo is Pending. Complete page $cur first.');
-              }
-            },
-            child: Container(
-              decoration: BoxDecoration(color: color, borderRadius: BorderRadius.circular(6)),
-              alignment: Alignment.center,
-              child: Text('$pageNo', style: TextStyle(color: textColor, fontWeight: FontWeight.bold, fontSize: 12)),
-            ),
-          );
-        },
-      ),
+      if (cd.paras.isNotEmpty) ..._paraPageGrids(context, cd, cur) else _flatPageGrid(context, cd, cur, 1, cd.totalPages),
       if (edit && cur != null)
         Padding(
           padding: const EdgeInsets.only(top: 14),
@@ -2511,6 +2531,60 @@ class SyllabusBody extends StatelessWidget {
     final date = s.pageDate[pageNo];
     final grade = s.pageGrade[pageNo] ?? '';
     toast(context, 'Page $pageNo: Completed ${date != null ? nice(date) : ''} - $grade');
+  }
+
+  // One grid of `count` cells, numbered 1..count for display, but reading
+  // and writing progress against the flat book-wide page number
+  // (startPageNo + local index) - the same numbers pageDate/pageGrade and
+  // every page-based calculation in AppState has always used. Used as-is
+  // for a plain flat book (startPageNo 1, count = cd.totalPages) and once
+  // per Para for a Para-wise book.
+  Widget _flatPageGrid(BuildContext context, ClassDef cd, int? cur, int startPageNo, int count) {
+    return GridView.builder(
+      shrinkWrap: true,
+      physics: const NeverScrollableScrollPhysics(),
+      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: 6, mainAxisSpacing: 6, crossAxisSpacing: 6, childAspectRatio: 1),
+      itemCount: count,
+      itemBuilder: (context, i) {
+        final pageNo = startPageNo + i;
+        final localNo = i + 1;
+        final status = st.pageStatus(s, pageNo);
+        final color = status == 'Completed' ? const Color(0xFF2E7D32) : (status == 'In progress' ? kGold : const Color(0xFFDADFD3));
+        final textColor = status == 'Pending' ? Colors.black54 : Colors.white;
+        return GestureDetector(
+          onTap: () {
+            if (status == 'Completed') {
+              _showPageInfo(context, pageNo);
+            } else if (edit && status == 'In progress') {
+              markPageDialog(context, s, pageNo);
+            } else if (status == 'Pending') {
+              toast(context, 'Page $pageNo is Pending. Complete page $cur first.');
+            }
+          },
+          child: Container(
+            decoration: BoxDecoration(color: color, borderRadius: BorderRadius.circular(6)),
+            alignment: Alignment.center,
+            child: Text('$localNo', style: TextStyle(color: textColor, fontWeight: FontWeight.bold, fontSize: 12)),
+          ),
+        );
+      },
+    );
+  }
+
+  // One Para-labelled grid per Para, in book order, so a 30-Para Qur'an
+  // reads as 30 short sections instead of one very long flat grid.
+  List<Widget> _paraPageGrids(BuildContext context, ClassDef cd, int? cur) {
+    final widgets = <Widget>[];
+    var seen = 0;
+    for (final p in cd.paras) {
+      widgets.add(Padding(
+        padding: const EdgeInsets.only(top: 10, bottom: 6),
+        child: Text('Para ${p.paraNo} (${p.pageCount} pages)', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13.5)),
+      ));
+      widgets.add(_flatPageGrid(context, cd, cur, seen + 1, p.pageCount));
+      seen += p.pageCount;
+    }
+    return widgets;
   }
 
   Widget _chapterBody(BuildContext context) {
@@ -3397,10 +3471,12 @@ class StudentAttendanceMark extends StatelessWidget {
       Widget progressRow;
       if (cd.pageBased) {
         final cur = st.currentPageNo(s);
+        final pos = cur == null ? null : st.paraPosition(cd, cur);
+        final label = cur == null ? '' : (pos != null ? 'Para ${pos.paraNo}, Page ${pos.pageInPara} of ${pos.paraPageCount}' : 'Page $cur of ${cd.totalPages}');
         progressRow = cur == null
             ? const Text('All pages complete', style: TextStyle(fontSize: 14.5, fontWeight: FontWeight.w600, color: Colors.green))
             : Row(children: [
-                Text('Page $cur of ${cd.totalPages}', style: const TextStyle(fontSize: 14.5, fontWeight: FontWeight.w600, color: Colors.black87)),
+                Text(label, style: const TextStyle(fontSize: 14.5, fontWeight: FontWeight.w600, color: Colors.black87)),
                 IconButton(
                   icon: const Icon(Icons.add_circle, size: 24, color: kGreen),
                   tooltip: 'Mark page $cur complete',
@@ -4802,6 +4878,10 @@ class _MasterDataViewState extends State<MasterDataView> {
   final classBookName = TextEditingController();
   final classTotalPages = TextEditingController();
   bool classPageBased = true;
+  // One "add Para" page-count field per class, created on first use.
+  final Map<int, TextEditingController> paraPageCountCtrl = {};
+  TextEditingController _paraCtrl(int cls) => paraPageCountCtrl.putIfAbsent(cls, () => TextEditingController());
+  bool paraBusy = false;
   final teacherName = TextEditingController();
   final teacherPhone = TextEditingController();
   final Set<String> teacherMadrasasSel = {};
@@ -4864,27 +4944,32 @@ class _MasterDataViewState extends State<MasterDataView> {
       ),
       h('Classes', icon: Icons.menu_book),
       ...st.classDefs.values.map((cd) => Card(
-            child: SwitchListTile(
-              title: Row(children: [
-                Expanded(child: Text(cd.name)),
-                InkWell(
-                  onTap: () async {
-                    final n = await askText(context, 'Rename class', initial: cd.name);
-                    if (n == null) return;
-                    final e = await renameClassRemote(cd, n);
-                    if (context.mounted && e != null) toast(context, e);
-                  },
-                  child: const Padding(padding: EdgeInsets.all(4), child: Icon(Icons.edit, size: 16, color: Colors.black45)),
-                ),
-              ]),
-              subtitle: Text(cd.pageBased ? 'Book: ${cd.bookName} - ${cd.totalPages} pages${cd.active ? '' : ' - Deactivated'}' : 'Chapter-based${cd.active ? '' : ' - Deactivated'}'),
-              value: cd.active,
-              onChanged: (v) async {
-                final e = await setClassActiveRemote(cd, v);
-                if (!mounted) return;
-                if (e != null) toast(context, e);
-              },
-            ),
+            child: Column(children: [
+              SwitchListTile(
+                title: Row(children: [
+                  Expanded(child: Text(cd.name)),
+                  InkWell(
+                    onTap: () async {
+                      final n = await askText(context, 'Rename class', initial: cd.name);
+                      if (n == null) return;
+                      final e = await renameClassRemote(cd, n);
+                      if (context.mounted && e != null) toast(context, e);
+                    },
+                    child: const Padding(padding: EdgeInsets.all(4), child: Icon(Icons.edit, size: 16, color: Colors.black45)),
+                  ),
+                ]),
+                subtitle: Text(cd.pageBased
+                    ? 'Book: ${cd.bookName} - ${cd.totalPages} pages${cd.paras.isNotEmpty ? ' (${cd.paras.length} Para)' : ''}${cd.active ? '' : ' - Deactivated'}'
+                    : 'Chapter-based${cd.active ? '' : ' - Deactivated'}'),
+                value: cd.active,
+                onChanged: (v) async {
+                  final e = await setClassActiveRemote(cd, v);
+                  if (!mounted) return;
+                  if (e != null) toast(context, e);
+                },
+              ),
+              if (cd.pageBased) _paraSection(cd),
+            ]),
           )),
       field(className, 'New class name (e.g. Class 5 - ...)'),
       Row(children: [
@@ -5078,6 +5163,69 @@ class _MasterDataViewState extends State<MasterDataView> {
               },
         child: busy ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2)) : const Text('Add Add-on Course'),
       ),
+      ]),
+    );
+  }
+
+  // Para list + add/edit for one page-based class, shown under its switch
+  // tile. A Para is a named section of the book (e.g. 1 of 30 Para in a
+  // Qur'an) with its own page count - leave empty for a plain flat book.
+  Widget _paraSection(ClassDef cd) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        if (cd.paras.isNotEmpty) ...[
+          const Text('Para (book split into sections, each with its own page count):', style: TextStyle(fontSize: 12, color: Colors.black54)),
+          const SizedBox(height: 4),
+          Wrap(spacing: 6, runSpacing: 6, children: [
+            for (final p in cd.paras)
+              InputChip(
+                label: Text('Para ${p.paraNo}: ${p.pageCount}p'),
+                onPressed: () async {
+                  final n = await askText(context, 'Para ${p.paraNo} - page count', initial: '${p.pageCount}');
+                  if (n == null) return;
+                  final pc = int.tryParse(n.trim());
+                  if (pc == null || pc <= 0) {
+                    if (context.mounted) toast(context, 'Enter a valid page count');
+                    return;
+                  }
+                  final e = await updateParaPageCountRemote(cd, p, pc);
+                  if (context.mounted && e != null) toast(context, e);
+                },
+              ),
+          ]),
+          const SizedBox(height: 6),
+          Text('Total: ${cd.totalPages} pages across ${cd.paras.length} Para', style: const TextStyle(fontSize: 12, color: Colors.black54)),
+          const SizedBox(height: 8),
+        ],
+        Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
+          Expanded(
+            child: TextField(
+              controller: _paraCtrl(cd.id),
+              keyboardType: TextInputType.number,
+              decoration: InputDecoration(labelText: cd.paras.isEmpty ? 'Page count for Para 1 (leave all Para unused for a plain flat book)' : 'Page count for Para ${cd.paras.isEmpty ? 1 : cd.paras.map((p) => p.paraNo).reduce((a, b) => a > b ? a : b) + 1}'),
+            ),
+          ),
+          const SizedBox(width: 8),
+          ElevatedButton(
+            onPressed: paraBusy
+                ? null
+                : () async {
+                    final pc = int.tryParse(_paraCtrl(cd.id).text.trim());
+                    if (pc == null || pc <= 0) {
+                      toast(context, 'Enter a valid page count');
+                      return;
+                    }
+                    setState(() => paraBusy = true);
+                    final e = await addParaRemote(cd, pc);
+                    if (!mounted) return;
+                    setState(() => paraBusy = false);
+                    toast(context, e ?? 'Para ${cd.paras.last.paraNo} added.');
+                    if (e == null) _paraCtrl(cd.id).clear();
+                  },
+            child: const Text('Add Para'),
+          ),
+        ]),
       ]),
     );
   }
