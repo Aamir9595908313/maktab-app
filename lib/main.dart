@@ -1535,15 +1535,13 @@ class _LoginSplash extends StatefulWidget {
 }
 
 class _LoginSplashState extends State<_LoginSplash> with SingleTickerProviderStateMixin {
-  late final AnimationController _c = AnimationController(vsync: this, duration: const Duration(milliseconds: 900));
-  late final Animation<double> _scale = Tween<double>(begin: 2.6, end: 1.0).animate(CurvedAnimation(parent: _c, curve: Curves.easeOutCubic));
-  late final Animation<double> _fade = CurvedAnimation(parent: _c, curve: const Interval(0.0, 0.5, curve: Curves.easeIn));
+  late final AnimationController _c = AnimationController(vsync: this, duration: const Duration(milliseconds: 1000));
 
   @override
   void initState() {
     super.initState();
     _c.forward();
-    Future.delayed(const Duration(milliseconds: 1300), () {
+    Future.delayed(const Duration(milliseconds: 1050), () {
       if (mounted) st.dismissLoginSplash();
     });
   }
@@ -1556,13 +1554,28 @@ class _LoginSplashState extends State<_LoginSplash> with SingleTickerProviderSta
 
   @override
   Widget build(BuildContext context) {
+    // Scaled relative to the actual window/screen so the logo genuinely
+    // fills it (zooms IN to full screen) on any device or browser window
+    // size, rather than a fixed multiplier that overshoots on a phone and
+    // undershoots on a wide desktop Chrome window.
+    final size = MediaQuery.of(context).size;
+    final longSide = size.width > size.height ? size.width : size.height;
+    const logoHeight = 120.0;
+    final targetScale = (longSide / logoHeight) * 1.3;
+    final scaleAnim = Tween<double>(begin: 1.0, end: targetScale).animate(CurvedAnimation(parent: _c, curve: Curves.easeInCubic));
+    // Fades out only in the final stretch, once the logo is already large
+    // enough to cover the screen, so the transition to Shell underneath
+    // isn't a hard cut.
+    final fadeAnim = CurvedAnimation(parent: _c, curve: const Interval(0.6, 1.0, curve: Curves.easeOut));
     return Scaffold(
       backgroundColor: Colors.white,
-      body: Center(
-        child: AnimatedBuilder(
-          animation: _c,
-          builder: (context, child) => Opacity(opacity: _fade.value, child: Transform.scale(scale: _scale.value, child: child)),
-          child: Image.asset('assets/logo.png', height: 120),
+      body: ClipRect(
+        child: Center(
+          child: AnimatedBuilder(
+            animation: _c,
+            builder: (context, child) => Opacity(opacity: 1 - fadeAnim.value, child: Transform.scale(scale: scaleAnim.value, child: child)),
+            child: Image.asset('assets/logo.png', height: logoHeight),
+          ),
         ),
       ),
     );
