@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -2874,11 +2875,15 @@ class _BulkImportStudentsState extends State<BulkImportStudents> {
   }
 
   Future<void> _pickFile() async {
-    final result = await FilePicker.platform.pickFiles(type: FileType.custom, allowedExtensions: ['csv'], withData: true);
-    if (result == null || result.files.isEmpty) return;
-    final f = result.files.first;
-    final bytes = f.bytes;
-    if (bytes == null) {
+    // file_picker v12+ dropped FilePickerResult/PlatformFile.bytes in favor
+    // of a plain List<PlatformFile> and an async readAsBytes() per file.
+    final files = await FilePicker.pickFiles(type: FileType.custom, allowedExtensions: ['csv']);
+    if (files.isEmpty) return;
+    final f = files.first;
+    Uint8List bytes;
+    try {
+      bytes = await f.readAsBytes();
+    } catch (_) {
       setState(() => parseError = 'Could not read that file on this platform - try a different file picker or device.');
       return;
     }
