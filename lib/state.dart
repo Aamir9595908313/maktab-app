@@ -1,6 +1,11 @@
 import 'package:flutter/material.dart';
 
-const String kToday = '2026-09-19';
+// Was `const String kToday = '2026-09-19'` - a date frozen at whatever day
+// this was first written, so every date-driven feature (attendance,
+// leave, fee due dates, syllabus pacing, promotion eligibility) was keyed
+// off a permanently fixed fake "today" instead of the real one. A getter
+// recomputes it from the device clock on every read.
+String get kToday => fd(DateTime.now());
 const List<String> kMon = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const List<String> kBranches = ['Hanfi', 'Jama', 'Khwajapiya', 'Bagwanpura'];
 
@@ -115,6 +120,14 @@ class Prog {
   int get pct => total == 0 ? 0 : (n * 100 / total).round();
 }
 
+// A single (Maktab, class) pair a teacher is actually assigned to -
+// loaded from public.teacher_class_assignments, not invented locally.
+class ClassAssignment {
+  final String madrasa;
+  final int cls;
+  const ClassAssignment(this.madrasa, this.cls);
+}
+
 class Account {
   String phone;
   String name;
@@ -122,6 +135,7 @@ class Account {
   String roleName;
   List<String> branches; // committee / custom role scope
   List<String> teachMadrasas; // teacher: madrasas they teach in
+  List<ClassAssignment> myClasses; // teacher: (madrasa, class) pairs they're actually assigned to
   bool active;
   // user_profiles.id once this teacher has actually signed in for the
   // first time and a real row exists. Null means this is still just a
@@ -130,9 +144,11 @@ class Account {
   // no real account to activate/deactivate.
   String? dbId;
   bool pending;
-  Account(this.phone, this.name, this.role, {this.roleName = '', List<String>? branches, List<String>? teachMadrasas, this.active = true, this.dbId, this.pending = false})
+  Account(this.phone, this.name, this.role,
+      {this.roleName = '', List<String>? branches, List<String>? teachMadrasas, List<ClassAssignment>? myClasses, this.active = true, this.dbId, this.pending = false})
       : branches = branches ?? [],
-        teachMadrasas = teachMadrasas ?? [];
+        teachMadrasas = teachMadrasas ?? [],
+        myClasses = myClasses ?? [];
 }
 
 // ---------------- master data: madrasas / courses ----------------
@@ -624,20 +640,23 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
+  // Was keyed off `teacherAssignments`, a map that only ever had one
+  // hardcoded demo entry ('Ustaad Salman') and was never written to by any
+  // real save path - so for every actual teacher this returned nothing,
+  // regardless of what they were really assigned to in the database. Now
+  // sourced from Account.myClasses (loaded from teacher_class_assignments
+  // at login). There's no real per-period timetable in the database, so
+  // this no longer invents clock times - it lists the teacher's real
+  // (Maktab, class) assignments, grouped by Maktab.
   List<DayEntry> myDay() {
     final u = user;
     if (u == null) return [];
-    final a = teacherAssignments[u.name] ?? {};
-    final times = ['7:00', '9:00', '11:00', '2:00'];
-    final out = <DayEntry>[];
-    int t = 0;
-    a.forEach((m, list) {
-      for (final c in list) {
-        out.add(DayEntry(times[t % times.length], m, c));
-        t++;
-      }
-    });
-    return out;
+    final list = List<ClassAssignment>.from(u.myClasses)
+      ..sort((a, b) {
+        final m = a.madrasa.compareTo(b.madrasa);
+        return m != 0 ? m : a.cls.compareTo(b.cls);
+      });
+    return [for (final c in list) DayEntry('', c.madrasa, c.cls)];
   }
 
   bool get showFees => user != null && user!.role == 'parent' && !studentView;

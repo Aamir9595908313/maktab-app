@@ -66,8 +66,15 @@ Future<Account?> loadSupabaseProfile(String uid) async {
   final scopeRows = await sb.from('user_madrasa_scope').select('madrasas(name)').eq('user_id', uid);
   final branches = [for (final r in (scopeRows as List)) ((r['madrasas'] as Map?)?['name'] as String?) ?? ''].where((n) => n.isNotEmpty).toList();
 
-  final tcaRows = await sb.from('teacher_class_assignments').select('madrasas(name)').eq('teacher_id', uid);
+  final tcaRows = await sb.from('teacher_class_assignments').select('madrasas(name), classes(class_no)').eq('teacher_id', uid);
   final teachMadrasas = <String>{for (final r in (tcaRows as List)) ((r['madrasas'] as Map?)?['name'] as String?) ?? ''}..removeWhere((n) => n.isEmpty);
+  // Real (Maktab, class) pairs this teacher is actually assigned to, for
+  // the My Day screen - see ClassAssignment/myDay() in state.dart.
+  final myClasses = <ClassAssignment>[
+    for (final r in (tcaRows as List))
+      if (((r['madrasas'] as Map?)?['name'] as String?)?.isNotEmpty == true && (r['classes'] as Map?)?['class_no'] != null)
+        ClassAssignment((r['madrasas'] as Map)['name'] as String, (r['classes'] as Map)['class_no'] as int),
+  ];
 
   return Account(
     (profile['phone'] as String?) ?? '',
@@ -76,6 +83,7 @@ Future<Account?> loadSupabaseProfile(String uid) async {
     roleName: roleName,
     branches: branches,
     teachMadrasas: teachMadrasas.toList(),
+    myClasses: myClasses,
     active: (profile['is_active'] as bool?) ?? true,
     dbId: uid,
   );
@@ -2677,7 +2685,16 @@ class _StaffHomeState extends State<StaffHome> {
           ),
         ),
       grid([
-        tile('My attendance', st.teacherAtt[u.name] ?? 'Not marked', icon: Icons.event_available, onTap: () => pushPage(context, 'My Attendance & Leave', const TeacherSelf())),
+        // 'My attendance' (the teacher's own attendance) already lives in
+        // the burger menu as 'My Attendance & Leave' - this tile is a
+        // quicker path to what teachers actually need from the dashboard
+        // day to day: marking their students' attendance for today.
+        tile(
+          'Student Attendance',
+          '${st.myStudents().where((s) => s.status == 'Active').length} student(s)',
+          icon: Icons.event_available,
+          onTap: () => pushPage(context, 'Mark attendance', const StudentAttendanceMark()),
+        ),
         tile(
           'Students (${st.teacherMadrasa})',
           '${st.inBranch(st.teacherMadrasa).where((s) => s.status == 'Active').length}',
@@ -2695,17 +2712,25 @@ class _StaffHomeState extends State<StaffHome> {
 class MyDayView extends StatelessWidget {
   const MyDayView({super.key});
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) =>
+      // Own AnimatedBuilder: a const StatelessWidget returned from a bottom
+      // tab is the same canonical widget instance on every rebuild, so
+      // Flutter's element diffing skips calling build() again unless the
+      // widget listens for changes itself (same fix already applied to
+      // TeacherSelf/StudentAttendanceMark for the same reason).
+      AnimatedBuilder(animation: st, builder: (context, _) => _body(context));
+
+  Widget _body(BuildContext context) {
     final entries = st.myDay();
     return page([
       h("My day - across all madrasas"),
-      const Text('Classes today, in time order. Tap a row to switch to that Maktab.'),
+      const Text('Real Maktab/class assignments, grouped by Maktab. Tap a row to switch to that Maktab.'),
       const SizedBox(height: 8),
       if (entries.isEmpty) const Text('No classes assigned yet.'),
       ...entries.map((e) => Card(
             child: ListTile(
-              leading: CircleAvatar(backgroundColor: const Color(0xFFEEF4E8), child: Text(e.time.split(':')[0], style: const TextStyle(color: kGreen, fontWeight: FontWeight.bold, fontSize: 11))),
-              title: Text('${e.time} - ${e.madrasa}'),
+              leading: CircleAvatar(backgroundColor: const Color(0xFFEEF4E8), child: Text(e.madrasa.isNotEmpty ? e.madrasa[0].toUpperCase() : '?', style: const TextStyle(color: kGreen, fontWeight: FontWeight.bold, fontSize: 13))),
+              title: Text(e.madrasa),
               subtitle: Text(st.className(e.cls)),
               trailing: e.madrasa == st.teacherMadrasa ? const Chip(label: Text('Current')) : TextButton(onPressed: () => st.setTeacherMadrasa(e.madrasa), child: const Text('Switch here')),
             ),
@@ -3045,7 +3070,17 @@ class _BulkImportStudentsState extends State<BulkImportStudents> {
 class StudentAttendanceMark extends StatelessWidget {
   const StudentAttendanceMark({super.key});
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) =>
+      // Own AnimatedBuilder: without this, tapping Present/Absent updated
+      // st.todayAtt (and saved fine) but the button never visually
+      // reflected it - a const StatelessWidget returned from a bottom tab
+      // is the same canonical widget instance every rebuild, so Flutter's
+      // element diffing skips calling build() again unless the widget
+      // listens for changes itself (same fix already applied to
+      // TeacherSelf/MyDayView for the same reason).
+      AnimatedBuilder(animation: st, builder: (context, _) => _body(context));
+
+  Widget _body(BuildContext context) {
     // Deactivated students never appear here, so they can't be marked and never get an alert.
     final list = st.myStudents().where((s) => s.status == 'Active').toList();
     return page([
