@@ -1161,6 +1161,57 @@ Future<String> reactivateStudentRemote(Student s) async {
   return st.reactivateStudent(s);
 }
 
+// Persists "Mark Passed and Promote". Previously this called st.promote(s)
+// directly from the button - a purely local mutation of class/start/
+// progress with no database write at all, so a promotion looked like it
+// worked but silently reverted to the student's old class on the very
+// next reload, realtime sync, or re-login (loadMasterData rebuilds
+// st.students fresh from the database every time).
+// - Moving to a next class: updates students.class_id/admission_date and
+//   clears the old class's syllabus_progress rows (a fresh class starts
+//   fresh), matching what st.promote already did locally.
+// - No next class (graduating the highest class): the database has no
+//   separate "Graduated" status of its own, so this reuses the existing
+//   deactivation columns (is_active/deactivation_reason) rather than
+//   inventing a new one - same audit trail Section 4 already built.
+// Either way, RLS still applies: a teacher can only promote a student
+// into a class they are themselves assigned to (teacher_class_assignments)
+// - promoting into a class they don't teach is correctly rejected, not
+// silently allowed.
+Future<String> promoteRemote(Student s) async {
+  final nextDef = st.classDefs[s.cls + 1];
+  if (nextDef != null) {
+    if (s.dbId != null) {
+      if (nextDef.dbId == null) return 'The next class was not saved to the database yet.';
+      try {
+        await sb.from('students').update({'class_id': nextDef.dbId, 'admission_date': kToday}).eq('id', s.dbId as Object);
+        await sb.from('syllabus_progress').delete().eq('student_id', s.dbId as Object);
+      } on PostgrestException catch (e) {
+        if (e.code == '42501' || e.message.toLowerCase().contains('row-level security')) {
+          return "You don't have access to promote into ${nextDef.name} (it may not be a class you're assigned to).";
+        }
+        return 'Could not save: ${e.message}';
+      } catch (_) {
+        return 'Could not save. Check your internet connection and try again.';
+      }
+    }
+    return st.promote(s);
+  }
+  if (s.dbId != null) {
+    try {
+      await sb.from('students').update({
+        'is_active': false,
+        'deactivation_reason': 'Graduated: completed ${st.className(s.cls)}',
+      }).eq('id', s.dbId as Object);
+    } on PostgrestException catch (e) {
+      return 'Could not save: ${e.message}';
+    } catch (_) {
+      return 'Could not save. Check your internet connection and try again.';
+    }
+  }
+  return st.promote(s);
+}
+
 // Section 3.2.3/5: re-runs the active-duplicate check if name or DOB
 // changed. A return value starting with "DUPLICATE:" is the warning, not
 // an error - same confirm-and-retry pattern as addStudentRemote.
@@ -3383,7 +3434,13 @@ class _StudentsViewState extends State<StudentsView> {
                 Text(s.name, style: const TextStyle(fontWeight: FontWeight.bold)),
                 Text('${st.className(s.cls)} - eligible to pass'),
                 const SizedBox(height: 6),
-                ElevatedButton(onPressed: () => toast(context, st.promote(s)), child: const Text('Mark Passed and Promote')),
+                ElevatedButton(
+                  onPressed: () async {
+                    final msg = await promoteRemote(s);
+                    if (context.mounted) toast(context, msg);
+                  },
+                  child: const Text('Mark Passed and Promote'),
+                ),
               ]),
             ),
           )),
