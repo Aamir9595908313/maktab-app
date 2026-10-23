@@ -3569,6 +3569,23 @@ class _CommitteeAdminState extends State<CommitteeAdmin> {
                 subtitle: Text('${m.phone} - ${m.branches.join(', ')}${m.pending ? ' - invited, waiting for first login' : ''}'),
                 trailing: TextButton(
                   onPressed: () async {
+                    // Section 10: confirm before removing - this revokes
+                    // access (deactivates) rather than deleting history for
+                    // anyone who has actually logged in; a never-activated
+                    // invite has nothing to deactivate, so it's just deleted.
+                    final ok = await showDialog<bool>(
+                      context: context,
+                      builder: (ctx) => AlertDialog(
+                        title: const Text('Remove this member?'),
+                        content: Text('${m.name} will lose access. ${m.pending ? 'Nothing has been created for them yet, so this just cancels the invite.' : 'Their account is kept and can be reactivated later by a Super Admin if needed.'}'),
+                        actions: [
+                          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+                          ElevatedButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Remove')),
+                        ],
+                      ),
+                    );
+                    if (ok != true) return;
+                    if (!context.mounted) return;
                     final e = await removeCommitteeRemote(m);
                     if (context.mounted) toast(context, e ?? 'Removed.');
                   },
@@ -3840,6 +3857,35 @@ class CoursesTabBody extends StatelessWidget {
               ]),
               if (c != null && c.description.isNotEmpty) Text(c.description, style: const TextStyle(color: Colors.black54, fontSize: 12.5)),
               if (e.status == 'completed' && e.completedOn != null) Text('Completed on ${nice(e.completedOn!)}', style: const TextStyle(color: Colors.green)),
+              // Section 11: the certificate IS this completion record - a
+              // student, Add-on Course, issue date (completedOn) and status
+              // already exist; this just presents them as a certificate
+              // instead of duplicating a separate certificates module.
+              if (e.status == 'completed' && e.completedOn != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 6),
+                  child: OutlinedButton.icon(
+                    icon: const Icon(Icons.verified, size: 18),
+                    label: const Text('View Certificate'),
+                    onPressed: () => showDialog<void>(
+                      context: context,
+                      builder: (ctx) => AlertDialog(
+                        title: const Text('Certificate of Completion'),
+                        content: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+                          Text('This certifies that', style: TextStyle(color: Colors.black54)),
+                          Text(s.name, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+                          const SizedBox(height: 6),
+                          Text('has successfully completed the Add-on Course'),
+                          Text(c?.name ?? 'Add-on Course #${e.courseId}', style: const TextStyle(fontWeight: FontWeight.bold)),
+                          const SizedBox(height: 6),
+                          Text('Issue date: ${nice(e.completedOn!)}'),
+                          const Text('Status: Issued', style: TextStyle(color: Colors.green)),
+                        ]),
+                        actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Close'))],
+                      ),
+                    ),
+                  ),
+                ),
               if (e.status == 'in_progress' && canSubmit)
                 Padding(padding: const EdgeInsets.only(top: 6), child: ElevatedButton(onPressed: () => st.submitCourseCompletion(e), child: const Text('Submit for completion approval'))),
               if (e.status == 'awaiting_approval' && canDecide)
