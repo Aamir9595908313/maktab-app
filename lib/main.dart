@@ -2810,7 +2810,11 @@ class _BulkImportStudentsState extends State<BulkImportStudents> {
     });
     List<List<dynamic>> table;
     try {
-      table = const CsvToListConverter(eol: '\n', shouldParseNumbers: false).convert(content.trim());
+      // Default options only - the exact named-parameter set has changed
+      // across csv package major versions, and the defaults already do
+      // what this needs: cells stay as strings (no automatic number/bool
+      // parsing) and \n / \r\n line endings are both handled.
+      table = const CsvToListConverter().convert(content.trim());
     } catch (_) {
       setState(() => parseError = 'Could not read this file as CSV. Make sure it was saved as plain CSV (not .xlsx).');
       return;
