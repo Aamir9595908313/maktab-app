@@ -62,8 +62,12 @@ jobs:
               f.write(xml)
           PYEOF
       - run: flutter pub get
-      - run: flutter build apk --release
+      - name: Build release APK
+        id: build
+        continue-on-error: true
+        run: flutter build apk --release 2>&1 | tee build-log.txt
       - uses: actions/upload-artifact@v4
+        if: steps.build.outcome == 'success'
         with:
           name: maktab-app-apk
           path: build/app/outputs/flutter-apk/app-release.apk
@@ -73,6 +77,7 @@ jobs:
         # reach. A Release asset is served straight from github.com, so
         # it's downloadable from anywhere. "latest-apk" is reused/updated
         # on every push rather than piling up a new release each time.
+        if: steps.build.outcome == 'success'
         run: |
           mv build/app/outputs/flutter-apk/app-release.apk maktab-app.apk
           gh release delete latest-apk --yes || true
@@ -84,3 +89,17 @@ jobs:
             --latest
         env:
           GH_TOKEN: ${{ github.token }}
+      - name: Publish build log on failure (same reason - Release asset, not an Actions artifact)
+        if: steps.build.outcome == 'failure'
+        run: |
+          gh release delete build-log --yes || true
+          git tag -f build-log
+          git push -f origin build-log
+          gh release create build-log build-log.txt \
+            --title "Build log (failed build)" \
+            --notes "Failed build log from commit ${{ github.sha }}"
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - name: Fail the job if the build failed
+        if: steps.build.outcome == 'failure'
+        run: exit 1
