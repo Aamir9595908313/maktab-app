@@ -627,7 +627,7 @@ Future<void> loadCommitteeMembers() async {
 }
 
 Future<String?> addCommitteeRemote(String phone, String name, List<String> branches) async {
-  if (branches.isEmpty) return 'Choose at least one madrasa';
+  if (branches.isEmpty) return 'Choose at least one Maktab';
   final e = await addRoleInviteRemote(name: name, phone: phone, dbRole: 'committee', madrasaNames: branches);
   if (e == null) await loadCommitteeMembers();
   return e;
@@ -755,7 +755,7 @@ Future<String?> assignRoleRemote(String phone, String name, String roleName, Lis
   if (p.length != 10) return 'Enter a 10-digit mobile number';
   if (name.trim().isEmpty) return 'Enter the name';
   if (roleName.isEmpty) return 'Choose a role';
-  if (branches.isEmpty) return 'Choose at least one madrasa';
+  if (branches.isEmpty) return 'Choose at least one Maktab';
   try {
     final roleRow = await sb.from('roles').select('id').eq('name', roleName).maybeSingle();
     if (roleRow == null) return 'That role was not found - try Create role again.';
@@ -849,7 +849,7 @@ Future<String?> addRoleInviteRemote({required String name, required String phone
 }
 
 Future<String?> addTeacherInviteRemote(String name, String phone, List<String> madrasaNames) async {
-  if (madrasaNames.isEmpty) return 'Choose at least one madrasa';
+  if (madrasaNames.isEmpty) return 'Choose at least one Maktab';
   final e = await addRoleInviteRemote(name: name, phone: phone, dbRole: 'teacher', madrasaNames: madrasaNames);
   if (e == null) await loadTeachers();
   return e;
@@ -866,7 +866,7 @@ Future<String?> assignTeacherMadrasaRemote(Account a, String madrasaName, List<i
   }
   if (classNos.isEmpty) return 'Pick at least one class';
   final madrasaId = st.madrasas.firstWhere((m) => m.name == madrasaName, orElse: () => st.madrasas.first).dbId;
-  if (madrasaId == null) return 'That madrasa is not saved to the database yet.';
+  if (madrasaId == null) return 'That Maktab is not saved to the database yet.';
   final classIds = [
     for (final no in classNos)
       if (st.classDefs[no]?.dbId != null) st.classDefs[no]!.dbId!,
@@ -926,7 +926,7 @@ Future<String?> addStudentRemote({
   final m = st.madrasas.where((x) => x.name == madrasa).toList();
   final cd = st.classDefs[cls];
   if (m.isEmpty || m.first.dbId == null || cd?.dbId == null) {
-    return 'This Madrasa or Class was not saved to the database yet.';
+    return 'This Maktab or Class was not saved to the database yet.';
   }
   final prefix = madrasa == 'Jama'
       ? 'JAM'
@@ -1012,7 +1012,7 @@ Future<String?> editStudentRemote(Student s, {String? name, String? parentPhone,
   if (address != null) patch['address'] = address.trim().isEmpty ? null : address.trim();
   if (madrasa != null) {
     final m = st.madrasas.where((x) => x.name == madrasa).toList();
-    if (m.isEmpty || m.first.dbId == null) return 'This Madrasa was not saved to the database yet.';
+    if (m.isEmpty || m.first.dbId == null) return 'This Maktab was not saved to the database yet.';
     patch['madrasa_id'] = m.first.dbId;
   }
   if (cls != null) {
@@ -1026,7 +1026,7 @@ Future<String?> editStudentRemote(Student s, {String? name, String? parentPhone,
       await sb.from('students').update(patch).eq('id', s.dbId as Object);
     } on PostgrestException catch (e) {
       if (e.code == '42501' || e.message.toLowerCase().contains('row-level security')) {
-        return "You don't have access to save that change (it may be moving the student outside a madrasa/class you're assigned to).";
+        return "You don't have access to save that change (it may be moving the student outside a Maktab/class you're assigned to).";
       }
       return 'Could not save: ${e.message}';
     } catch (_) {
@@ -1042,14 +1042,14 @@ Future<String?> editStudentRemote(Student s, {String? name, String? parentPhone,
 // or a short message to show the user on failure.
 Future<String?> addMadrasaRemote(String name) async {
   final n = name.trim();
-  if (n.isEmpty) return 'Enter a Madrasa / Branch name';
-  if (st.madrasas.any((m) => m.name.toLowerCase() == n.toLowerCase())) return 'This Madrasa already exists';
+  if (n.isEmpty) return 'Enter a Maktab name';
+  if (st.madrasas.any((m) => m.name.toLowerCase() == n.toLowerCase())) return 'This Maktab already exists';
   try {
     final row = await sb.from('madrasas').insert({'name': n}).select().single();
     st.addMadrasa(n, dbId: row['id'] as String?);
     return null;
   } on PostgrestException catch (e) {
-    if (e.code == '23505') return 'This Madrasa already exists';
+    if (e.code == '23505') return 'This Maktab already exists';
     return 'Could not save: ${e.message}';
   } catch (_) {
     return 'Could not save. Check your internet connection and try again.';
@@ -1063,7 +1063,7 @@ Future<String?> setMadrasaActiveRemote(MadrasaRec m, bool v) async {
   if (m.dbId == null) {
     // Shouldn't happen once master data is loaded from Supabase, but guard
     // against toggling a row that was never actually saved.
-    return 'This Madrasa was not saved to the database yet.';
+    return 'This Maktab was not saved to the database yet.';
   }
   try {
     await sb.from('madrasas').update({'is_active': v}).eq('id', m.dbId as Object);
@@ -1076,14 +1076,14 @@ Future<String?> setMadrasaActiveRemote(MadrasaRec m, bool v) async {
 
 Future<String?> renameMadrasaRemote(MadrasaRec m, String name) async {
   final n = name.trim();
-  if (n.isEmpty) return 'Enter a Madrasa / Branch name';
-  if (m.dbId == null) return 'This Madrasa was not saved to the database yet.';
+  if (n.isEmpty) return 'Enter a Maktab name';
+  if (m.dbId == null) return 'This Maktab was not saved to the database yet.';
   try {
     await sb.from('madrasas').update({'name': n}).eq('id', m.dbId as Object);
     st.renameMadrasa(m, n);
     return null;
   } on PostgrestException catch (e) {
-    if (e.code == '23505') return 'This Madrasa already exists';
+    if (e.code == '23505') return 'This Maktab already exists';
     return 'Could not save: ${e.message}';
   } catch (_) {
     return 'Could not save. Check your internet connection and try again.';
@@ -1148,7 +1148,7 @@ Future<String?> renameClassRemote(ClassDef cd, String name) async {
 // Same pattern as addMadrasaRemote, for public.courses.
 Future<String?> addCourseRemote(String name, String description) async {
   final n = name.trim();
-  if (n.isEmpty) return 'Enter a course name';
+  if (n.isEmpty) return 'Enter an Add-on Course name';
   try {
     final row = await sb.from('courses').insert({'name': n, 'description': description.trim()}).select().single();
     st.addCourse(n, description, dbId: row['id'] as String?);
@@ -1163,7 +1163,7 @@ Future<String?> addCourseRemote(String name, String description) async {
 // Same pattern as setMadrasaActiveRemote, for public.courses.
 Future<String?> setCourseActiveRemote(Course c, bool v) async {
   if (c.dbId == null) {
-    return 'This course was not saved to the database yet.';
+    return 'This Add-on Course was not saved to the database yet.';
   }
   try {
     await sb.from('courses').update({'is_active': v}).eq('id', c.dbId as Object);
@@ -1176,8 +1176,8 @@ Future<String?> setCourseActiveRemote(Course c, bool v) async {
 
 Future<String?> renameCourseRemote(Course c, String name, String description) async {
   final n = name.trim();
-  if (n.isEmpty) return 'Enter a course name';
-  if (c.dbId == null) return 'This course was not saved to the database yet.';
+  if (n.isEmpty) return 'Enter an Add-on Course name';
+  if (c.dbId == null) return 'This Add-on Course was not saved to the database yet.';
   try {
     await sb.from('courses').update({'name': n, 'description': description.trim()}).eq('id', c.dbId as Object);
     st.renameCourse(c, n, description: description.trim());
@@ -1447,7 +1447,7 @@ Future<void> editStudentDialog(BuildContext context, Student s) async {
             const SizedBox(height: 8),
             DropdownButtonFormField<String>(
               value: st.madrasas.any((m) => m.name == madrasa) ? madrasa : null,
-              decoration: const InputDecoration(labelText: 'Madrasa / Branch'),
+              decoration: const InputDecoration(labelText: 'Maktab'),
               items: [for (final m in st.activeMadrasaNames) DropdownMenuItem(value: m, child: Text(m))],
               onChanged: (v) => setD(() => madrasa = v ?? madrasa),
             ),
@@ -1587,7 +1587,7 @@ class _GuestHomeState extends State<GuestHome> {
         await sb.auth.signOut();
         setState(() {
           busy = false;
-          err = 'This account has been deactivated. Contact your Madrasa Admin.';
+          err = 'This account has been deactivated. Contact your Maktab Admin.';
         });
         return;
       }
@@ -1621,7 +1621,7 @@ class _GuestHomeState extends State<GuestHome> {
             const SizedBox(height: 6),
             const Text('Maktab-e-Tajushshariah', style: TextStyle(color: kGreen, fontSize: 23, fontWeight: FontWeight.bold), textAlign: TextAlign.center),
             const SizedBox(height: 4),
-            const Text('Powered by Faiz-e-Raza Group', style: TextStyle(color: Colors.black54, fontSize: 13), textAlign: TextAlign.center),
+            const Text('Powered by Faiz-E-Raza Group Mehkar', style: TextStyle(color: Colors.black54, fontSize: 13), textAlign: TextAlign.center),
             const SizedBox(height: 16),
             Center(child: Image.asset('assets/logo.png', height: 84)),
             const SizedBox(height: 24),
@@ -1714,7 +1714,7 @@ List<AppTab> tabsFor(Account u) {
       if (st.studentView) return kidTabs;
       return [
         ...kidTabs,
-        AppTab('Course Progress', Icons.verified, () => const KidCourseProgress()),
+        AppTab('Add-on Course Progress', Icons.verified, () => const KidCourseProgress()),
         AppTab('Fees', Icons.payments, () => const KidFees()),
         AppTab('Complaints', Icons.report_problem, () => const ComplaintsView()),
         AppTab('Documents', Icons.badge, () => const KidDocs()),
@@ -1729,7 +1729,7 @@ List<AppTab> tabsFor(Account u) {
         AppTab('Student Attendance', Icons.event_available, () => const StudentAttendanceMark()),
         AppTab('Syllabus', Icons.menu_book, () => const TeacherSyllabus()),
         AppTab('Students & Promotion', Icons.school, () => const StudentsView()),
-        AppTab('Course Progress', Icons.verified, () => const CourseApprovalsView()),
+        AppTab('Add-on Course Progress', Icons.verified, () => const CourseApprovalsView()),
         AppTab('Complaints', Icons.report_problem, () => const ComplaintsView()),
       ];
     case 'admin':
@@ -1741,7 +1741,7 @@ List<AppTab> tabsFor(Account u) {
         AppTab('Fees', Icons.payments, () => const FeesAdmin()),
         AppTab('Students & Promotion', Icons.school, () => const StudentsView()),
         AppTab('Syllabus Progress', Icons.menu_book, () => const TeacherSyllabus()),
-        AppTab('Course Approvals', Icons.verified, () => const CourseApprovalsView()),
+        AppTab('Add-on Course Approvals', Icons.verified, () => const CourseApprovalsView()),
         AppTab('Complaints', Icons.report_problem, () => const ComplaintsView()),
       ];
     case 'super':
@@ -1751,8 +1751,8 @@ List<AppTab> tabsFor(Account u) {
         AppTab('Classes & Syllabus', Icons.menu_book, () => const SuperSyllabus()),
         AppTab('All Students', Icons.school, () => const StudentsView()),
         AppTab('Teachers & Leave', Icons.groups, () => const TeachersView()),
-        AppTab('Teacher Madrasas', Icons.swap_horiz, () => const TeacherMadrasasAdmin()),
-        AppTab('Course Approvals', Icons.verified, () => const CourseApprovalsView()),
+        AppTab('Teacher Makatib', Icons.swap_horiz, () => const TeacherMadrasasAdmin()),
+        AppTab('Add-on Course Approvals', Icons.verified, () => const CourseApprovalsView()),
         AppTab('Fee QR & Reminders', Icons.qr_code, () => const FeeQrAdmin()),
         AppTab('Reports', Icons.assessment, () => const ReportsView()),
         AppTab('Roles', Icons.admin_panel_settings, () => const RolesView()),
@@ -2299,7 +2299,7 @@ class _ComplaintsViewState extends State<ComplaintsView> {
           decoration: const InputDecoration(labelText: 'Send to', border: OutlineInputBorder()),
           items: const [
             DropdownMenuItem(value: 'teacher', child: Text('Teacher')),
-            DropdownMenuItem(value: 'admin', child: Text('Madrasa Admin')),
+            DropdownMenuItem(value: 'admin', child: Text('Maktab Admin')),
             DropdownMenuItem(value: 'super', child: Text('Super Admin')),
           ],
           onChanged: (v) => setState(() => to = v ?? to),
@@ -2360,7 +2360,7 @@ class _StaffHomeState extends State<StaffHome> {
       return page([
         banner(),
         grid([
-          tile('Madrasas', '${st.madrasas.length}', icon: Icons.account_balance, onTap: () => pushPage(context, 'Madrasas', const MasterDataView())),
+          tile('Makatib', '${st.madrasas.length}', icon: Icons.account_balance, onTap: () => pushPage(context, 'Makatib', const MasterDataView())),
           tile('Students', '${st.students.length}', icon: Icons.groups, onTap: () => pushPage(context, 'Students', const StudentsView())),
           tile('Teachers', '${st.teacherAccounts.where((t) => !t.pending).length}', icon: Icons.co_present, onTap: () => pushPage(context, 'Teachers & Leave', const TeachersView())),
           tile('Average attendance', '${st.avgAttAll()}%', icon: Icons.event_available),
@@ -2369,7 +2369,7 @@ class _StaffHomeState extends State<StaffHome> {
           tile('Complaints open', '$open', icon: Icons.report_problem, onTap: () => pushPage(context, 'Complaints', const ComplaintsView())),
           tile('Committee members', '${st.committeeAccounts.where((m) => !m.pending).length}', icon: Icons.diversity_3, onTap: () => pushPage(context, 'Committee', const CommitteeAdmin())),
         ]),
-        h('Post common announcement (all madrasas, all roles)'),
+        h('Post common announcement (all Makatib, all roles)'),
         field(title, 'Title'),
         field(msg, 'Message', lines: 2),
         DropdownButtonFormField<String>(
@@ -2456,7 +2456,7 @@ class MyDayView extends StatelessWidget {
     final entries = st.myDay();
     return page([
       h("My day - across all madrasas"),
-      const Text('Classes today, in time order. Tap a row to switch to that madrasa.'),
+      const Text('Classes today, in time order. Tap a row to switch to that Maktab.'),
       const SizedBox(height: 8),
       if (entries.isEmpty) const Text('No classes assigned yet.'),
       ...entries.map((e) => Card(
@@ -2489,7 +2489,7 @@ class _TeacherSelfState extends State<TeacherSelf> {
     final mine = st.leaves.where((l) => l.teacher == u.name).toList();
     return page([
       h('My attendance - ${nice(kToday)}', icon: Icons.event_available),
-      const Text('This is one record for the teacher, even when teaching at more than one madrasa.', style: TextStyle(fontSize: 12, color: Colors.black54)),
+      const Text('This is one record for the teacher, even when teaching at more than one Maktab.', style: TextStyle(fontSize: 12, color: Colors.black54)),
       Card(child: ListTile(title: Text(st.teacherAtt[u.name] ?? 'Not marked'), subtitle: const Text('Tap Present or Absent for today'))),
       Row(children: [
         Expanded(child: ElevatedButton(onPressed: () => markSelfRemote('Present'), child: const Text('Present'))),
@@ -2645,7 +2645,7 @@ class _StudentsViewState extends State<StudentsView> {
       if (canPickMadrasa) ...[
         DropdownButtonFormField<String>(
           value: regMadrasa,
-          decoration: const InputDecoration(labelText: 'Madrasa / Branch *', border: OutlineInputBorder()),
+          decoration: const InputDecoration(labelText: 'Maktab *', border: OutlineInputBorder()),
           items: [for (final m in st.activeMadrasaNames) DropdownMenuItem<String>(value: m, child: Text(m))],
           onChanged: (v) => setState(() => regMadrasa = v),
         ),
@@ -2910,7 +2910,7 @@ class _TeacherMadrasasAdminState extends State<TeacherMadrasasAdmin> {
         final teachers = st.teacherAccounts.where((t) => !t.pending).toList();
         if (teacherPhone != null && teachers.every((t) => t.phone != teacherPhone)) teacherPhone = null;
         return page([
-          h('Teacher madrasas and classes', icon: Icons.groups),
+          h('Teacher Makatib and classes', icon: Icons.groups),
           if (teachers.isEmpty)
             const Text(
               'No teacher has logged in yet. Invite one from Master Data > Teachers first - they show up here once they sign in with OTP.',
@@ -2919,11 +2919,11 @@ class _TeacherMadrasasAdminState extends State<TeacherMadrasasAdmin> {
           ...teachers.map((t) => Card(
                 child: ListTile(
                   title: Text(t.name),
-                  subtitle: Text(t.teachMadrasas.isEmpty ? 'Not assigned to any madrasa yet' : t.teachMadrasas.join(', ')),
+                  subtitle: Text(t.teachMadrasas.isEmpty ? 'Not assigned to any Maktab yet' : t.teachMadrasas.join(', ')),
                   isThreeLine: false,
                 ),
               )),
-          h('Assign a teacher to another madrasa'),
+          h('Assign a teacher to another Maktab'),
           if (teachers.isEmpty)
             const Text('Invite and sign in a teacher first.', style: TextStyle(color: Colors.black54))
           else ...[
@@ -2936,7 +2936,7 @@ class _TeacherMadrasasAdminState extends State<TeacherMadrasasAdmin> {
             const SizedBox(height: 8),
             DropdownButtonFormField<String>(
               value: madrasa,
-              decoration: const InputDecoration(labelText: 'Madrasa', border: OutlineInputBorder()),
+              decoration: const InputDecoration(labelText: 'Maktab', border: OutlineInputBorder()),
               items: [for (final m in st.activeMadrasaNames) DropdownMenuItem<String>(value: m, child: Text(m))],
               onChanged: (v) => setState(() => madrasa = v),
             ),
@@ -2958,7 +2958,7 @@ class _TeacherMadrasasAdminState extends State<TeacherMadrasasAdmin> {
                   ? null
                   : () async {
                       if (teacherPhone == null || madrasa == null) {
-                        toast(context, 'Choose a teacher and a madrasa');
+                        toast(context, 'Choose a teacher and a Maktab');
                         return;
                       }
                       Account? t;
@@ -2979,7 +2979,7 @@ class _TeacherMadrasasAdminState extends State<TeacherMadrasasAdmin> {
                       toast(context, err ?? 'Assigned. The teacher sees it next time they open the app.');
                       if (err == null) setState(() => classIds.clear());
                     },
-              child: busy ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2)) : const Text('Assign to another madrasa'),
+              child: busy ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2)) : const Text('Assign to another Maktab'),
             ),
           ],
         ]);
@@ -3068,7 +3068,7 @@ class _ReportsViewState extends State<ReportsView> {
       SingleChildScrollView(
         scrollDirection: Axis.horizontal,
         child: DataTable(
-          columns: const [DataColumn(label: Text('Report name')), DataColumn(label: Text('Date / period')), DataColumn(label: Text('Madrasa')), DataColumn(label: Text('Created on')), DataColumn(label: Text('Download'))],
+          columns: const [DataColumn(label: Text('Report name')), DataColumn(label: Text('Date / period')), DataColumn(label: Text('Maktab')), DataColumn(label: Text('Created on')), DataColumn(label: Text('Download'))],
           rows: [
             for (final r in rows)
               DataRow(cells: [
@@ -3149,7 +3149,7 @@ class _RolesViewState extends State<RolesView> {
         items: [for (final n in names) DropdownMenuItem<String>(value: n, child: Text(n))],
         onChanged: (v) => setState(() => pick = v),
       ),
-      const Padding(padding: EdgeInsets.only(top: 4, bottom: 4), child: Text('Madrasas this person can see:', style: TextStyle(color: Colors.black54, fontSize: 12.5))),
+      const Padding(padding: EdgeInsets.only(top: 4, bottom: 4), child: Text('Makatib this person can see:', style: TextStyle(color: Colors.black54, fontSize: 12.5))),
       Wrap(spacing: 4, children: [
         for (final m in st.activeMadrasaNames)
           FilterChip(
@@ -3202,7 +3202,7 @@ class _CommitteeAdminState extends State<CommitteeAdmin> {
         h('Add committee member (read-only)'),
         field(phone, 'Mobile number', number: true),
         field(name, 'Name'),
-        const Text('Madrasas this member can see:'),
+        const Text('Makatib this member can see:'),
         ...st.activeMadrasaNames.map((b) => CheckboxListTile(
               title: Text(b),
               value: br.contains(b),
@@ -3266,7 +3266,7 @@ class CommitteeDashboard extends StatelessWidget {
         child: ListTile(
           leading: const CircleAvatar(backgroundColor: Color(0xFFEEF4E8), child: Icon(Icons.groups, color: kGreen)),
           title: const Text('All Maktab Students', style: TextStyle(fontWeight: FontWeight.bold)),
-          subtitle: Text('$totalActive active student(s) across all Madrasas'),
+          subtitle: Text('$totalActive active student(s) across all Makatib'),
           trailing: const Icon(Icons.chevron_right),
           onTap: () => pushPage(context, 'All Students', const AllStudentsList()),
         ),
@@ -3274,10 +3274,10 @@ class CommitteeDashboard extends StatelessWidget {
       Card(
         child: ListTile(
           leading: const CircleAvatar(backgroundColor: Color(0xFFEEF4E8), child: Icon(Icons.account_balance, color: kGreen)),
-          title: const Text('Madrasa-Wise Student Information', style: TextStyle(fontWeight: FontWeight.bold)),
-          subtitle: const Text('Pick a Madrasa to see its students'),
+          title: const Text('Maktab-Wise Student Information', style: TextStyle(fontWeight: FontWeight.bold)),
+          subtitle: const Text('Pick a Maktab to see its students'),
           trailing: const Icon(Icons.chevron_right),
-          onTap: () => pushPage(context, 'Branches', const CommitteeBranches()),
+          onTap: () => pushPage(context, 'Makatib', const CommitteeBranches()),
         ),
       ),
     ]);
@@ -3328,7 +3328,7 @@ class CommitteeBranches extends StatelessWidget {
   Widget build(BuildContext context) {
     final u = st.user!;
     return page([
-      h('Branches'),
+      h('Makatib'),
       ...u.branches.map((b) => Card(
             child: ListTile(
               title: Text(b, style: const TextStyle(fontWeight: FontWeight.bold)),
@@ -3397,7 +3397,7 @@ class StudentDetail extends StatelessWidget {
             Tab(text: 'Syllabus'),
             Tab(text: 'Attendance'),
             Tab(text: 'Results'),
-            Tab(text: 'Courses'),
+            Tab(text: 'Add-on Courses'),
           ]),
         ),
         body: AnimatedBuilder(animation: st, builder: (context, _) => TabBarView(children: [
@@ -3486,7 +3486,7 @@ class CoursesTabBody extends StatelessWidget {
     final enrollments = st.enrollmentsFor(s);
     return page([
       if (canSubmit) ...[
-        const Text('Assign a course to this student:', style: TextStyle(fontWeight: FontWeight.w600)),
+        const Text('Assign an Add-on Course to this student:', style: TextStyle(fontWeight: FontWeight.w600)),
         const SizedBox(height: 6),
         Wrap(
           spacing: 6,
@@ -3497,7 +3497,7 @@ class CoursesTabBody extends StatelessWidget {
         ),
         const SizedBox(height: 12),
       ],
-      if (enrollments.isEmpty) const Text('No courses assigned to this student yet.'),
+      if (enrollments.isEmpty) const Text('No Add-on Courses assigned to this student yet.'),
       ...enrollments.map((e) {
         final c = st.courseById(e.courseId);
         return Card(
@@ -3505,7 +3505,7 @@ class CoursesTabBody extends StatelessWidget {
             padding: const EdgeInsets.all(12),
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-                Expanded(child: Text(c?.name ?? 'Course #${e.courseId}', style: const TextStyle(fontWeight: FontWeight.bold))),
+                Expanded(child: Text(c?.name ?? 'Add-on Course #${e.courseId}', style: const TextStyle(fontWeight: FontWeight.bold))),
                 _badge(e.status),
               ]),
               if (c != null && c.description.isNotEmpty) Text(c.description, style: const TextStyle(color: Colors.black54, fontSize: 12.5)),
@@ -3573,14 +3573,14 @@ class _MasterDataViewState extends State<MasterDataView> {
     return AnimatedBuilder(
       animation: st,
       builder: (context, _) => page([
-      h('Madrasa / Branch', icon: Icons.account_balance),
+      h('Maktab', icon: Icons.account_balance),
       ...st.madrasas.map((m) => Card(
             child: SwitchListTile(
               title: Row(children: [
                 Expanded(child: Text(m.name)),
                 InkWell(
                   onTap: () async {
-                    final n = await askText(context, 'Rename Madrasa / Branch', initial: m.name);
+                    final n = await askText(context, 'Rename Maktab', initial: m.name);
                     if (n == null) return;
                     final e = await renameMadrasaRemote(m, n);
                     if (context.mounted && e != null) toast(context, e);
@@ -3597,7 +3597,7 @@ class _MasterDataViewState extends State<MasterDataView> {
               },
             ),
           )),
-      field(madrasaName, 'New Madrasa / Branch name'),
+      field(madrasaName, 'New Maktab name'),
       ElevatedButton(
         onPressed: busy
             ? null
@@ -3606,10 +3606,10 @@ class _MasterDataViewState extends State<MasterDataView> {
                 final e = await addMadrasaRemote(madrasaName.text);
                 if (!mounted) return;
                 setState(() => busy = false);
-                toast(context, e ?? 'Madrasa added. It now appears in the registration dropdown.');
+                toast(context, e ?? 'Maktab added. It now appears in the registration dropdown.');
                 if (e == null) madrasaName.clear();
               },
-        child: busy ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2)) : const Text('Add Madrasa / Branch'),
+        child: busy ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2)) : const Text('Add Maktab'),
       ),
       h('Classes', icon: Icons.menu_book),
       ...st.classDefs.values.map((cd) => Card(
@@ -3688,7 +3688,7 @@ class _MasterDataViewState extends State<MasterDataView> {
           )),
       field(teacherName, 'New teacher name'),
       field(teacherPhone, 'Mobile number (10 digits)', number: true),
-      const Padding(padding: EdgeInsets.only(top: 4, bottom: 4), child: Text('Madrasas this teacher will teach in:', style: TextStyle(color: Colors.black54, fontSize: 12.5))),
+      const Padding(padding: EdgeInsets.only(top: 4, bottom: 4), child: Text('Makatib this teacher will teach in:', style: TextStyle(color: Colors.black54, fontSize: 12.5))),
       Wrap(spacing: 4, children: [
         for (final m in st.activeMadrasaNames)
           FilterChip(
@@ -3715,13 +3715,13 @@ class _MasterDataViewState extends State<MasterDataView> {
               },
         child: busy ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2)) : const Text('Invite Teacher'),
       ),
-      h('Madrasa Admins', icon: Icons.admin_panel_settings),
-      const Text('Invites a Madrasa Admin for one branch. This list only shows who you invite this session - open Roles & Permissions below to see everyone with access.', style: TextStyle(color: Colors.black54, fontSize: 12.5)),
-      field(adminName, 'New Madrasa Admin name'),
+      h('Maktab Admins', icon: Icons.admin_panel_settings),
+      const Text('Invites a Maktab Admin for one Maktab. This list only shows who you invite this session - open Roles & Permissions below to see everyone with access.', style: TextStyle(color: Colors.black54, fontSize: 12.5)),
+      field(adminName, 'New Maktab Admin name'),
       field(adminPhone, 'Mobile number (10 digits)', number: true),
       DropdownButtonFormField<String>(
         value: adminMadrasa,
-        decoration: const InputDecoration(labelText: 'Madrasa', border: OutlineInputBorder()),
+        decoration: const InputDecoration(labelText: 'Maktab', border: OutlineInputBorder()),
         items: [for (final m in st.activeMadrasaNames) DropdownMenuItem<String>(value: m, child: Text(m))],
         onChanged: (v) => setState(() => adminMadrasa = v),
       ),
@@ -3731,27 +3731,27 @@ class _MasterDataViewState extends State<MasterDataView> {
             ? null
             : () async {
                 if (adminMadrasa == null) {
-                  toast(context, 'Choose a madrasa');
+                  toast(context, 'Choose a Maktab');
                   return;
                 }
                 setState(() => busy = true);
                 final e = await addRoleInviteRemote(name: adminName.text, phone: adminPhone.text, dbRole: 'madrasa_admin', madrasaNames: [adminMadrasa!]);
                 if (!mounted) return;
                 setState(() => busy = false);
-                toast(context, e ?? 'Madrasa Admin invited.');
+                toast(context, e ?? 'Maktab Admin invited.');
                 if (e == null) {
                   adminName.clear();
                   adminPhone.clear();
                 }
               },
-        child: busy ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2)) : const Text('Invite Madrasa Admin'),
+        child: busy ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2)) : const Text('Invite Maktab Admin'),
       ),
       h('Committee Members', icon: Icons.diversity_3),
       field(committeeName, 'New Committee Member name'),
       field(committeePhone, 'Mobile number (10 digits)', number: true),
       DropdownButtonFormField<String>(
         value: committeeMadrasa,
-        decoration: const InputDecoration(labelText: 'Madrasa', border: OutlineInputBorder()),
+        decoration: const InputDecoration(labelText: 'Maktab', border: OutlineInputBorder()),
         items: [for (final m in st.activeMadrasaNames) DropdownMenuItem<String>(value: m, child: Text(m))],
         onChanged: (v) => setState(() => committeeMadrasa = v),
       ),
@@ -3761,7 +3761,7 @@ class _MasterDataViewState extends State<MasterDataView> {
             ? null
             : () async {
                 if (committeeMadrasa == null) {
-                  toast(context, 'Choose a madrasa');
+                  toast(context, 'Choose a Maktab');
                   return;
                 }
                 setState(() => busy = true);
@@ -3782,14 +3782,14 @@ class _MasterDataViewState extends State<MasterDataView> {
         icon: const Icon(Icons.admin_panel_settings),
         label: const Text('Open Roles & Permissions'),
       ),
-      h('Courses', icon: Icons.auto_stories),
+      h('Add-on Courses', icon: Icons.auto_stories),
       ...st.courses.map((c) => Card(
             child: SwitchListTile(
               title: Row(children: [
                 Expanded(child: Text(c.name)),
                 InkWell(
                   onTap: () async {
-                    final n = await askText(context, 'Rename course', initial: c.name);
+                    final n = await askText(context, 'Rename Add-on Course', initial: c.name);
                     if (n == null) return;
                     if (!context.mounted) return;
                     final d = await askText(context, 'Description (optional)', initial: c.description);
@@ -3809,8 +3809,8 @@ class _MasterDataViewState extends State<MasterDataView> {
               },
             ),
           )),
-      field(courseName, 'New course name'),
-      field(courseDesc, 'Course description (optional)', lines: 2),
+      field(courseName, 'New Add-on Course name'),
+      field(courseDesc, 'Add-on Course description (optional)', lines: 2),
       ElevatedButton(
         onPressed: busy
             ? null
@@ -3819,13 +3819,13 @@ class _MasterDataViewState extends State<MasterDataView> {
                 final e = await addCourseRemote(courseName.text, courseDesc.text);
                 if (!mounted) return;
                 setState(() => busy = false);
-                toast(context, e ?? 'Course added. It can now be assigned from any student\'s Courses tab.');
+                toast(context, e ?? 'Add-on Course added. It can now be assigned from any student\'s Add-on Courses tab.');
                 if (e == null) {
                   courseName.clear();
                   courseDesc.clear();
                 }
               },
-        child: busy ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2)) : const Text('Add course'),
+        child: busy ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2)) : const Text('Add Add-on Course'),
       ),
       ]),
     );
@@ -3848,7 +3848,7 @@ class CourseApprovalsView extends StatelessWidget {
           child: Padding(
             padding: const EdgeInsets.all(12),
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text('${s.name} - ${c?.name ?? 'Course'}', style: const TextStyle(fontWeight: FontWeight.bold)),
+              Text('${s.name} - ${c?.name ?? 'Add-on Course'}', style: const TextStyle(fontWeight: FontWeight.bold)),
               Text('${s.madrasa} - ${st.className(s.cls)} - submitted by ${e.submittedBy ?? 'teacher'}'),
               if (canDecide)
                 Padding(
@@ -3873,8 +3873,8 @@ class CourseApprovalsView extends StatelessWidget {
       }
     }
     return page([
-      h('Course completion requests', icon: Icons.verified),
-      const Text('Teachers submit a course as complete for a student here; Admin or Super Admin approves or rejects it. Approved courses show a green "Completed" badge in the Courses tab and the Parent Course Progress tab.', style: TextStyle(color: Colors.black54, fontSize: 12.5)),
+      h('Add-on Course completion requests', icon: Icons.verified),
+      const Text('Teachers submit an add-on course as complete for a student here; Admin or Super Admin approves or rejects it. Approved courses show a green "Completed" badge in the Add-on Courses tab and the Parent Add-on Course Progress tab.', style: TextStyle(color: Colors.black54, fontSize: 12.5)),
       const SizedBox(height: 8),
       if (rows.isEmpty) const Text('Nothing is waiting for approval right now.'),
       ...rows,

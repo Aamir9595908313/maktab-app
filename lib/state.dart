@@ -237,7 +237,7 @@ String roleLabel(Account u) {
     case 'super':
       return 'Super Admin';
     case 'admin':
-      return 'Madrasa Admin (Hanfi)';
+      return 'Maktab Admin (Hanfi)';
     case 'teacher':
       return 'Teacher';
     case 'parent':
@@ -296,8 +296,8 @@ class AppState extends ChangeNotifier {
   // new row's dbId so the local list and the database agree.
   String? addMadrasa(String name, {String? dbId}) {
     final n = name.trim();
-    if (n.isEmpty) return 'Enter a Madrasa / Branch name';
-    if (madrasas.any((m) => m.name.toLowerCase() == n.toLowerCase())) return 'This Madrasa already exists';
+    if (n.isEmpty) return 'Enter a Maktab name';
+    if (madrasas.any((m) => m.name.toLowerCase() == n.toLowerCase())) return 'This Maktab already exists';
     madrasas.add(MadrasaRec(n, dbId: dbId));
     notifyListeners();
     return null;
@@ -341,7 +341,7 @@ class AppState extends ChangeNotifier {
 
   String? addCourse(String name, String description, {String? dbId}) {
     final n = name.trim();
-    if (n.isEmpty) return 'Enter a course name';
+    if (n.isEmpty) return 'Enter an Add-on Course name';
     courses.add(Course(nextCourseId++, n, description.trim(), dbId: dbId));
     notifyListeners();
     return null;
@@ -386,7 +386,7 @@ class AppState extends ChangeNotifier {
       e.completedOn = kToday;
       e.approvedBy = user?.name;
       final c = courseById(e.courseId);
-      notes.add(Note(s.parentPhone, '${c?.name ?? 'Course'} marked Completed for ${s.name} on ${nice(kToday)}.'));
+      notes.add(Note(s.parentPhone, '${c?.name ?? 'Add-on Course'} marked Completed for ${s.name} on ${nice(kToday)}.'));
     } else {
       e.status = 'in_progress';
       e.rejectReason = reason;
@@ -472,7 +472,7 @@ class AppState extends ChangeNotifier {
     if (_absenceSentKeys.contains(key)) return; // duplicate-prevention
     _absenceSentKeys.add(key);
     whatsappLog.add(
-      '[${nice(date)}] To ${s.parentPhone}: "Dear Parent/Guardian, your child ${s.name} was marked absent at $madrasa on ${nice(date)}. Please contact the madarsa if you need any clarification. Thank you."',
+      '[${nice(date)}] To ${s.parentPhone}: "Dear Parent/Guardian, your child ${s.name} was marked absent at $madrasa on ${nice(date)}. Please contact the Maktab if you need any clarification. Thank you."',
     );
   }
 
@@ -514,7 +514,7 @@ class AppState extends ChangeNotifier {
     s.status = 'Inactive';
     s.history.add('Deactivated ${nice(kToday)} by ${user?.name ?? ''}${reason.trim().isEmpty ? '' : ': ${reason.trim()}'}');
     notifyListeners();
-    return '${s.name} deactivated. Attendance, fee and course history is kept.';
+    return '${s.name} deactivated. Attendance, fee and add-on course history is kept.';
   }
 
   String reactivateStudent(Student s) {
@@ -544,7 +544,7 @@ class AppState extends ChangeNotifier {
   final List<Leave> leaves = [];
   final List<Complaint> complaints = [];
   final List<Note> notes = [Note('9800000301', 'Noorani Qaeda page 12 completed for Ahmed on 1 Aug 2026')];
-  final List<Announcement> announcements = [Announcement('Madrasa closed on 02-Oct-2026', 'Friday holiday for all madrasas.', 'Important')];
+  final List<Announcement> announcements = [Announcement('Maktab closed on 02-Oct-2026', 'Friday holiday for all Makatib.', 'Important')];
   final List<String> viewLog = [];
   final List<ReportRow> reports = const [
     ReportRow('Daily Student Attendance', '19-09-2026', 'All', '19-09-2026 18:00'),
@@ -885,7 +885,7 @@ class AppState extends ChangeNotifier {
     students.add(s);
     users.putIfAbsent(parentPhone, () => Account(parentPhone, 'Parent', 'parent'));
     if (studentPhone.isNotEmpty) users[studentPhone] = Account(studentPhone, s.name, 'student');
-    notes.add(Note(parentPhone, '${s.name} was added to $madrasa madrasa. ID ${s.key}'));
+    notes.add(Note(parentPhone, '${s.name} was added to $madrasa Maktab. ID ${s.key}'));
     notifyListeners();
     return null;
   }
@@ -1066,7 +1066,7 @@ class AppState extends ChangeNotifier {
   String? addTeacher(String phone, String name, List<String> madrasasList) {
     if (phone.length != 10) return 'Enter a 10-digit mobile number';
     if (name.trim().isEmpty) return 'Enter the name';
-    if (madrasasList.isEmpty) return 'Choose at least one madrasa';
+    if (madrasasList.isEmpty) return 'Choose at least one Maktab';
     users[phone] = Account(phone, name.trim(), 'teacher', teachMadrasas: madrasasList);
     notifyListeners();
     return null;
@@ -1122,7 +1122,7 @@ class AppState extends ChangeNotifier {
 
   // ---------- teacher: assign to another madrasa ----------
   String? assignTeacherMadrasa(String teacherName, String madrasa, List<int> classIds) {
-    if (madrasa.isEmpty || classIds.isEmpty) return 'Choose a madrasa and at least one class';
+    if (madrasa.isEmpty || classIds.isEmpty) return 'Choose a Maktab and at least one class';
     final acc = users.values.firstWhere((u) => u.name == teacherName && u.role == 'teacher', orElse: () => Account('', '', ''));
     if (acc.phone.isEmpty) return 'Teacher not found';
     if (!acc.teachMadrasas.contains(madrasa)) acc.teachMadrasas.add(madrasa);
