@@ -65,32 +65,49 @@ jobs:
       - name: Build release APK
         id: build
         continue-on-error: true
-        # set -o pipefail: without it, `| tee` makes this step exit 0 (tee's
-        # own exit code) even when flutter build fails, which is exactly
-        # what happened last run - "succeeded" with no APK produced.
+        # --split-per-abi: one APK per CPU architecture (arm64-v8a,
+        # armeabi-v7a, x86_64) instead of one "universal" APK carrying all
+        # three copies of every native library. Same Dart/Flutter code and
+        # features in every one of them - this only removes native code
+        # for CPU types the installing phone can't use anyway. arm64-v8a
+        # covers virtually every real Android phone sold since ~2017;
+        # armeabi-v7a is kept too for older/budget devices, x86_64 for
+        # emulators. set -o pipefail: without it, `| tee` makes this step
+        # exit 0 (tee's own exit code) even when flutter build fails, which
+        # is exactly what happened on an earlier run - "succeeded" with no
+        # APK produced.
         run: |
           set -o pipefail
-          flutter build apk --release 2>&1 | tee build-log.txt
+          flutter build apk --release --split-per-abi 2>&1 | tee build-log.txt
       - uses: actions/upload-artifact@v4
         if: steps.build.outcome == 'success'
         with:
           name: maktab-app-apk
-          path: build/app/outputs/flutter-apk/app-release.apk
+          path: build/app/outputs/flutter-apk/*.apk
       - name: Publish APK to a GitHub Release
         # Build artifacts (actions/upload-artifact) are only downloadable
         # from Azure Blob Storage, which some networks/sandboxes can't
         # reach. A Release asset is served straight from github.com, so
         # it's downloadable from anywhere. "latest-apk" is reused/updated
         # on every push rather than piling up a new release each time.
+        # arm64-v8a is uploaded as "maktab-app.apk" (the plain, expected
+        # filename) since that's the right one for virtually every real
+        # phone; the armeabi-v7a (older devices) and x86_64 (emulator)
+        # builds are uploaded alongside it under their own names for the
+        # rare device that needs one of those instead.
         if: steps.build.outcome == 'success'
         run: |
-          mv build/app/outputs/flutter-apk/app-release.apk maktab-app.apk
+          cd build/app/outputs/flutter-apk
+          cp app-arm64-v8a-release.apk maktab-app.apk
           gh release delete latest-apk --yes || true
           git tag -f latest-apk
           git push -f origin latest-apk
-          gh release create latest-apk maktab-app.apk \
+          gh release create latest-apk \
+            maktab-app.apk \
+            app-armeabi-v7a-release.apk \
+            app-x86_64-release.apk \
             --title "Maktab App (latest build)" \
-            --notes "Auto-built from commit ${{ github.sha }}" \
+            --notes "Auto-built from commit ${{ github.sha }}. maktab-app.apk (arm64) is the right one for virtually every real phone; the armeabi-v7a/x86_64 files are for older devices/emulators." \
             --latest
         env:
           GH_TOKEN: ${{ github.token }}
