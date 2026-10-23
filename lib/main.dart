@@ -2724,6 +2724,7 @@ class _StaffHomeState extends State<StaffHome> {
       return page([
         banner(),
         grid([
+          tile('Search', 'Phone, name, Maktab', icon: Icons.search, onTap: () => pushPage(context, 'Search', const GlobalSearchView())),
           tile('Makatib', '${st.madrasas.length}', icon: Icons.account_balance, onTap: () => pushPage(context, 'Makatib', const MasterDataView())),
           // Browse by Maktab, with each student's live attendance/syllabus
           // status (StudentDetail's Status/Syllabus/Attendance tabs) -
@@ -2779,6 +2780,7 @@ class _StaffHomeState extends State<StaffHome> {
       return page([
         banner(),
         grid([
+          tile('Search', 'Phone, name, Maktab', icon: Icons.search, onTap: () => pushPage(context, 'Search', const GlobalSearchView())),
           tile('Students', '${myStudentsActive.length}', icon: Icons.groups, onTap: () => pushPage(context, 'Students', const StudentsView())),
           tile('Teachers today', '$present present, $onLeave on leave', icon: Icons.co_present, onTap: () => pushPage(context, 'Teachers & Leave', const TeachersView())),
           tile('Pending registrations', '${st.pending.length}', icon: Icons.how_to_reg, onTap: () => pushPage(context, 'Pending Registrations', const ApprovalsView())),
@@ -4205,6 +4207,107 @@ class _AllStudentsListState extends State<AllStudentsList> {
             ),
           );
         }),
+      ]),
+    );
+  }
+}
+
+// Global search for Admin/Super Admin: type a mobile number, name, student
+// key or Maktab name and jump straight to it, instead of having to guess
+// which of several screens (Students, Teachers & Leave, Makatib) the
+// person or Maktab is on. A phone number can match a student directly
+// (student_phone), a parent (parent_phone - the student is still the
+// closest real record to open, there's no separate parent screen), or a
+// teacher. Results stay empty until something is typed, and each list is
+// capped so one very common substring can't dump the whole database.
+class GlobalSearchView extends StatefulWidget {
+  const GlobalSearchView({super.key});
+  @override
+  State<GlobalSearchView> createState() => _GlobalSearchViewState();
+}
+
+class _GlobalSearchViewState extends State<GlobalSearchView> {
+  String q = '';
+  @override
+  Widget build(BuildContext context) {
+    final u = st.user!;
+    final query = q.trim().toLowerCase();
+    // Admin only searches within the Maktab(s) they manage; Super Admin
+    // searches everything - same scoping already used for Admin's
+    // dashboard counts (u.branches).
+    final scoped = u.role != 'super';
+
+    final students = query.isEmpty
+        ? <Student>[]
+        : st.students
+            .where((s) => !scoped || u.branches.contains(s.madrasa))
+            .where((s) => s.name.toLowerCase().contains(query) || s.key.toLowerCase().contains(query) || s.parentPhone.contains(query) || s.studentPhone.contains(query))
+            .take(20)
+            .toList();
+    final teachers = query.isEmpty
+        ? <Account>[]
+        : st.teacherAccounts
+            .where((t) => !scoped || t.teachMadrasas.any(u.branches.contains))
+            .where((t) => t.name.toLowerCase().contains(query) || t.phone.contains(query))
+            .take(20)
+            .toList();
+    final madrasas = query.isEmpty
+        ? <MadrasaRec>[]
+        : st.madrasas.where((m) => !scoped || u.branches.contains(m.name)).where((m) => m.name.toLowerCase().contains(query)).take(20).toList();
+
+    return Scaffold(
+      appBar: AppBar(title: const Text('Search'), backgroundColor: kGreen, foregroundColor: Colors.white),
+      body: page([
+        TextField(
+          autofocus: true,
+          decoration: const InputDecoration(labelText: 'Mobile number, name, student key or Maktab', border: OutlineInputBorder(), prefixIcon: Icon(Icons.search)),
+          onChanged: (v) => setState(() => q = v),
+        ),
+        const SizedBox(height: 10),
+        if (query.isEmpty) const Text('Type a mobile number, name or Maktab to search.', style: TextStyle(color: Colors.black54)),
+        if (query.isNotEmpty && students.isEmpty && teachers.isEmpty && madrasas.isEmpty) const Text('No matches.', style: TextStyle(color: Colors.black54)),
+        if (madrasas.isNotEmpty) ...[
+          h('Makatib'),
+          ...madrasas.map((m) => Card(
+                child: ListTile(
+                  leading: const Icon(Icons.account_balance),
+                  title: Text(m.name),
+                  subtitle: Text(m.active ? 'Active' : 'Inactive'),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => BranchStudents(branch: m.name))),
+                ),
+              )),
+        ],
+        if (students.isNotEmpty) ...[
+          h('Students & parents'),
+          ...students.map((s) {
+            final viaParent = s.parentPhone.contains(query) && !s.studentPhone.contains(query) && !s.name.toLowerCase().contains(query) && !s.key.toLowerCase().contains(query);
+            return Card(
+              child: ListTile(
+                leading: const Icon(Icons.person),
+                title: Text(s.name),
+                subtitle: Text(viaParent ? 'Parent (${s.parentPhone}) - ${s.madrasa}, ${st.className(s.cls)}' : '${s.key} - ${s.madrasa}, ${st.className(s.cls)}'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () {
+                  st.logView(s);
+                  Navigator.push(context, MaterialPageRoute<void>(builder: (_) => StudentDetail(s: s)));
+                },
+              ),
+            );
+          }),
+        ],
+        if (teachers.isNotEmpty) ...[
+          h('Teachers'),
+          ...teachers.map((t) => Card(
+                child: ListTile(
+                  leading: const Icon(Icons.co_present),
+                  title: Text(t.name),
+                  subtitle: Text('${t.phone} - ${t.teachMadrasas.join(', ')}${t.pending ? ' - Invited, not joined yet' : ''}'),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => pushPage(context, 'Teachers & Leave', const TeachersView()),
+                ),
+              )),
+        ],
       ]),
     );
   }
