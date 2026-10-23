@@ -1627,9 +1627,19 @@ Future<void> editStudentDialog(BuildContext context, Student s) async {
             TextField(controller: address, decoration: const InputDecoration(labelText: 'Address')),
             const SizedBox(height: 8),
             DropdownButtonFormField<String>(
-              value: st.madrasas.any((m) => m.name == madrasa) ? madrasa : null,
+              // The student's current Maktab may since have been deactivated
+              // (or be a stale duplicate record) - st.activeMadrasaNames
+              // alone would then not contain it, and binding `value` to a
+              // name missing from `items` crashes this dialog outright. Make
+              // sure the current value is always present as an item, even
+              // when it's inactive, so editing never crashes; the admin can
+              // still reassign to any active Maktab from the same list.
+              value: madrasa,
               decoration: const InputDecoration(labelText: 'Maktab'),
-              items: [for (final m in st.activeMadrasaNames) DropdownMenuItem(value: m, child: Text(m))],
+              items: [
+                for (final m in <String>{madrasa, ...st.activeMadrasaNames})
+                  DropdownMenuItem(value: m, child: Text(st.activeMadrasaNames.contains(m) ? m : '$m (inactive)')),
+              ],
               onChanged: (v) => setD(() => madrasa = v ?? madrasa),
             ),
             const SizedBox(height: 8),
