@@ -934,11 +934,42 @@ Future<String?> addRoleInviteRemote({required String name, required String phone
   }
 }
 
+// Creates a REAL teacher account immediately (via the 'create-teacher'
+// Edge Function, which uses the service role to create the auth identity
+// and persist the user_profiles/Maktab-scope/class-assignment rows under
+// a server-side authorization check), instead of queuing a
+// pending_role_invites row that would only become a real account once the
+// teacher happened to complete their first OTP login. That deferred
+// design was the root cause of a newly-created teacher not showing up in
+// Teacher Management, the Maktab-wise teacher list, or the
+// attendance/leave screens until first login - this makes the teacher a
+// real, persisted account (and fully visible everywhere) the moment the
+// admin saves the form, while still requiring a real OTP for every login.
 Future<String?> addTeacherInviteRemote(String name, String phone, List<String> madrasaNames) async {
+  final n = name.trim();
+  if (n.isEmpty) return 'Enter the name';
+  final p = digits(phone);
+  if (p.length != 10) return 'Enter a 10-digit mobile number';
   if (madrasaNames.isEmpty) return 'Choose at least one Maktab';
-  final e = await addRoleInviteRemote(name: name, phone: phone, dbRole: 'teacher', madrasaNames: madrasaNames);
-  if (e == null) await loadTeachers();
-  return e;
+  try {
+    final res = await sb.functions.invoke('create-teacher', body: {
+      'name': n,
+      'phone': p,
+      'madrasaNames': madrasaNames,
+    });
+    final data = res.data;
+    if (data is Map && data['ok'] == true) {
+      await loadTeachers();
+      return null;
+    }
+    return (data is Map ? data['error'] as String? : null) ?? 'Could not save the teacher.';
+  } on FunctionException catch (e) {
+    final details = e.details;
+    final msg = (details is Map ? details['error'] as String? : null);
+    return msg ?? 'Could not save: ${e.reasonPhrase ?? e.toString()}';
+  } catch (_) {
+    return 'Could not save. Check your internet connection and try again.';
+  }
 }
 
 // Adds (upserts) rows into teacher_class_assignments for a real, already-
@@ -4341,7 +4372,7 @@ class _MasterDataViewState extends State<MasterDataView> {
                 final e = await addTeacherInviteRemote(teacherName.text, teacherPhone.text, teacherMadrasasSel.toList());
                 if (!mounted) return;
                 setState(() => busy = false);
-                toast(context, e ?? 'Teacher invited. They become a real account the moment they log in with OTP on that number.');
+                toast(context, e ?? 'Teacher created. They can log in now with an OTP on that number.');
                 if (e == null) {
                   teacherName.clear();
                   teacherPhone.clear();
