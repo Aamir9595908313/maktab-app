@@ -3408,6 +3408,7 @@ class _StudentsViewState extends State<StudentsView> {
   final address = TextEditingController();
   final fatherName = TextEditingController();
   final dob = TextEditingController();
+  final studentSearch = TextEditingController();
   String gender = '';
   int cls = 1;
   String batch = 'Morning';
@@ -3608,12 +3609,34 @@ class _StudentsViewState extends State<StudentsView> {
             ),
           )),
       h('Students - ${u.role == 'teacher' ? st.teacherMadrasa : 'Hanfi'}'),
-      // Actions used to sit in the ListTile's trailing column, which has a
-      // fixed height - two or three buttons there overflowed it ("BOTTOM
-      // OVERFLOWED BY 16 PIXELS"). Moved below the tile in a Wrap instead,
-      // which has no fixed height and just adds a row (or wraps to a
-      // second one) no matter how many buttons end up there.
-      ...list.map((s) => Card(
+      // Super Admin (and anyone else) sees every student they're scoped to
+      // in one long list with no way to jump to one - search by name,
+      // unique key, student phone or parent phone narrows it down to
+      // actually find the student they want to edit.
+      TextField(
+        controller: studentSearch,
+        decoration: const InputDecoration(labelText: 'Search students by name, key or phone', border: OutlineInputBorder(), prefixIcon: Icon(Icons.search)),
+        onChanged: (_) => setState(() {}),
+      ),
+      const SizedBox(height: 8),
+      Builder(builder: (context) {
+        final q = studentSearch.text.trim().toLowerCase();
+        final shown = q.isEmpty
+            ? list
+            : list.where((s) => s.name.toLowerCase().contains(q) || s.key.toLowerCase().contains(q) || s.parentPhone.contains(q) || s.studentPhone.contains(q)).toList();
+        if (q.isNotEmpty && shown.isEmpty) return const Padding(padding: EdgeInsets.symmetric(vertical: 8), child: Text('No students match that search.', style: TextStyle(color: Colors.black54)));
+        return Column(children: [for (final s in shown) _studentCard(context, s, u, canEdit: canEdit, canSeeAadhaar: canSeeAadhaar, canDeactivate: canDeactivate, canReactivate: canReactivate)]);
+      }),
+    ]);
+  }
+
+  // Actions used to sit in the ListTile's trailing column, which has a
+  // fixed height - two or three buttons there overflowed it ("BOTTOM
+  // OVERFLOWED BY 16 PIXELS"). Moved below the tile in a Wrap instead,
+  // which has no fixed height and just adds a row (or wraps to a
+  // second one) no matter how many buttons end up there.
+  Widget _studentCard(BuildContext context, Student s, Account u, {required bool canEdit, required bool canSeeAadhaar, required bool canDeactivate, required bool canReactivate}) {
+    return Card(
             child: Padding(
               padding: const EdgeInsets.symmetric(vertical: 4),
               child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -3667,8 +3690,7 @@ class _StudentsViewState extends State<StudentsView> {
                 ),
               ]),
             ),
-          )),
-    ]);
+    );
   }
 }
 
