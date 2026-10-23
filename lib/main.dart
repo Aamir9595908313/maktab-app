@@ -1684,14 +1684,25 @@ Widget tile(String label, String value, {Color? color, VoidCallback? onTap, Icon
   return InkWell(borderRadius: BorderRadius.circular(4), onTap: onTap, child: card);
 }
 
-Widget grid(List<Widget> tiles) => GridView.count(
-      crossAxisCount: 2,
-      shrinkWrap: true,
-      physics: const NeverScrollableScrollPhysics(),
-      childAspectRatio: 2.1,
-      mainAxisSpacing: 6,
-      crossAxisSpacing: 6,
-      children: tiles,
+// Was a fixed crossAxisCount: 2 - fine on a phone, but on a tablet (or a
+// wide Chrome window, which is what this app is actually tested in) two
+// columns stretch into oversized, mostly-empty-looking tiles. Picks more
+// columns as the available width grows instead, so a dashboard tile
+// stays a sensible, readable size on any screen.
+Widget grid(List<Widget> tiles) => LayoutBuilder(
+      builder: (context, constraints) {
+        final w = constraints.maxWidth;
+        final cols = w >= 900 ? 4 : (w >= 600 ? 3 : 2);
+        return GridView.count(
+          crossAxisCount: cols,
+          shrinkWrap: true,
+          physics: const NeverScrollableScrollPhysics(),
+          childAspectRatio: 2.1,
+          mainAxisSpacing: 6,
+          crossAxisSpacing: 6,
+          children: tiles,
+        );
+      },
     );
 
 Widget h(String t, {IconData? icon}) => Padding(
@@ -1702,7 +1713,20 @@ Widget h(String t, {IconData? icon}) => Padding(
       ]),
     );
 
-Widget page(List<Widget> children) => ListView(padding: const EdgeInsets.all(14), children: children);
+// Every screen in the app is built from this one helper, so fixing it
+// here fixes tablet layout everywhere at once rather than screen by
+// screen. On a phone-width screen this is unchanged (full-width list). On
+// a tablet or wide window, content is capped at a comfortable reading
+// width and centered, instead of cards and text stretching edge to edge
+// across the whole tablet screen, and form fields becoming awkwardly wide.
+Widget page(List<Widget> children) => LayoutBuilder(
+      builder: (context, constraints) {
+        final isWide = constraints.maxWidth > 760;
+        final list = ListView(padding: const EdgeInsets.all(14), children: children);
+        if (!isWide) return list;
+        return Align(alignment: Alignment.topCenter, child: ConstrainedBox(constraints: const BoxConstraints(maxWidth: 760), child: list));
+      },
+    );
 
 // Pushes a screen built from `page([...])` as its own full page, with the
 // Scaffold + AppBar it needs (the tab-hosted versions of these same screens
