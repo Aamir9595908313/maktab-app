@@ -1,6 +1,10 @@
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:file_picker/file_picker.dart';
+import 'package:csv/csv.dart';
 import 'state.dart';
 import 'guest_tools.dart';
 import 'supabase_config.dart';
@@ -2752,6 +2756,242 @@ class _TeacherSelfState extends State<TeacherSelf> {
   }
 }
 
+// ---------------- Section 3.2.5: bulk student import (CSV) ----------------
+// One target Maktab is picked up front (scoped to the admin's own
+// authorized Makatib, same list as the admission form), so there's no
+// column asking which madrasa each row goes into and therefore no way to
+// accidentally import into a Maktab this admin isn't authorized for.
+class _ImportRow {
+  final int rowNo;
+  final String name;
+  final String gender;
+  final String dob;
+  final String fatherName;
+  final String parentPhone;
+  final String studentPhone;
+  final String address;
+  final int cls;
+  String? error; // non-null => this row is skipped
+  bool duplicate = false;
+  _ImportRow(this.rowNo, this.name, this.gender, this.dob, this.fatherName, this.parentPhone, this.studentPhone, this.address, this.cls);
+}
+
+const String kImportTemplateCsv = 'name,gender,class,dob,father_name,parent_phone,student_phone,address\n'
+    'Ahmed Khan,Male,1,2017-05-12,Imran Khan,9800000111,,House 12 Station Road\n';
+
+class BulkImportStudents extends StatefulWidget {
+  final List<String> pickableMadrasas;
+  const BulkImportStudents({super.key, required this.pickableMadrasas});
+  @override
+  State<BulkImportStudents> createState() => _BulkImportStudentsState();
+}
+
+class _BulkImportStudentsState extends State<BulkImportStudents> {
+  String? madrasa;
+  String? fileName;
+  List<_ImportRow> rows = [];
+  String? parseError;
+  bool importing = false;
+  int done = 0;
+  List<String> importErrors = [];
+
+  @override
+  void initState() {
+    super.initState();
+    madrasa = widget.pickableMadrasas.isNotEmpty ? widget.pickableMadrasas.first : null;
+  }
+
+  void _parse(String content) {
+    setState(() {
+      rows = [];
+      parseError = null;
+      importErrors = [];
+      done = 0;
+    });
+    List<List<dynamic>> table;
+    try {
+      table = const CsvToListConverter(eol: '\n', shouldParseNumbers: false).convert(content.trim());
+    } catch (_) {
+      setState(() => parseError = 'Could not read this file as CSV. Make sure it was saved as plain CSV (not .xlsx).');
+      return;
+    }
+    if (table.isEmpty) {
+      setState(() => parseError = 'The file is empty.');
+      return;
+    }
+    final header = table.first.map((h) => h.toString().trim().toLowerCase()).toList();
+    const expected = ['name', 'gender', 'class', 'dob', 'father_name', 'parent_phone', 'student_phone', 'address'];
+    final colIndex = {for (final c in expected) c: header.indexOf(c)};
+    if (colIndex['name'] == -1 || colIndex['gender'] == -1 || colIndex['class'] == -1 || colIndex['parent_phone'] == -1) {
+      setState(() => parseError = 'The header row must include at least: name, gender, class, parent_phone. Download the sample template below and use it as a starting point.');
+      return;
+    }
+    String cell(List<dynamic> r, String col) {
+      final i = colIndex[col]!;
+      if (i == -1 || i >= r.length) return '';
+      return r[i].toString().trim();
+    }
+
+    final parsed = <_ImportRow>[];
+    for (var i = 1; i < table.length; i++) {
+      final r = table[i];
+      if (r.every((x) => x.toString().trim().isEmpty)) continue; // skip blank lines
+      final clsText = cell(r, 'class');
+      final cls = int.tryParse(clsText) ?? -1;
+      final row = _ImportRow(
+        i + 1, // 1-based, matches what a spreadsheet shows including header row
+        cell(r, 'name'),
+        cell(r, 'gender'),
+        cell(r, 'dob'),
+        cell(r, 'father_name'),
+        digits(cell(r, 'parent_phone')),
+        digits(cell(r, 'student_phone')),
+        cell(r, 'address'),
+        cls,
+      );
+      if (row.name.isEmpty) {
+        row.error = 'Name is required';
+      } else if (row.gender != 'Male' && row.gender != 'Female') {
+        row.error = 'Gender must be exactly "Male" or "Female"';
+      } else if (!st.classDefs.containsKey(row.cls)) {
+        row.error = 'Unknown class "$clsText"';
+      } else if (row.parentPhone.length != 10) {
+        row.error = 'Parent mobile number must be 10 digits';
+      } else {
+        // Duplicate check: against existing active students, and against
+        // earlier rows already queued in this same file.
+        final dup = st.findActiveDuplicate(row.name, row.dob.isEmpty ? null : row.dob) != null ||
+            parsed.any((p) => p.error == null && p.name.toLowerCase() == row.name.toLowerCase() && p.dob == row.dob && row.dob.isNotEmpty);
+        row.duplicate = dup;
+      }
+      parsed.add(row);
+    }
+    setState(() => rows = parsed);
+  }
+
+  Future<void> _pickFile() async {
+    final result = await FilePicker.platform.pickFiles(type: FileType.custom, allowedExtensions: ['csv'], withData: true);
+    if (result == null || result.files.isEmpty) return;
+    final f = result.files.first;
+    final bytes = f.bytes;
+    if (bytes == null) {
+      setState(() => parseError = 'Could not read that file on this platform - try a different file picker or device.');
+      return;
+    }
+    setState(() => fileName = f.name);
+    _parse(utf8.decode(bytes, allowMalformed: true));
+  }
+
+  Future<void> _import(BuildContext context) async {
+    final valid = rows.where((r) => r.error == null).toList();
+    if (valid.isEmpty || madrasa == null) return;
+    setState(() {
+      importing = true;
+      done = 0;
+      importErrors = [];
+    });
+    for (final r in valid) {
+      final e = await addStudentRemote(
+        name: r.name,
+        gender: r.gender,
+        cls: r.cls,
+        parentPhone: r.parentPhone,
+        studentPhone: r.studentPhone,
+        aadhaar: true, // bulk import: Aadhaar is uploaded/verified separately per Section 3.2, not blocked per-row here
+        address: r.address,
+        madrasa: madrasa!,
+        dob: r.dob,
+        fatherName: r.fatherName,
+        confirmDuplicate: true, // already shown and accepted in the preview step
+      );
+      if (!mounted) return;
+      if (e != null) {
+        importErrors.add('Row ${r.rowNo} (${r.name}): $e');
+      } else {
+        done++;
+      }
+      setState(() {});
+    }
+    setState(() => importing = false);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final valid = rows.where((r) => r.error == null).toList();
+    final invalid = rows.where((r) => r.error != null).toList();
+    return Scaffold(
+      appBar: AppBar(title: const Text('Import students from CSV')),
+      body: ListView(padding: const EdgeInsets.all(16), children: [
+        const Text('1. Download the sample template, fill it in (keep the header row), then upload it below.', style: TextStyle(fontWeight: FontWeight.w600)),
+        const SizedBox(height: 8),
+        OutlinedButton.icon(
+          icon: const Icon(Icons.description),
+          label: const Text('View / copy sample template'),
+          onPressed: () => showDialog<void>(
+            context: context,
+            builder: (ctx) => AlertDialog(
+              title: const Text('Sample template (CSV)'),
+              content: SelectableText(kImportTemplateCsv),
+              actions: [
+                TextButton(
+                  onPressed: () {
+                    Clipboard.setData(const ClipboardData(text: kImportTemplateCsv));
+                    toast(context, 'Copied. Paste into a new text file and save it with a .csv extension.');
+                  },
+                  child: const Text('Copy'),
+                ),
+                TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Close')),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 16),
+        const Text('2. Choose the Maktab these students belong to.', style: TextStyle(fontWeight: FontWeight.w600)),
+        DropdownButtonFormField<String>(
+          value: madrasa,
+          decoration: const InputDecoration(labelText: 'Maktab *', border: OutlineInputBorder()),
+          items: [for (final m in widget.pickableMadrasas) DropdownMenuItem<String>(value: m, child: Text(m))],
+          onChanged: (v) => setState(() => madrasa = v),
+        ),
+        const SizedBox(height: 16),
+        const Text('3. Upload your filled CSV file.', style: TextStyle(fontWeight: FontWeight.w600)),
+        const SizedBox(height: 8),
+        ElevatedButton.icon(icon: const Icon(Icons.upload_file), label: Text(fileName ?? 'Choose CSV file'), onPressed: _pickFile),
+        if (parseError != null) Padding(padding: const EdgeInsets.only(top: 8), child: Text(parseError!, style: const TextStyle(color: Colors.red))),
+        if (rows.isNotEmpty) ...[
+          const SizedBox(height: 16),
+          Text('Preview: ${valid.length} ready to import, ${invalid.length} with errors, ${valid.where((r) => r.duplicate).length} possible duplicate(s) among those ready.', style: const TextStyle(fontWeight: FontWeight.w600)),
+          const SizedBox(height: 8),
+          ...rows.map((r) => Card(
+                color: r.error != null ? Colors.red.shade50 : (r.duplicate ? Colors.orange.shade50 : null),
+                child: ListTile(
+                  dense: true,
+                  title: Text('Row ${r.rowNo}: ${r.name.isEmpty ? '(no name)' : r.name}'),
+                  subtitle: Text(r.error ?? (r.duplicate ? 'Possible duplicate - a matching active student (same name + DOB) already exists. Will still be imported.' : 'Class ${r.cls} - parent ${r.parentPhone}')),
+                ),
+              )),
+          const SizedBox(height: 12),
+          if (importing) const LinearProgressIndicator(),
+          if (importing) Padding(padding: const EdgeInsets.symmetric(vertical: 8), child: Text('Imported $done of ${valid.length}...')),
+          if (!importing)
+            ElevatedButton(
+              onPressed: valid.isEmpty || madrasa == null ? null : () => _import(context),
+              child: Text('Import ${valid.length} student(s) into ${madrasa ?? ''}'),
+            ),
+          if (!importing && importErrors.isNotEmpty) ...[
+            const SizedBox(height: 12),
+            Text('Import finished: $done succeeded, ${importErrors.length} failed.', style: const TextStyle(fontWeight: FontWeight.bold)),
+            ...importErrors.map((e) => Text(e, style: const TextStyle(color: Colors.red, fontSize: 12.5))),
+          ] else if (!importing && done > 0) ...[
+            const SizedBox(height: 12),
+            Text('Import finished: all $done student(s) saved successfully.', style: const TextStyle(color: Colors.green, fontWeight: FontWeight.bold)),
+          ],
+        ],
+      ]),
+    );
+  }
+}
+
 class StudentAttendanceMark extends StatelessWidget {
   const StudentAttendanceMark({super.key});
   @override
@@ -2891,6 +3131,16 @@ class _StudentsViewState extends State<StudentsView> {
     regMadrasa ??= canPickMadrasa ? (pickableMadrasas.isNotEmpty ? pickableMadrasas.first : null) : st.teacherMadrasa;
     return page([
       h('Add new student', icon: Icons.school),
+      // Section 3.2.5: bulk import, Maktab Admin / Super Admin only (same
+      // people who can pick a Maktab here already).
+      if (canPickMadrasa && pickableMadrasas.isNotEmpty) ...[
+        OutlinedButton.icon(
+          icon: const Icon(Icons.upload_file),
+          label: const Text('Import students from CSV'),
+          onPressed: () => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => BulkImportStudents(pickableMadrasas: pickableMadrasas))),
+        ),
+        const SizedBox(height: 12),
+      ],
       field(name, 'Student name *'),
       if (canPickMadrasa) ...[
         DropdownButtonFormField<String>(
