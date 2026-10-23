@@ -531,11 +531,17 @@ Future<void> loadSyllabusProgress() async {
   } catch (_) {}
 }
 
-Future<void> tickChapterRemote(Student s, int i, String date, String grade) async {
+// Returns null on success, or an error message to show the teacher. A
+// failed save used to be swallowed silently: the tap looked like it
+// worked (local state updated optimistically) but nothing reached the
+// database, so the next full data reload quietly reverted it - exactly
+// the "page resets to 1 after Final Submit" bug. Now the teacher is told
+// immediately instead of finding out later via a silent revert.
+Future<String?> tickChapterRemote(Student s, int i, String date, String grade) async {
   st.tickChapter(s, i, date, grade);
-  if (s.dbId == null) return;
+  if (s.dbId == null) return null;
   final chapterId = st.chapters[s.cls]?[i].dbId;
-  if (chapterId == null) return;
+  if (chapterId == null) return null;
   try {
     await sb.from('syllabus_progress').upsert({
       'student_id': s.dbId,
@@ -545,12 +551,15 @@ Future<void> tickChapterRemote(Student s, int i, String date, String grade) asyn
       'grade': grade,
       'created_by': sb.auth.currentUser?.id,
     }, onConflict: 'student_id,chapter_id');
-  } catch (_) {}
+    return null;
+  } catch (e) {
+    return 'Could not save - this chapter will revert on refresh. Check your connection and try again.';
+  }
 }
 
-Future<void> markPageCompleteRemote(Student s, int pageNo, String date, String grade, String remark) async {
+Future<String?> markPageCompleteRemote(Student s, int pageNo, String date, String grade, String remark) async {
   st.markPageComplete(s, pageNo, date, grade, remark);
-  if (s.dbId == null) return;
+  if (s.dbId == null) return null;
   try {
     await sb.from('syllabus_progress').upsert({
       'student_id': s.dbId,
@@ -561,7 +570,10 @@ Future<void> markPageCompleteRemote(Student s, int pageNo, String date, String g
       'remark': remark,
       'created_by': sb.auth.currentUser?.id,
     }, onConflict: 'student_id,page_no');
-  } catch (_) {}
+    return null;
+  } catch (e) {
+    return 'Could not save - this page will revert on refresh. Check your connection and try again.';
+  }
 }
 
 // ---------------- Complaints (public.complaints) ----------------
@@ -2430,9 +2442,10 @@ Future<void> markPageDialog(BuildContext c, Student s, int pageNo) async {
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
           ElevatedButton(
-            onPressed: () {
-              markPageCompleteRemote(s, pageNo, date.text.trim(), grade, remark.text.trim());
-              Navigator.pop(ctx);
+            onPressed: () async {
+              final msg = await markPageCompleteRemote(s, pageNo, date.text.trim(), grade, remark.text.trim());
+              if (ctx.mounted) Navigator.pop(ctx);
+              if (msg != null && c.mounted) toast(c, msg);
             },
             child: const Text('Save'),
           ),
@@ -2462,9 +2475,10 @@ Future<void> tickChapterDialog(BuildContext c, Student s, int i) async {
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
           ElevatedButton(
-            onPressed: () {
-              tickChapterRemote(s, i, date.text.trim(), grade);
-              Navigator.pop(ctx);
+            onPressed: () async {
+              final msg = await tickChapterRemote(s, i, date.text.trim(), grade);
+              if (ctx.mounted) Navigator.pop(ctx);
+              if (msg != null && c.mounted) toast(c, msg);
             },
             child: const Text('Save'),
           ),
@@ -3167,11 +3181,11 @@ class StudentAttendanceMark extends StatelessWidget {
       if (cd.pageBased) {
         final cur = st.currentPageNo(s);
         progressRow = cur == null
-            ? const Text('All pages complete', style: TextStyle(fontSize: 12.5, color: Colors.green))
+            ? const Text('All pages complete', style: TextStyle(fontSize: 14.5, fontWeight: FontWeight.w600, color: Colors.green))
             : Row(children: [
-                Text('Page $cur of ${cd.totalPages}', style: const TextStyle(fontSize: 12.5, color: Colors.black54)),
+                Text('Page $cur of ${cd.totalPages}', style: const TextStyle(fontSize: 14.5, fontWeight: FontWeight.w600, color: Colors.black87)),
                 IconButton(
-                  icon: const Icon(Icons.add_circle, size: 20, color: kGreen),
+                  icon: const Icon(Icons.add_circle, size: 24, color: kGreen),
                   tooltip: 'Mark page $cur complete',
                   padding: EdgeInsets.zero,
                   constraints: const BoxConstraints(),
@@ -3188,11 +3202,11 @@ class StudentAttendanceMark extends StatelessWidget {
           }
         }
         progressRow = nextIdx == -1
-            ? const Text('All chapters complete', style: TextStyle(fontSize: 12.5, color: Colors.green))
+            ? const Text('All chapters complete', style: TextStyle(fontSize: 14.5, fontWeight: FontWeight.w600, color: Colors.green))
             : Row(children: [
-                Flexible(child: Text('Next: ${plan[nextIdx].title}', style: const TextStyle(fontSize: 12.5, color: Colors.black54), overflow: TextOverflow.ellipsis)),
+                Flexible(child: Text('Next: ${plan[nextIdx].title}', style: const TextStyle(fontSize: 14.5, fontWeight: FontWeight.w600, color: Colors.black87), overflow: TextOverflow.ellipsis)),
                 IconButton(
-                  icon: const Icon(Icons.add_circle, size: 20, color: kGreen),
+                  icon: const Icon(Icons.add_circle, size: 24, color: kGreen),
                   tooltip: 'Mark chapter complete',
                   padding: EdgeInsets.zero,
                   constraints: const BoxConstraints(),
