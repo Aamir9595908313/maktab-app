@@ -298,6 +298,11 @@ class AppState extends ChangeNotifier {
   // values doesn't flash a misleading "0" before the real data arrives.
   bool dataLoaded = false;
 
+  // True for the moment right after a parent logs in, while _LoginSplash
+  // (main.dart) plays its zoom-out logo animation; cleared by that
+  // widget via dismissLoginSplash() once the animation finishes.
+  bool showLoginSplash = false;
+
   final Map<String, Account> users = {
     '9800000001': Account('9800000001', 'Faiz Raza', 'super'),
     '9800000101': Account('9800000101', 'Imam Abdul Kareem', 'admin'),
@@ -641,6 +646,16 @@ class AppState extends ChangeNotifier {
     if (a.role == 'teacher') {
       teacherMadrasa = a.teachMadrasas.isNotEmpty ? a.teachMadrasas.first : 'Hanfi';
     }
+    // A parent landing straight on their child's Home screen with no
+    // transition at all felt abrupt - shown briefly by _LoginSplash (in
+    // main.dart) right after login, then dismissed via
+    // dismissLoginSplash() once its animation finishes.
+    showLoginSplash = a.role == 'parent';
+    notifyListeners();
+  }
+
+  void dismissLoginSplash() {
+    showLoginSplash = false;
     notifyListeners();
   }
 

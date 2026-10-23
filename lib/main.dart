@@ -1509,9 +1509,61 @@ class _MaktabAppState extends State<MaktabApp> {
           }
           return AnimatedBuilder(
             animation: st,
-            builder: (c, _) => st.user == null ? const GuestHome() : const Shell(),
+            builder: (c, _) => st.user == null
+                ? const GuestHome()
+                : st.showLoginSplash
+                    ? const _LoginSplash()
+                    : const Shell(),
           );
         },
+      ),
+    );
+  }
+}
+
+// Plays once right after a parent logs in: the logo starts zoomed in and
+// scales out to its normal size (with a fade), then hands off to the
+// Shell on its own - nothing for the person to tap. Purely cosmetic, so
+// if anything here ever throws, dismissing itself in initState's timer
+// before the animation would even finish is a worse failure mode than a
+// skipped animation, hence the plain Future.delayed rather than hanging
+// the transition on the AnimationController's own status/listener.
+class _LoginSplash extends StatefulWidget {
+  const _LoginSplash();
+  @override
+  State<_LoginSplash> createState() => _LoginSplashState();
+}
+
+class _LoginSplashState extends State<_LoginSplash> with SingleTickerProviderStateMixin {
+  late final AnimationController _c = AnimationController(vsync: this, duration: const Duration(milliseconds: 900));
+  late final Animation<double> _scale = Tween<double>(begin: 2.6, end: 1.0).animate(CurvedAnimation(parent: _c, curve: Curves.easeOutCubic));
+  late final Animation<double> _fade = CurvedAnimation(parent: _c, curve: const Interval(0.0, 0.5, curve: Curves.easeIn));
+
+  @override
+  void initState() {
+    super.initState();
+    _c.forward();
+    Future.delayed(const Duration(milliseconds: 1300), () {
+      if (mounted) st.dismissLoginSplash();
+    });
+  }
+
+  @override
+  void dispose() {
+    _c.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.white,
+      body: Center(
+        child: AnimatedBuilder(
+          animation: _c,
+          builder: (context, child) => Opacity(opacity: _fade.value, child: Transform.scale(scale: _scale.value, child: child)),
+          child: Image.asset('assets/logo.png', height: 120),
+        ),
       ),
     );
   }
