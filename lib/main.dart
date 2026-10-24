@@ -143,6 +143,7 @@ Future<void> loadMasterData() async {
           i++,
           (r['name'] as String?) ?? '',
           (r['description'] as String?) ?? '',
+          code: (r['course_code'] as String?) ?? '',
           active: (r['is_active'] as bool?) ?? true,
           dbId: r['id'] as String?,
         ),
@@ -194,8 +195,10 @@ Future<void> loadMasterData() async {
     await loadTeachers();
     await loadChapters();
     await loadClassParas();
+    await loadClassCourseAssignments();
     await loadAttendance();
     await loadSyllabusProgress();
+    await loadCourseEnrollments();
     await loadMyTeacherAttendance();
     await loadAllTeacherAttendanceToday();
     await loadComplaints();
@@ -248,6 +251,8 @@ void subscribeRealtime() {
     'madrasas',
     'classes',
     'courses',
+    'class_course_assignments',
+    'course_enrollments',
     'students',
     'teacher_class_assignments',
     'user_profiles',
@@ -533,13 +538,19 @@ Future<String?> addChapterRemote(int cls, String title, int days) async {
 // with 30 Para) each with its own page count, instead of one flat count.
 Future<void> loadClassParas() async {
   try {
-    final rows = await sb.from('class_paras').select('id, class_id, para_no, page_count').order('para_no');
+    final rows = await sb.from('class_paras').select('id, class_id, para_no, page_count, sequence_order').order('para_no');
     final classByDbId = {for (final cd in st.classDefs.values) if (cd.dbId != null) cd.dbId!: cd};
     final byClass = <ClassDef, List<ParaDef>>{};
     for (final r in (rows as List)) {
       final cd = classByDbId[r['class_id'] as String?];
       if (cd == null) continue;
-      byClass.putIfAbsent(cd, () => []).add(ParaDef((r['para_no'] as int?) ?? 0, (r['page_count'] as int?) ?? 0, dbId: r['id'] as String?));
+      final paraNo = (r['para_no'] as int?) ?? 0;
+      byClass.putIfAbsent(cd, () => []).add(ParaDef(
+            paraNo,
+            (r['page_count'] as int?) ?? 0,
+            dbId: r['id'] as String?,
+            sequenceOrder: r['sequence_order'] as int? ?? paraNo,
+          ));
     }
     for (final cd in st.classDefs.values) {
       st.setParasFromDb(cd, byClass[cd] ?? []);
@@ -551,7 +562,7 @@ Future<String?> addParaRemote(ClassDef cd, int pageCount) async {
   if (cd.dbId == null) return 'This class is not saved to the database yet.';
   final paraNo = cd.paras.isEmpty ? 1 : (cd.paras.map((p) => p.paraNo).reduce((a, b) => a > b ? a : b) + 1);
   try {
-    final row = await sb.from('class_paras').insert({'class_id': cd.dbId, 'para_no': paraNo, 'page_count': pageCount}).select().single();
+    final row = await sb.from('class_paras').insert({'class_id': cd.dbId, 'para_no': paraNo, 'page_count': pageCount, 'sequence_order': paraNo}).select().single();
     st.addParaLocal(cd, ParaDef(paraNo, pageCount, dbId: row['id'] as String?));
     return null;
   } on PostgrestException catch (e) {
@@ -571,6 +582,162 @@ Future<String?> updateParaPageCountRemote(ClassDef cd, ParaDef p, int pageCount)
     return 'Could not save: ${e.message}';
   } catch (_) {
     return 'Could not save. Check your internet connection and try again.';
+  }
+}
+
+// ---------------- Add-on Course class assignments (public.class_course_assignments) ----------------
+Future<void> loadClassCourseAssignments() async {
+  try {
+    final rows = await sb.from('class_course_assignments').select('id, class_id, course_id');
+    final classNoByDbId = {for (final cd in st.classDefs.values) if (cd.dbId != null) cd.dbId!: cd.id};
+    final courseIdByDbId = {for (final c in st.courses) if (c.dbId != null) c.dbId!: c.id};
+    final list = <ClassCourseAssignment>[];
+    for (final r in (rows as List)) {
+      final classId = classNoByDbId[r['class_id'] as String?];
+      final courseId = courseIdByDbId[r['course_id'] as String?];
+      if (classId == null || courseId == null) continue;
+      list.add(ClassCourseAssignment(classId, courseId, dbId: r['id'] as String?));
+    }
+    st.setClassCourseAssignmentsFromDb(list);
+  } catch (_) {}
+}
+
+Future<String?> assignCourseToClassRemote(ClassDef cd, Course c) async {
+  if (cd.dbId == null || c.dbId == null) return 'This class or Add-on Course was not saved to the database yet.';
+  try {
+    final row = await sb
+        .from('class_course_assignments')
+        .insert({'class_id': cd.dbId, 'course_id': c.dbId, 'assigned_by': sb.auth.currentUser?.id})
+        .select()
+        .single();
+    st.addClassCourseAssignmentLocal(ClassCourseAssignment(cd.id, c.id, dbId: row['id'] as String?));
+    return null;
+  } on PostgrestException catch (e) {
+    return 'Could not save: ${e.message}';
+  } catch (_) {
+    return 'Could not save. Check your internet connection and try again.';
+  }
+}
+
+Future<String?> unassignCourseFromClassRemote(ClassDef cd, Course c) async {
+  if (cd.dbId == null || c.dbId == null) return null;
+  try {
+    await sb.from('class_course_assignments').delete().eq('class_id', cd.dbId as Object).eq('course_id', c.dbId as Object);
+    st.removeClassCourseAssignmentLocal(cd.id, c.id);
+    return null;
+  } on PostgrestException catch (e) {
+    return 'Could not save: ${e.message}';
+  } catch (_) {
+    return 'Could not save. Check your internet connection and try again.';
+  }
+}
+
+// ---------------- Course enrollments (public.course_enrollments) ----------------
+// Resolves the handful of distinct submitted_by/approved_by user ids
+// actually present in this batch of enrollment rows to display names, in
+// one query - cheap, and avoids showing a raw uuid in the Approvals/Course
+// tabs for progress loaded from the database (rather than just acted on
+// in this session, where the name is already known locally).
+Future<void> loadCourseEnrollments() async {
+  final studentByDbId = {for (final s in st.students) if (s.dbId != null) s.dbId!: s};
+  final courseIdByDbId = {for (final c in st.courses) if (c.dbId != null) c.dbId!: c.id};
+  if (studentByDbId.isEmpty) return;
+  try {
+    final rows = await sb.from('course_enrollments').select();
+    final rowList = (rows as List).cast<Map<String, dynamic>>();
+    final userIds = <String>{
+      for (final r in rowList) ...[
+        if (r['submitted_by'] != null) r['submitted_by'] as String,
+        if (r['approved_by'] != null) r['approved_by'] as String,
+      ],
+    };
+    final nameById = <String, String>{};
+    if (userIds.isNotEmpty) {
+      final profRows = await sb.from('user_profiles').select('id, full_name').inFilter('id', userIds.toList());
+      for (final r in (profRows as List)) {
+        nameById[r['id'] as String] = (r['full_name'] as String?) ?? '';
+      }
+    }
+    final list = <CourseEnrollment>[];
+    for (final r in rowList) {
+      final s = studentByDbId[r['student_id'] as String?];
+      final courseId = courseIdByDbId[r['course_id'] as String?];
+      if (s == null || courseId == null) continue;
+      final e = CourseEnrollment(
+        courseId,
+        s.id,
+        status: (r['status'] as String?) ?? 'in_progress',
+        completedOn: (r['completed_at'] as String?)?.split('T').first,
+        dbId: r['id'] as String?,
+      );
+      e.submittedBy = nameById[r['submitted_by'] as String?];
+      e.approvedBy = nameById[r['approved_by'] as String?];
+      e.rejectReason = r['reject_reason'] as String?;
+      list.add(e);
+    }
+    st.setCourseEnrollmentsFromDb(list);
+  } catch (_) {}
+}
+
+Future<String?> enrollCourseRemote(Student s, Course c) async {
+  if (s.dbId == null || c.dbId == null) return 'This student or Add-on Course was not saved to the database yet.';
+  try {
+    final row = await sb
+        .from('course_enrollments')
+        .insert({'student_id': s.dbId, 'course_id': c.dbId, 'status': 'in_progress', 'created_by': sb.auth.currentUser?.id})
+        .select()
+        .single();
+    final e = st.enrollCourse(s, c.id, dbId: row['id'] as String?);
+    return e;
+  } on PostgrestException catch (e) {
+    if (e.code == '23505') return 'Already assigned to this student';
+    return 'Could not save: ${e.message}';
+  } catch (_) {
+    return 'Could not save. Check your internet connection and try again.';
+  }
+}
+
+Future<String?> submitCourseCompletionRemote(CourseEnrollment e) async {
+  st.submitCourseCompletion(e);
+  if (e.dbId == null) return 'This Add-on Course enrollment was not saved to the database yet.';
+  try {
+    await sb.from('course_enrollments').update({
+      'status': 'awaiting_approval',
+      'submitted_by': sb.auth.currentUser?.id,
+      'submitted_at': DateTime.now().toIso8601String(),
+    }).eq('id', e.dbId as Object);
+    return null;
+  } catch (_) {
+    return 'Could not save - this will revert on refresh. Check your connection and try again.';
+  }
+}
+
+Future<String?> decideCourseCompletionRemote(Student s, CourseEnrollment e, bool approve, {String reason = ''}) async {
+  st.decideCourseCompletion(s, e, approve, reason: reason);
+  if (e.dbId == null) return 'This Add-on Course enrollment was not saved to the database yet.';
+  try {
+    if (approve) {
+      await sb.from('course_enrollments').update({
+        'status': 'completed',
+        'completed_at': DateTime.now().toIso8601String(),
+        'approved_by': sb.auth.currentUser?.id,
+        'approved_at': DateTime.now().toIso8601String(),
+      }).eq('id', e.dbId as Object);
+      await sb.from('course_approval_log').insert({'enrollment_id': e.dbId, 'action': 'approved', 'actor_id': sb.auth.currentUser?.id});
+    } else {
+      await sb.from('course_enrollments').update({'status': 'in_progress', 'reject_reason': reason}).eq('id', e.dbId as Object);
+      await sb
+          .from('course_approval_log')
+          .insert({'enrollment_id': e.dbId, 'action': 'rejected', 'actor_id': sb.auth.currentUser?.id, 'remark': reason});
+    }
+    return null;
+  } on PostgrestException catch (ex) {
+    // The class-completion-guard trigger lives on `students`, not here, but
+    // keep the message pass-through pattern consistent in case any future
+    // DB-level check on course_enrollments itself raises one.
+    return 'Could not save: ${ex.message}';
+  } catch (_) {
+    return 'Could not save - this will revert on refresh. Check your connection and try again.';
   }
 }
 
@@ -1469,13 +1636,31 @@ Future<String?> renameClassRemote(ClassDef cd, String name) async {
   }
 }
 
+// Edits an existing class's book name / total pages (requirement 1 -
+// previously only the class name itself could be changed after creation).
+Future<String?> updateClassDetailsRemote(ClassDef cd, {String? bookName, int? totalPages}) async {
+  if (cd.dbId == null) return 'This class was not saved to the database yet.';
+  try {
+    final payload = <String, dynamic>{};
+    if (bookName != null) payload['book_name'] = bookName;
+    if (totalPages != null && cd.paras.isEmpty) payload['total_pages'] = totalPages;
+    if (payload.isNotEmpty) await sb.from('classes').update(payload).eq('id', cd.dbId as Object);
+    st.updateClassDetails(cd, bookName: bookName, totalPages: totalPages);
+    return null;
+  } on PostgrestException catch (e) {
+    return 'Could not save: ${e.message}';
+  } catch (_) {
+    return 'Could not save. Check your internet connection and try again.';
+  }
+}
+
 // Same pattern as addMadrasaRemote, for public.courses.
-Future<String?> addCourseRemote(String name, String description) async {
+Future<String?> addCourseRemote(String name, String description, {String code = ''}) async {
   final n = name.trim();
   if (n.isEmpty) return 'Enter an Add-on Course name';
   try {
-    final row = await sb.from('courses').insert({'name': n, 'description': description.trim()}).select().single();
-    st.addCourse(n, description, dbId: row['id'] as String?);
+    final row = await sb.from('courses').insert({'name': n, 'description': description.trim(), 'course_code': code.trim()}).select().single();
+    st.addCourse(n, description, code: code, dbId: row['id'] as String?);
     return null;
   } on PostgrestException catch (e) {
     return 'Could not save: ${e.message}';
@@ -1498,13 +1683,15 @@ Future<String?> setCourseActiveRemote(Course c, bool v) async {
   }
 }
 
-Future<String?> renameCourseRemote(Course c, String name, String description) async {
+Future<String?> renameCourseRemote(Course c, String name, String description, {String? code}) async {
   final n = name.trim();
   if (n.isEmpty) return 'Enter an Add-on Course name';
   if (c.dbId == null) return 'This Add-on Course was not saved to the database yet.';
   try {
-    await sb.from('courses').update({'name': n, 'description': description.trim()}).eq('id', c.dbId as Object);
-    st.renameCourse(c, n, description: description.trim());
+    final payload = {'name': n, 'description': description.trim()};
+    if (code != null) payload['course_code'] = code.trim();
+    await sb.from('courses').update(payload).eq('id', c.dbId as Object);
+    st.renameCourse(c, n, description: description.trim(), code: code?.trim());
     return null;
   } catch (_) {
     return 'Could not save. Check your internet connection and try again.';
@@ -2683,18 +2870,22 @@ class SyllabusBody extends StatelessWidget {
     );
   }
 
-  // One Para-labelled grid per Para, in book order, so a 30-Para Qur'an
-  // reads as 30 short sections instead of one very long flat grid.
+  // One Para-labelled grid per Para, in teaching/display order (see
+  // AppState.parasInSequence - plain ascending 1..30 for every class
+  // except the Hafizi Qur'an, which teaches Para 30 first, then 1-29).
+  // Each grid's page numbers are still that Para's real, physical book
+  // page range (AppState.paraStartPage) - only which Para's grid is shown
+  // first changes, never what page number a page actually is.
   List<Widget> _paraPageGrids(BuildContext context, ClassDef cd, int? cur) {
     final widgets = <Widget>[];
-    var seen = 0;
-    for (final p in cd.paras) {
+    for (final p in st.parasInSequence(cd)) {
+      final start = st.paraStartPage(cd, p.paraNo);
+      if (start == null) continue;
       widgets.add(Padding(
         padding: const EdgeInsets.only(top: 10, bottom: 6),
         child: Text('Para ${p.paraNo} (${p.pageCount} pages)', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13.5)),
       ));
-      widgets.add(_flatPageGrid(context, cd, cur, seen + 1, p.pageCount));
-      seen += p.pageCount;
+      widgets.add(_flatPageGrid(context, cd, cur, start, p.pageCount));
     }
     return widgets;
   }
@@ -3150,7 +3341,7 @@ class _StaffHomeState extends State<StaffHome> {
           tile('Complaints open', '$open', icon: Icons.report_problem, onTap: () => pushPage(context, 'Complaints', const ComplaintsView())),
         ]),
         h('Ready to promote'),
-        Text('${st.students.where((s) => st.eligible(s)).length} student(s)'),
+        Text('${st.students.where((s) => st.canCompleteClass(s)).length} student(s)'),
       ]);
     }
     // teacher
@@ -3182,7 +3373,7 @@ class _StaffHomeState extends State<StaffHome> {
           icon: Icons.groups,
           onTap: () => pushPage(context, 'Students & Promotion', const StudentsView()),
         ),
-        tile('Ready to promote', '${st.students.where((s) => st.eligible(s)).length}', icon: Icons.trending_up, onTap: () => pushPage(context, 'Students & Promotion', const StudentsView())),
+        tile('Ready to promote', '${st.students.where((s) => st.canCompleteClass(s)).length}', icon: Icons.trending_up, onTap: () => pushPage(context, 'Students & Promotion', const StudentsView())),
         tile('Complaints open', '$open', icon: Icons.report_problem, onTap: () => pushPage(context, 'Complaints', const ComplaintsView())),
       ]),
       const Text('Use the menu (top left) to open Attendance, Syllabus and more.'),
@@ -3900,25 +4091,45 @@ class _StudentsViewState extends State<StudentsView> {
         child: busy ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2)) : const Text('Save student'),
       ),
       h('Pass and promote', icon: Icons.school),
-      const Text('Classes 1-3: eligible once every page of the book is Completed. Class 4+: eligible once every chapter is Completed.'),
+      const Text('Classes 1-3: eligible once every page of the book is Completed. Class 4+: eligible once every chapter is Completed. Any mandatory Add-on Course assigned to the class must also be completed and approved.'),
       if (ready.isEmpty) const Text('No student is eligible yet. Mark pages/chapters complete in Syllabus.'),
-      ...ready.map((s) => Card(
-            child: Padding(
-              padding: const EdgeInsets.all(12),
-              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text(s.name, style: const TextStyle(fontWeight: FontWeight.bold)),
-                Text('${st.className(s.cls)} - eligible to pass'),
-                const SizedBox(height: 6),
+      ...ready.map((s) {
+        // Requirement 5: syllabus/chapter progress alone (st.eligible) is
+        // no longer enough - every mandatory Add-on Course assigned to the
+        // student's class must also be completed and approved before class
+        // completion is allowed. A syllabus-ready student with pending
+        // courses still shows up here (so nobody wonders where they went),
+        // but blocked, with the pending courses named instead of an active
+        // promote button - the same check the database trigger enforces
+        // again at the backend level regardless of what this screen shows.
+        final pending = st.pendingMandatoryCourses(s);
+        return Card(
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text(s.name, style: const TextStyle(fontWeight: FontWeight.bold)),
+              Text('${st.className(s.cls)} - eligible to pass'),
+              const SizedBox(height: 6),
+              if (pending.isEmpty)
                 ElevatedButton(
                   onPressed: () async {
                     final msg = await promoteRemote(s);
                     if (context.mounted) toast(context, msg);
                   },
                   child: const Text('Mark Passed and Promote'),
+                )
+              else ...[
+                const Text(
+                  'Class completion is not allowed. The student must complete all assigned add-on courses first.',
+                  style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold, fontSize: 12.5),
                 ),
-              ]),
-            ),
-          )),
+                const SizedBox(height: 4),
+                Text('Pending: ${pending.map((c) => c.name).join(', ')}', style: const TextStyle(fontSize: 12.5, color: Colors.black54)),
+              ],
+            ]),
+          ),
+        );
+      }),
       h('Students - ${u.role == 'teacher' ? st.teacherMadrasa : 'Hanfi'}'),
       // Super Admin (and anyone else) sees every student they're scoped to
       // in one long list with no way to jump to one - search by name,
@@ -4894,18 +5105,56 @@ class CoursesTabBody extends StatelessWidget {
     final canSubmit = u != null && (u.role == 'teacher' || u.role == 'admin' || u.role == 'super');
     final canDecide = u != null && (u.role == 'admin' || u.role == 'super');
     final enrollments = st.enrollmentsFor(s);
+    // Requirement 8 ("students see only the add-on courses assigned to
+    // their class"): the picker only offers courses a Super Admin/Admin
+    // has actually assigned to this student's class via Master Data, not
+    // every active course in the system.
+    final assignable = st.coursesForClass(st.classDefs[s.cls]?.id ?? -1).where((c) => c.active && !enrollments.any((e) => e.courseId == c.id));
     return page([
       if (canSubmit) ...[
         const Text('Assign an Add-on Course to this student:', style: TextStyle(fontWeight: FontWeight.w600)),
         const SizedBox(height: 6),
+        if (assignable.isEmpty) const Text('No unassigned Add-on Courses for this class.', style: TextStyle(color: Colors.black54, fontSize: 12.5)),
         Wrap(
           spacing: 6,
           children: [
-            for (final c in st.courses.where((c) => c.active && !enrollments.any((e) => e.courseId == c.id)))
-              ActionChip(label: Text(c.name), onPressed: () => st.enrollCourse(s, c.id)),
+            for (final c in assignable)
+              ActionChip(
+                label: Text(c.name),
+                onPressed: () async {
+                  final e = await enrollCourseRemote(s, c);
+                  if (context.mounted && e != null) toast(context, e);
+                },
+              ),
           ],
         ),
         const SizedBox(height: 12),
+      ],
+      // Requirement 6 (Parent Dashboard: "show the overall progress of the
+      // student's assigned courses"). This widget is shared by the
+      // Teacher/Admin student-profile Courses tab AND the Parent's
+      // KidCourseProgress screen, so adding the summary here surfaces it to
+      // both audiences from one place instead of duplicating it.
+      if (enrollments.isNotEmpty) ...[
+        () {
+          final total = enrollments.length;
+          final done = enrollments.where((e) => e.status == 'completed').length;
+          final pct = total == 0 ? 0.0 : done / total;
+          return Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: Card(
+              color: const Color(0xFFF3F7FF),
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Text('Add-on Course progress: $done of $total completed', style: const TextStyle(fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 6),
+                  ClipRRect(borderRadius: BorderRadius.circular(4), child: LinearProgressIndicator(value: pct, minHeight: 8)),
+                ]),
+              ),
+            ),
+          );
+        }(),
       ],
       if (enrollments.isEmpty) const Text('No Add-on Courses assigned to this student yet.'),
       ...enrollments.map((e) {
@@ -4950,17 +5199,34 @@ class CoursesTabBody extends StatelessWidget {
                   ),
                 ),
               if (e.status == 'in_progress' && canSubmit)
-                Padding(padding: const EdgeInsets.only(top: 6), child: ElevatedButton(onPressed: () => st.submitCourseCompletion(e), child: const Text('Submit for completion approval'))),
+                Padding(
+                  padding: const EdgeInsets.only(top: 6),
+                  child: ElevatedButton(
+                    onPressed: () async {
+                      final msg = await submitCourseCompletionRemote(e);
+                      if (context.mounted && msg != null) toast(context, msg);
+                    },
+                    child: const Text('Submit for completion approval'),
+                  ),
+                ),
               if (e.status == 'awaiting_approval' && canDecide)
                 Padding(
                   padding: const EdgeInsets.only(top: 6),
                   child: Row(children: [
-                    ElevatedButton(onPressed: () => st.decideCourseCompletion(s, e, true), child: const Text('Approve')),
+                    ElevatedButton(
+                      onPressed: () async {
+                        final msg = await decideCourseCompletionRemote(s, e, true);
+                        if (context.mounted && msg != null) toast(context, msg);
+                      },
+                      child: const Text('Approve'),
+                    ),
                     const SizedBox(width: 8),
                     OutlinedButton(
                       onPressed: () async {
                         final r = await askText(context, 'Reason for rejection');
-                        if (r != null) st.decideCourseCompletion(s, e, false, reason: r);
+                        if (r == null) return;
+                        final msg = await decideCourseCompletionRemote(s, e, false, reason: r);
+                        if (context.mounted && msg != null) toast(context, msg);
                       },
                       child: const Text('Reject'),
                     ),
@@ -4986,6 +5252,7 @@ class _MasterDataViewState extends State<MasterDataView> {
   final madrasaName = TextEditingController();
   final courseName = TextEditingController();
   final courseDesc = TextEditingController();
+  final courseCode = TextEditingController();
   final className = TextEditingController();
   final classBookName = TextEditingController();
   final classTotalPages = TextEditingController();
@@ -5069,6 +5336,27 @@ class _MasterDataViewState extends State<MasterDataView> {
                     },
                     child: const Padding(padding: EdgeInsets.all(4), child: Icon(Icons.edit, size: 16, color: Colors.black45)),
                   ),
+                  // Requirement 1: edit an EXISTING class's book details, not
+                  // just its name - previously only rename was possible after
+                  // a page-based class was created.
+                  if (cd.pageBased)
+                    InkWell(
+                      onTap: () async {
+                        final bn = await askText(context, 'Book name', initial: cd.bookName ?? '');
+                        if (bn == null) return;
+                        if (!context.mounted) return;
+                        int? tp;
+                        if (cd.paras.isEmpty) {
+                          final tpText = await askText(context, 'Total pages', initial: '${cd.totalPages}');
+                          if (tpText == null) return;
+                          tp = int.tryParse(tpText.trim());
+                        }
+                        if (!context.mounted) return;
+                        final e = await updateClassDetailsRemote(cd, bookName: bn, totalPages: tp);
+                        if (context.mounted && e != null) toast(context, e);
+                      },
+                      child: const Padding(padding: EdgeInsets.all(4), child: Icon(Icons.menu_book, size: 16, color: Colors.black45)),
+                    ),
                 ]),
                 subtitle: Text(cd.pageBased
                     ? 'Book: ${cd.bookName} - ${cd.totalPages} pages${cd.paras.isNotEmpty ? ' (${cd.paras.length} Para)' : ''}${cd.active ? '' : ' - Deactivated'}'
@@ -5081,6 +5369,7 @@ class _MasterDataViewState extends State<MasterDataView> {
                 },
               ),
               if (cd.pageBased) _paraSection(cd),
+              _classCourseSection(cd),
             ]),
           )),
       field(className, 'New class name (e.g. Class 5 - ...)'),
@@ -5231,50 +5520,132 @@ class _MasterDataViewState extends State<MasterDataView> {
         label: const Text('Open Roles & Permissions'),
       ),
       h('Add-on Courses', icon: Icons.auto_stories),
+      const Text('Status (Active/Inactive) controls whether a course can be newly assigned - deactivating one does not remove it from classes/students already assigned to it.',
+          style: TextStyle(fontSize: 11.5, color: Colors.black54)),
+      const SizedBox(height: 6),
       ...st.courses.map((c) => Card(
-            child: SwitchListTile(
-              title: Row(children: [
-                Expanded(child: Text(c.name)),
-                InkWell(
-                  onTap: () async {
-                    final n = await askText(context, 'Rename Add-on Course', initial: c.name);
-                    if (n == null) return;
-                    if (!context.mounted) return;
-                    final d = await askText(context, 'Description (optional)', initial: c.description);
-                    if (d == null) return;
-                    final e = await renameCourseRemote(c, n, d);
-                    if (context.mounted && e != null) toast(context, e);
-                  },
-                  child: const Padding(padding: EdgeInsets.all(4), child: Icon(Icons.edit, size: 16, color: Colors.black45)),
-                ),
-              ]),
-              subtitle: Text(c.description.isEmpty ? 'No description' : c.description),
-              value: c.active,
-              onChanged: (v) async {
-                final e = await setCourseActiveRemote(c, v);
-                if (!mounted) return;
-                if (e != null) toast(context, e);
-              },
-            ),
+            child: Column(children: [
+              SwitchListTile(
+                title: Row(children: [
+                  Expanded(child: Text(c.code.isEmpty ? c.name : '${c.name}  (${c.code})')),
+                  InkWell(
+                    onTap: () async {
+                      final n = await askText(context, 'Rename Add-on Course', initial: c.name);
+                      if (n == null) return;
+                      if (!context.mounted) return;
+                      final d = await askText(context, 'Description (optional)', initial: c.description);
+                      if (d == null) return;
+                      if (!context.mounted) return;
+                      final code = await askText(context, 'Course Code / ID (optional)', initial: c.code);
+                      if (code == null) return;
+                      final e = await renameCourseRemote(c, n, d, code: code);
+                      if (context.mounted && e != null) toast(context, e);
+                    },
+                    child: const Padding(padding: EdgeInsets.all(4), child: Icon(Icons.edit, size: 16, color: Colors.black45)),
+                  ),
+                ]),
+                subtitle: Text(c.description.isEmpty ? 'No description' : c.description),
+                value: c.active,
+                onChanged: (v) async {
+                  final e = await setCourseActiveRemote(c, v);
+                  if (!mounted) return;
+                  if (e != null) toast(context, e);
+                },
+              ),
+              // Requirement 2: which classes this course is assigned to -
+              // every assignment is mandatory (requirement 3), so there is
+              // no separate "mandatory?" toggle to set here.
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  const Text('Assigned to classes:', style: TextStyle(fontSize: 12, color: Colors.black54)),
+                  const SizedBox(height: 4),
+                  Wrap(spacing: 6, runSpacing: 6, children: [
+                    for (final cd in st.classDefs.values)
+                      FilterChip(
+                        label: Text(cd.name),
+                        selected: st.courseAssignedToClass(cd.id, c.id),
+                        onSelected: (sel) async {
+                          final e = sel ? await assignCourseToClassRemote(cd, c) : await unassignCourseFromClassRemote(cd, c);
+                          if (context.mounted && e != null) toast(context, e);
+                        },
+                      ),
+                  ]),
+                ]),
+              ),
+            ]),
           )),
       field(courseName, 'New Add-on Course name'),
       field(courseDesc, 'Add-on Course description (optional)', lines: 2),
+      field(courseCode, 'Course Code / ID (optional)'),
       ElevatedButton(
         onPressed: busy
             ? null
             : () async {
                 setState(() => busy = true);
-                final e = await addCourseRemote(courseName.text, courseDesc.text);
+                final e = await addCourseRemote(courseName.text, courseDesc.text, code: courseCode.text);
                 if (!mounted) return;
                 setState(() => busy = false);
-                toast(context, e ?? 'Add-on Course added. It can now be assigned from any student\'s Add-on Courses tab.');
+                toast(context, e ?? 'Add-on Course added. Assign it to a class above to make it required for that class\'s students.');
                 if (e == null) {
                   courseName.clear();
                   courseDesc.clear();
+                  courseCode.clear();
                 }
               },
         child: busy ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2)) : const Text('Add Add-on Course'),
       ),
+      ]),
+    );
+  }
+
+  // Mandatory Add-on Courses assigned to one class, shown under its switch
+  // tile - a reverse view of the FilterChip grid in the Add-on Courses
+  // section above (both edit the same class_course_assignments data), kept
+  // here too so assigning a course doesn't require scrolling all the way
+  // down to find it while looking at a specific class.
+  Widget _classCourseSection(ClassDef cd) {
+    final assigned = st.coursesForClass(cd.id);
+    final unassigned = st.courses.where((c) => c.active && !assigned.any((a) => a.id == c.id)).toList();
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        const Text('Mandatory Add-on Courses for this class:', style: TextStyle(fontSize: 12, color: Colors.black54)),
+        const SizedBox(height: 4),
+        if (assigned.isEmpty) const Text('None assigned yet.', style: TextStyle(fontSize: 12, color: Colors.black38)),
+        if (assigned.isNotEmpty)
+          Wrap(
+            spacing: 6,
+            runSpacing: 6,
+            children: [
+              for (final c in assigned)
+                InputChip(
+                  label: Text(c.name),
+                  onDeleted: () async {
+                    final e = await unassignCourseFromClassRemote(cd, c);
+                    if (context.mounted && e != null) toast(context, e);
+                  },
+                ),
+            ],
+          ),
+        if (unassigned.isNotEmpty) ...[
+          const SizedBox(height: 6),
+          Wrap(
+            spacing: 6,
+            runSpacing: 6,
+            children: [
+              for (final c in unassigned)
+                ActionChip(
+                  avatar: const Icon(Icons.add, size: 16),
+                  label: Text(c.name),
+                  onPressed: () async {
+                    final e = await assignCourseToClassRemote(cd, c);
+                    if (context.mounted && e != null) toast(context, e);
+                  },
+                ),
+            ],
+          ),
+        ],
       ]),
     );
   }
@@ -5365,12 +5736,20 @@ class CourseApprovalsView extends StatelessWidget {
                 Padding(
                   padding: const EdgeInsets.only(top: 8),
                   child: Row(children: [
-                    ElevatedButton(onPressed: () => st.decideCourseCompletion(s, e, true), child: const Text('Approve')),
+                    ElevatedButton(
+                      onPressed: () async {
+                        final msg = await decideCourseCompletionRemote(s, e, true);
+                        if (context.mounted && msg != null) toast(context, msg);
+                      },
+                      child: const Text('Approve'),
+                    ),
                     const SizedBox(width: 8),
                     OutlinedButton(
                       onPressed: () async {
                         final r = await askText(context, 'Reason for rejection');
-                        if (r != null) st.decideCourseCompletion(s, e, false, reason: r);
+                        if (r == null) return;
+                        final msg = await decideCourseCompletionRemote(s, e, false, reason: r);
+                        if (context.mounted && msg != null) toast(context, msg);
                       },
                       child: const Text('Reject'),
                     ),

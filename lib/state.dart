@@ -42,7 +42,7 @@ class ClassDef {
   final int id;
   String name;
   final bool pageBased;
-  final String? bookName;
+  String? bookName;
   int totalPages;
   final int paceDays; // expected days per page, page-based classes only
   bool active;
@@ -65,9 +65,16 @@ class ClassDef {
 class ParaDef {
   final int paraNo;
   int pageCount;
+  // The order this Para is taught/displayed in, independent of its number -
+  // e.g. the Hafizi Qur'an course teaches Para 30 first, then 1-29, so
+  // Para 30's sequenceOrder is 1 while its paraNo (identity) stays 30.
+  // Defaults to paraNo, which reproduces plain ascending order for every
+  // class that has no special sequence (Classes 1, 2, and Para 1..30 of
+  // Class 3 before this field existed).
+  int sequenceOrder;
   // public.class_paras row id, once loaded from (or saved to) the database.
   String? dbId;
-  ParaDef(this.paraNo, this.pageCount, {this.dbId});
+  ParaDef(this.paraNo, this.pageCount, {this.dbId, int? sequenceOrder}) : sequenceOrder = sequenceOrder ?? paraNo;
 }
 
 // Where a flat, book-wide page number falls inside a Para-wise book: which
@@ -199,10 +206,13 @@ class Course {
   final int id;
   String name;
   String description;
+  // "Course Code or ID" - a short human-assigned code (e.g. "ADN-01"),
+  // separate from the database row id. Optional.
+  String code;
   bool active;
   // Same purpose as MadrasaRec.dbId above, for public.courses.
   String? dbId;
-  Course(this.id, this.name, this.description, {this.active = true, this.dbId});
+  Course(this.id, this.name, this.description, {this.code = '', this.active = true, this.dbId});
 }
 
 // status: in_progress, awaiting_approval, completed
@@ -214,7 +224,21 @@ class CourseEnrollment {
   String? submittedBy;
   String? approvedBy;
   String? rejectReason;
-  CourseEnrollment(this.courseId, this.studentId, {this.status = 'in_progress', this.completedOn});
+  // public.course_enrollments row id, once loaded from (or saved to) the
+  // database - needed to update (submit/approve/reject) this exact row.
+  String? dbId;
+  CourseEnrollment(this.courseId, this.studentId, {this.status = 'in_progress', this.completedOn, this.dbId});
+}
+
+// Which add-on Course is required for which class (public.class_course_assignments).
+// Every assignment is mandatory - the course must be completed by every
+// student in that class before the class itself can be marked Completed
+// (see AppState.pendingMandatoryCourses / canCompleteClass).
+class ClassCourseAssignment {
+  final int classId;
+  final int courseId;
+  String? dbId;
+  ClassCourseAssignment(this.classId, this.courseId, {this.dbId});
 }
 
 class Note {
@@ -409,10 +433,10 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
-  String? addCourse(String name, String description, {String? dbId}) {
+  String? addCourse(String name, String description, {String code = '', String? dbId}) {
     final n = name.trim();
     if (n.isEmpty) return 'Enter an Add-on Course name';
-    courses.add(Course(nextCourseId++, n, description.trim(), dbId: dbId));
+    courses.add(Course(nextCourseId++, n, description.trim(), code: code.trim(), dbId: dbId));
     notifyListeners();
     return null;
   }
@@ -422,24 +446,63 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
-  void renameCourse(Course c, String name, {String? description}) {
+  void renameCourse(Course c, String name, {String? description, String? code}) {
     c.name = name;
     if (description != null) c.description = description;
+    if (code != null) c.code = code;
+    notifyListeners();
+  }
+
+  // ---------- class <-> course assignments (public.class_course_assignments) ----------
+  final List<ClassCourseAssignment> classCourseAssignments = [];
+
+  // Every add-on Course assigned to a given class (ClassDef.id), in the
+  // order they were assigned - what requirement 8's "students see only the
+  // add-on courses assigned to their class" and the mandatory-completion
+  // check are both built on.
+  List<Course> coursesForClass(int classId) {
+    final ids = classCourseAssignments.where((a) => a.classId == classId).map((a) => a.courseId).toSet();
+    return courses.where((c) => ids.contains(c.id)).toList();
+  }
+
+  bool courseAssignedToClass(int classId, int courseId) => classCourseAssignments.any((a) => a.classId == classId && a.courseId == courseId);
+
+  void setClassCourseAssignmentsFromDb(List<ClassCourseAssignment> list) {
+    classCourseAssignments
+      ..clear()
+      ..addAll(list);
+    notifyListeners();
+  }
+
+  void addClassCourseAssignmentLocal(ClassCourseAssignment a) {
+    if (courseAssignedToClass(a.classId, a.courseId)) return;
+    classCourseAssignments.add(a);
+    notifyListeners();
+  }
+
+  void removeClassCourseAssignmentLocal(int classId, int courseId) {
+    classCourseAssignments.removeWhere((a) => a.classId == classId && a.courseId == courseId);
     notifyListeners();
   }
 
   // ---------- course enrollments / completion approval ----------
-  final List<CourseEnrollment> courseEnrollments = [
-    CourseEnrollment(1, 41, status: 'completed', completedOn: '2026-08-20'),
-    CourseEnrollment(2, 41, status: 'in_progress'),
-    CourseEnrollment(2, 42, status: 'awaiting_approval'),
-  ];
+  // Populated from public.course_enrollments by loadCourseEnrollments() in
+  // main.dart after login - empty until then (no fake seed data, since
+  // this is real per-student progress, not a UI mock).
+  final List<CourseEnrollment> courseEnrollments = [];
+
+  void setCourseEnrollmentsFromDb(List<CourseEnrollment> list) {
+    courseEnrollments
+      ..clear()
+      ..addAll(list);
+    notifyListeners();
+  }
 
   List<CourseEnrollment> enrollmentsFor(Student s) => courseEnrollments.where((e) => e.studentId == s.id).toList();
 
-  String? enrollCourse(Student s, int courseId) {
+  String? enrollCourse(Student s, int courseId, {String? dbId}) {
     if (courseEnrollments.any((e) => e.studentId == s.id && e.courseId == courseId)) return 'Already assigned to this student';
-    courseEnrollments.add(CourseEnrollment(courseId, s.id));
+    courseEnrollments.add(CourseEnrollment(courseId, s.id, dbId: dbId));
     notifyListeners();
     return null;
   }
@@ -463,6 +526,27 @@ class AppState extends ChangeNotifier {
     }
     notifyListeners();
   }
+
+  bool isCourseCompletedFor(Student s, int courseId) =>
+      courseEnrollments.any((e) => e.studentId == s.id && e.courseId == courseId && e.status == 'completed');
+
+  // Every add-on Course assigned to this student's class that is NOT yet
+  // completed+approved for them - empty means nothing is blocking class
+  // completion. Shown to Teacher/Admin so they know exactly what's left
+  // (requirement 5), and is what canCompleteClass gates on.
+  List<Course> pendingMandatoryCourses(Student s) {
+    final cd = classDefs[s.cls];
+    if (cd == null) return const [];
+    return coursesForClass(cd.id).where((c) => !isCourseCompletedFor(s, c.id)).toList();
+  }
+
+  // Whether this student can actually be promoted/graduated right now:
+  // their syllabus is done (eligible) AND every add-on course assigned to
+  // their class is completed+approved. Kept separate from eligible() so
+  // the Students & Promotion screen can still show WHY a syllabus-ready
+  // student is blocked (which pending courses) instead of just silently
+  // hiding them.
+  bool canCompleteClass(Student s) => eligible(s) && pendingMandatoryCourses(s).isEmpty;
 
   // Classes 1-3 are book/page based; Class 4 is chapter based (Deeniyat)
   final Map<int, ClassDef> classDefs = {
@@ -493,6 +577,18 @@ class AppState extends ChangeNotifier {
 
   void renameClass(ClassDef cd, String name) {
     cd.name = name;
+    notifyListeners();
+  }
+
+  // Edits an existing class's book details (requirement 1: "edit, update,
+  // and save existing class details", not just rename). totalPages is
+  // ignored when this class has a Para structure - there, the total is
+  // always kept as the sum of each Para's own page count (see
+  // setParasFromDb/addParaLocal/updateParaLocal), so it isn't a
+  // independently-editable field in that case.
+  void updateClassDetails(ClassDef cd, {String? bookName, int? totalPages}) {
+    if (bookName != null) cd.bookName = bookName;
+    if (totalPages != null && cd.paras.isEmpty) cd.totalPages = totalPages;
     notifyListeners();
   }
 
@@ -535,6 +631,45 @@ class AppState extends ChangeNotifier {
       seen += p.pageCount;
     }
     return null;
+  }
+
+  // cd.paras in TEACHING/display order (e.g. Para 30, 1, 2, ..., 29 for the
+  // Hafizi Qur'an) - used anywhere Para are listed or presented to a
+  // person. Never used for page-number math: the physical page a Para
+  // starts on is fixed by the real printed book regardless of the order
+  // it's taught in, so page-number calculations always walk cd.paras
+  // itself (kept in paraNo/physical order - see setParasFromDb).
+  List<ParaDef> parasInSequence(ClassDef cd) => List<ParaDef>.from(cd.paras)..sort((a, b) => a.sequenceOrder.compareTo(b.sequenceOrder));
+
+  // The physical (real book) starting page number of a given Para, found by
+  // summing page counts of every Para before it in paraNo order - this is
+  // independent of teaching/display sequence.
+  int? paraStartPage(ClassDef cd, int paraNo) {
+    var seen = 0;
+    for (final p in cd.paras) {
+      if (p.paraNo == paraNo) return seen + 1;
+      seen += p.pageCount;
+    }
+    return null;
+  }
+
+  // Every physical page number of this class's book, in the order it
+  // should actually be taught/completed - for a plain flat book (no Para
+  // structure) this is just 1..totalPages, unchanged from before. For a
+  // Para-wise book it walks the Para in sequenceOrder (not paraNo order),
+  // expanding each into its own physical page range (still ascending
+  // within that one Para - only the Para-to-Para order changes).
+  List<int> pageSequence(ClassDef cd) {
+    if (cd.paras.isEmpty) return List<int>.generate(cd.totalPages, (i) => i + 1);
+    final seq = <int>[];
+    for (final p in parasInSequence(cd)) {
+      final start = paraStartPage(cd, p.paraNo);
+      if (start == null) continue;
+      for (var i = 0; i < p.pageCount; i++) {
+        seq.add(start + i);
+      }
+    }
+    return seq;
   }
 
   // Which classes a teacher is assigned to, per madrasa
@@ -805,11 +940,23 @@ class AppState extends ChangeNotifier {
   // ---------- syllabus: page-based (Classes 1-3) ----------
   int completedPages(Student s) => s.pageDate.length;
 
+  // The next page the student should do: the first page, walked in
+  // teaching-sequence order (see pageSequence), that isn't marked complete
+  // yet - NOT simply "completedPages + 1". A plain count would be wrong
+  // the moment the sequence doesn't start at physical page 1 (e.g. Hafizi
+  // Qur'an's Para 30 first): it would point at the physical next page
+  // instead of the next page in the required teaching order. Walking for
+  // the first gap also means it keeps working correctly for students who
+  // already had progress recorded before a class's sequence was
+  // introduced/changed - their completed pages stay exactly as recorded,
+  // and this simply resumes wherever the new sequence is still incomplete.
   int? currentPageNo(Student s) {
     final cd = classDefs[s.cls]!;
     if (!cd.pageBased) return null;
-    final n = completedPages(s) + 1;
-    return n <= cd.totalPages ? n : null;
+    for (final pageNo in pageSequence(cd)) {
+      if (!s.pageDate.containsKey(pageNo)) return pageNo;
+    }
+    return null;
   }
 
   String pageStatus(Student s, int pageNo) {
