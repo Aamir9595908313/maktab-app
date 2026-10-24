@@ -2107,18 +2107,27 @@ class _GuestHomeState extends State<GuestHome> {
 
   @override
   Widget build(BuildContext context) {
+    // The logo is the first thing someone sees on this screen, so it leads
+    // (name and subtitle follow it) and scales with the screen instead of a
+    // fixed 84px - a small size on a big tablet, or cramped on a small
+    // phone, is what "not clearly visible" meant here. Clamped so it never
+    // gets absurdly large on a tablet or too small on a narrow phone; using
+    // only `height` (no `width`) keeps Image.asset's own aspect ratio, so
+    // it can never stretch or distort.
+    final screenW = MediaQuery.of(context).size.width;
+    final logoHeight = screenW.clamp(300.0, 900.0) * 0.42;
     return Scaffold(
       body: SafeArea(
         child: ListView(
           padding: const EdgeInsets.all(20),
           children: [
-            const SizedBox(height: 6),
+            const SizedBox(height: 10),
+            Center(child: Image.asset('assets/logo.png', height: logoHeight)),
+            const SizedBox(height: 18),
             const Text('Maktab-e-Tajushshariah', style: TextStyle(color: kGreen, fontSize: 23, fontWeight: FontWeight.bold), textAlign: TextAlign.center),
             const SizedBox(height: 4),
             const Text('Powered by Faiz-E-Raza Group Mehkar', style: TextStyle(color: Colors.black54, fontSize: 13), textAlign: TextAlign.center),
-            const SizedBox(height: 16),
-            Center(child: Image.asset('assets/logo.png', height: 84)),
-            const SizedBox(height: 24),
+            const SizedBox(height: 28),
             if (!step2) ...[
               field(phone, 'Mobile number', number: true, autofocus: true),
               const SizedBox(height: 4),
@@ -2167,7 +2176,7 @@ class _GuestHomeState extends State<GuestHome> {
             const SizedBox(height: 10),
             const Text('No login needed for these tools:', style: TextStyle(color: Colors.black54), textAlign: TextAlign.center),
             const SizedBox(height: 14),
-            Wrap(alignment: WrapAlignment.center, spacing: 4, runSpacing: 10, children: [
+            ..._iconRows([
               _bottomIcon(context, Icons.fingerprint, 'Tasbeeh', () => openTool(context, const TasbeehScreen())),
               _bottomIcon(context, Icons.explore, 'Qibla Direction', () => openTool(context, const QiblaScreen())),
               _bottomIcon(context, Icons.calendar_month, 'Islamic Calendar', () => openTool(context, const CalendarScreen())),
@@ -2181,15 +2190,31 @@ class _GuestHomeState extends State<GuestHome> {
     );
   }
 
+  // Exactly 3 icons per row, each given equal width (Expanded) so they
+  // stay the same size and evenly spaced regardless of label length - a
+  // Wrap alone can't guarantee a fixed count per row since that depends on
+  // how much text happens to fit. Extra icons beyond a multiple of 3 fall
+  // onto their own row instead of being squeezed in.
+  List<Widget> _iconRows(List<Widget> icons) {
+    final rows = <Widget>[];
+    for (var i = 0; i < icons.length; i += 3) {
+      final end = i + 3 < icons.length ? i + 3 : icons.length;
+      final group = icons.sublist(i, end);
+      rows.add(Row(children: [for (final w in group) Expanded(child: w)]));
+      if (i + 3 < icons.length) rows.add(const SizedBox(height: 14));
+    }
+    return rows;
+  }
+
   Widget _bottomIcon(BuildContext context, IconData icon, String label, VoidCallback onTap) => InkWell(
         onTap: onTap,
         borderRadius: BorderRadius.circular(40),
         child: Padding(
           padding: const EdgeInsets.all(8),
-          child: Column(children: [
-            CircleAvatar(radius: 26, backgroundColor: const Color(0xFFEEF4E8), child: Icon(icon, color: kGreen)),
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            CircleAvatar(radius: 28, backgroundColor: const Color(0xFFEEF4E8), child: Icon(icon, color: kGreen, size: 28)),
             const SizedBox(height: 6),
-            Text(label, style: const TextStyle(fontSize: 11.5), textAlign: TextAlign.center),
+            Text(label, style: const TextStyle(fontSize: 12), textAlign: TextAlign.center, maxLines: 2),
           ]),
         ),
       );

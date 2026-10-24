@@ -14,7 +14,9 @@ dependencies:
   file_picker: ^13.0.0
   csv: ^6.0.0
   http: ^1.2.2
+  printing: ^5.13.4
 flutter:
   uses-material-design: true
   assets:
     - assets/logo.png
+    - assets/surah_yaseen.pdf

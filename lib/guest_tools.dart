@@ -1,12 +1,14 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:flutter_compass/flutter_compass.dart';
 import 'package:http/http.dart' as http;
+import 'package:printing/printing.dart';
 
 const Color _kGreen = Color(0xFF054D00);
 const Color _kGold = Color(0xFFD4A72C);
@@ -618,74 +620,35 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
   }
 }
 
-// ---------------- Surah Yaseen (Arabic text fetched live) ----------------
-class SurahYaseenScreen extends StatefulWidget {
+// ---------------- Surah Yaseen (bundled, pre-rendered PDF) ----------------
+// Rendered ahead of time from the Uthmani-script source text into a
+// paginated A4 PDF using the Amiri Quran font (which correctly joins
+// Arabic letters and stacks the harakat/diacritics), then bundled as an
+// app asset. Shown here with the `printing` package's PdfPreview, which
+// displays/prints/shares the already-verified PDF as-is rather than
+// re-rendering the Arabic text through Flutter's own (non-shaping) text
+// layout - so the sacred text is guaranteed to look exactly as checked.
+class SurahYaseenScreen extends StatelessWidget {
   const SurahYaseenScreen({super.key});
-  @override
-  State<SurahYaseenScreen> createState() => _SurahYaseenScreenState();
-}
 
-class _SurahYaseenScreenState extends State<SurahYaseenScreen> {
-  List<String>? ayahs;
-  String? error;
-
-  @override
-  void initState() {
-    super.initState();
-    _load();
-  }
-
-  Future<void> _load() async {
-    setState(() {
-      ayahs = null;
-      error = null;
-    });
-    try {
-      // Fetched live from a Qur'an API (quran-uthmani edition) rather than
-      // typed in here, so the Arabic text and its diacritics are exactly
-      // what the source holds instead of a hand-transcription that could
-      // introduce an error into the sacred text.
-      final uri = Uri.parse('https://api.alquran.cloud/v1/surah/36/quran-uthmani');
-      final res = await http.get(uri).timeout(const Duration(seconds: 15));
-      if (res.statusCode != 200) throw Exception('bad status');
-      final body = jsonDecode(res.body) as Map<String, dynamic>;
-      final list = (body['data'] as Map<String, dynamic>)['ayahs'] as List;
-      if (!mounted) return;
-      setState(() => ayahs = [for (final a in list) (a as Map<String, dynamic>)['text'] as String]);
-    } catch (_) {
-      if (!mounted) return;
-      setState(() => error = 'Could not load Surah Yaseen. Check your internet connection and try again.');
-    }
+  Future<Uint8List> _loadPdf(BuildContext context) async {
+    final bytes = await rootBundle.load('assets/surah_yaseen.pdf');
+    return bytes.buffer.asUint8List();
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: guestAppBar(context, 'Surah Yaseen'),
-      body: ayahs == null
-          ? (error == null
-              ? const Center(child: CircularProgressIndicator(color: _kGreen))
-              : ListView(padding: const EdgeInsets.all(20), children: [
-                  const SizedBox(height: 40),
-                  const Icon(Icons.wifi_off, size: 56, color: Colors.black38),
-                  const SizedBox(height: 16),
-                  Text(error!, textAlign: TextAlign.center, style: const TextStyle(color: Colors.black54)),
-                  const SizedBox(height: 20),
-                  Center(child: ElevatedButton.icon(onPressed: _load, icon: const Icon(Icons.refresh), label: const Text('Retry'))),
-                ]))
-          : ListView.builder(
-              padding: const EdgeInsets.all(16),
-              itemCount: ayahs!.length,
-              itemBuilder: (context, i) => Padding(
-                padding: const EdgeInsets.only(bottom: 14),
-                child: Text(
-                  '${ayahs![i]} ۝${i + 1}۞',
-                  textAlign: TextAlign.right,
-                  textDirection: TextDirection.rtl,
-                  style: const TextStyle(fontSize: 22, height: 1.8),
-                ),
-              ),
-            ),
+      body: PdfPreview(
+        build: (format) => _loadPdf(context),
+        canChangeOrientation: false,
+        canChangePageFormat: false,
+        canDebug: false,
+        useActions: true,
+        pdfFileName: 'Surah_Yaseen.pdf',
+        loadingWidget: const Center(child: CircularProgressIndicator(color: _kGreen)),
+      ),
     );
   }
 }
