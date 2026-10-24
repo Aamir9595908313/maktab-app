@@ -690,43 +690,130 @@ class _SurahYaseenScreenState extends State<SurahYaseenScreen> {
   }
 }
 
-// ---------------- Durood-e-Taj ----------------
-// The full text (several paragraphs, many names/titles of the Prophet) is
-// long enough, and sacred enough, that it shouldn't be typed in from
-// memory and guessed at - a wrong word in this text would stay wrong for
-// everyone using the app. Showing only the opening here, verified against
-// a scanned source, until the maktab's own trusted printed copy is on
-// hand to paste in the rest.
-const String _duroodTajArabicSoFar =
-    'اَللّٰهُمَّ صَلِّ عَلٰى سَيِّدِنَا وَمَوْلَانَا مُحَمَّدٍ';
+// ---------------- About Us ----------------
+// Content transcribed from the Faiz-e-Raza Group's own introduction
+// poster, in the same Hindi wording it was written in.
+class _AboutSection {
+  final String title;
+  final List<String> paras;
+  final List<String> bullets;
+  const _AboutSection(this.title, {this.paras = const [], this.bullets = const []});
+}
 
-class DuroodTajScreen extends StatelessWidget {
-  const DuroodTajScreen({super.key});
+const List<_AboutSection> _aboutSections = [
+  _AboutSection(
+    'खिदमात',
+    paras: [
+      'अल्हम्दुलिल्लाह, अल्लाह तबारक व तआला का करोड़ो-हा शुक्र व इहसान है के उस ने अपने हबीब ﷺ के सदक़े हमें अहले सुन्नत वल जमाअत में पैदा किया और हमे दीन की खिदमत कि तौफ़ीक़ अता फ़रमाई।',
+    ],
+  ),
+  _AboutSection(
+    'मकतबे ताजुश्शरीअह का क़याम',
+    paras: [
+      'अल्हम्दुलिल्लाह इस पुर फितन दौर में मकतबे ताजुश्शरीअह का क़याम मेहकर कि अवाम के लिए बहोत मुफ़ीद साबित हुआ।',
+      '5 May 2024 को मकतबे ताजुश्शरीअह का क़याम अमल में आया, ब फ़ज्लेही तआला मज़ीद इसकी शाखें (ब्रांचेज़) जैसे बाग़बान पूरा और ख्वाजा पिया व जामा मस्जिद के पास क़ाइम हुई। जिन में 280 तलबा व तालिबात इल्मे दीन से अपने आप को आरास्ता कर रहे है, जिन में तक़रीबन 80 तलबा (लड़के) और 200 तालिबात (लड़कियां) है।',
+      'अल्हम्दुलिल्लाह, दर्से निज़ामी (आलिमा कोर्स) भी शुरू किया गया जिस में तक़रीबन 15 बच्चियों ने दाखला (एडमिशन) लिया और तक़रीबन 10 बच्चियाँ इब्तेदाई तालीम देने के क़ाबिल हो गयी और अल्हम्दुलिल्लाह वही बच्चियाँ मकतबे ताजुश्शरीअह के दूसरे शाखों में तालीम दे रही है।',
+      'जिस उम्मीद के साथ हम ने मकतबे ताजुश्शरीअह कि बुन्याद रखी थी, अल्हम्दुलिल्लाह वो काफ़ी हद तक पूरी हुई। माशाअल्लाह तालिबात और उनके घरो में काफ़ी हद तक तब्दीली देखने को मिली जैसे, नमाज़ो कि पाबन्दी, परदे का एहतेमाम, बिला वजह घरो से बाहर निकलने से बचना, हुस्न ए अख़लाक़, सलाम में पहल करना और सब से अहेम, दीनी कामो में पढ़ने में और एक दूसरे पर सबक़त ले जाने का जज़्बा।',
+    ],
+  ),
+  _AboutSection(
+    'मकतबे ताजुश्शरीअह का निसाब व खुसूसियत',
+    bullets: [
+      'मरक़ज़े अहले सुन्नत से शाया करदा क़ाएदा मुअल्लेमुल क़ुरआन पढ़ाना',
+      'क़ुरआन ए पाक सही तजवीद के साथ मुक़म्मल करना',
+      'अक़ाइद ए अहले सुन्नत व मसाइले शरीअह',
+      'क़ुरआन व सुन्नत की रौशनी में तरबियती दर्स',
+      'दीनियत स्पेशल कोर्स',
+      'इस्लामी अख़्लाख़ व आदाब ए ज़िंदगी',
+      'हिफ़्ज़ सूरतें व अहादीस मा-तर्जुमा',
+      'हफ़्तावारी इज्तेमा',
+      'उर्दू ज़बान पर महारत',
+    ],
+  ),
+  _AboutSection(
+    'फैज़े रज़ा ग्रुप के ज़ेरे एहतेमाम किये हुए काम',
+    bullets: [
+      'मुख़्तलिफ़ मुहल्लों में मकातिब का क़याम',
+      'इज्तेमाआत का इनेक़ाद',
+      'बाद नमाज़े ईशा मुख़्तलिफ़ इलाक़ो में रोज़ाना दर्स का एहतेमाम',
+      'तरबियत के लिए नौजवानो को शहर से बाहर ज़िम्मेदार उलमा के सेंटर पर भेजना',
+      'नौजवानो में दीनी बेदारी व अक़ाइद के तहफ़्फ़ुज़ के लिए मौक़ूफ़ ए ताजुश्शरीअह पर चलने वाले पीराने इज़ाम के दामन से वाबस्ता करना',
+      'मकतबे ताजुश्शरीअह की जुमला ज़रुरियात व अख़राजात पूरा करना',
+    ],
+  ),
+  _AboutSection(
+    'फैज़े रज़ा ग्रुप का मुस्तक़बिल प्लान',
+    bullets: [
+      'इंशाअल्लाह, मेहकर व इतराफ़ में मज़ीद मकतबे ताजुश्शरीअह का क़याम',
+      'इंशाअल्लाह, सुच्ची लाइब्रेरी का क़याम',
+      'हफ़्तावारी दीनी नशिश्त',
+    ],
+  ),
+  _AboutSection(
+    'मक़सद',
+    paras: [
+      'हुज़ूर ताजुश्शरीअह عليه الرحمة की तालीमात की रोशनी में मसलक ए आलाहज़रत की तरवीज व इशाअत और उस पर इस्तेक़ामत का पैग़ाम देना। मरकज़े अहले सुन्नत बरेली शरीफ़ से अवाम को रोशनज कराकर मौक़िफ़े मुफ़्तिए आज़म عليه الرحمة पर चलने वाले पीराने इज़ाम के दामन से वाबस्ता कराना।',
+    ],
+  ),
+  _AboutSection(
+    'दुआ',
+    paras: [
+      'अल्लाह तआला कि बारगाह में दुआ है हुज़ूर ए अकरम ﷺ के सदक़े व तुफ़ैल मकतबे ताजुश्शरीअह को ख़ूब तरक्क़ी, कामयाबी व कामरानी अता फ़रमाए और फैज़े रज़ा ग्रुप के तमाम मेम्बरान और मकतबे ताजुश्शरीअह के क़याम में हिस्सा लेने वाले तमाम अफ़राद को अल्लाह तआला दराज़िए उम्र बिल ख़ैर अता फ़रमाए। उनके इल्मो अमल और रिज़्क़ में बे पनाह बरकते अता फ़रमाए और इसी तरह सभी को दीनो सुन्नियत कि खिदमत करने के साथ हुज़ूर ﷺ कि नामूस के पहरेदारों में शामिल फ़रमाए। और ज़िंदगी कि आख़री साँस तक अहले सुन्नत वल जमात (मसलक ए आलाहज़रत) पर सख़्ती के साथ क़ाइम व दाएम रखे। आमीन।',
+    ],
+  ),
+];
+
+class AboutUsScreen extends StatelessWidget {
+  const AboutUsScreen({super.key});
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: guestAppBar(context, 'Durood-e-Taj'),
+      appBar: guestAppBar(context, 'About Us'),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          Text(
-            _duroodTajArabicSoFar,
-            textAlign: TextAlign.right,
-            textDirection: TextDirection.rtl,
-            style: const TextStyle(fontSize: 24, height: 1.9),
-          ),
-          const SizedBox(height: 16),
+          const Text('फैज़े रज़ा ग्रुप की कारकर्दगी', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: _kGreen), textAlign: TextAlign.center),
+          const SizedBox(height: 4),
+          const Text('जहाँ में आम पैग़ामे शहे अहमद रज़ा करदे, पलट कर पीछे देखे फिर से तज्दीदे वफ़ा करदे', style: TextStyle(fontSize: 12, color: Colors.black54, fontStyle: FontStyle.italic), textAlign: TextAlign.center),
+          const SizedBox(height: 18),
+          for (final s in _aboutSections)
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(14),
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Text(s.title, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15.5, color: _kGreen)),
+                  const SizedBox(height: 8),
+                  for (final p in s.paras) Padding(padding: const EdgeInsets.only(bottom: 8), child: Text(p, style: const TextStyle(fontSize: 13.5, height: 1.5))),
+                  for (final b in s.bullets)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 5),
+                      child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                        const Text('•  ', style: TextStyle(color: _kGreen, fontWeight: FontWeight.bold)),
+                        Expanded(child: Text(b, style: const TextStyle(fontSize: 13.5, height: 1.4))),
+                      ]),
+                    ),
+                ]),
+              ),
+            ),
           Card(
-            color: const Color(0xFFFFF3CF),
+            color: const Color(0xFFEEF4E8),
             child: Padding(
               padding: const EdgeInsets.all(14),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: const [
+                Text('हमारा मरकज़ - बरेली शरीफ़', style: TextStyle(fontWeight: FontWeight.bold)),
+                Text('हमारी तंज़ीम - जमाअत रज़ाए मुस्तफा', style: TextStyle(fontWeight: FontWeight.bold)),
+                Text('हमारे क़ाइद - अल्लामा असजद रज़ा', style: TextStyle(fontWeight: FontWeight.bold)),
+              ]),
+            ),
+          ),
+          const SizedBox(height: 10),
+          const Card(
+            child: Padding(
+              padding: EdgeInsets.all(14),
               child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                const Text('The rest of this text is on its way.', style: TextStyle(fontWeight: FontWeight.bold)),
-                const SizedBox(height: 6),
-                const Text(
-                  "Durood-e-Taj is long and every word matters, so rather than complete it from memory it's waiting on your maktab's own trusted printed copy to be shared - once that's in hand it'll be added here exactly as written.",
-                  style: TextStyle(fontSize: 13, color: Colors.black87),
-                ),
+                Text('मिनजानिब: फैज़े रज़ा ग्रुप मेहकर, ज़िला बुलढाणा, महाराष्ट्र', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13.5)),
+                SizedBox(height: 4),
+                Text('9595908313  /  7350827414  /  9975500521', style: TextStyle(fontSize: 13.5, color: Colors.black54)),
               ]),
             ),
           ),
