@@ -1318,6 +1318,44 @@ class AppState extends ChangeNotifier {
     notifyListeners();
     return null;
   }
+
+  // ---------- Sadqa Peti (donation box) module ----------
+  final List<SadqaPeti> sadqaPetis = [];
+  final List<SadqaCollection> sadqaCollections = [];
+  // Every collector-access row this account can see: Super Admin sees all
+  // (RLS: sadqa_collectors_super_all), anyone else only sees their own
+  // (RLS: sadqa_collectors_self_read) - which is exactly what's needed to
+  // decide whether to show the "Sadqa Peti Collection" entry to them.
+  final List<SadqaCollector> sadqaCollectors = [];
+
+  void setSadqaPetisFromDb(List<SadqaPeti> list) {
+    sadqaPetis
+      ..clear()
+      ..addAll(list);
+    notifyListeners();
+  }
+
+  void setSadqaCollectionsFromDb(List<SadqaCollection> list) {
+    sadqaCollections
+      ..clear()
+      ..addAll(list);
+    notifyListeners();
+  }
+
+  void setSadqaCollectorsFromDb(List<SadqaCollector> list) {
+    sadqaCollectors
+      ..clear()
+      ..addAll(list);
+    notifyListeners();
+  }
+
+  // Whether the current account may open the Sadqa Peti Collection screen
+  // at all: Super Admin always can; anyone else needs at least one
+  // collector-access row (global, peti_id == null, or for a specific box).
+  bool get canRecordSadqaCollections => user?.role == 'super' || sadqaCollectors.isNotEmpty;
+
+  bool isSadqaCollectorFor(String petiId) =>
+      user?.role == 'super' || sadqaCollectors.any((c) => c.petiId == null || c.petiId == petiId);
 }
 
 class ChapPlan {
@@ -1326,4 +1364,133 @@ class ChapPlan {
   final String? done;
   final String grade;
   ChapPlan(this.title, this.plan, this.done, this.grade);
+}
+
+// ---------------- Sadqa Peti (donation box) module models ----------------
+// One donation box placed at a shop - public.sadqa_petis.
+class SadqaPeti {
+  final String id;
+  final String petiCode;
+  String shopkeeperName;
+  String shopkeeperPhone;
+  String shopName;
+  String? shopAddress;
+  String? area;
+  String boxGivenDate;
+  String? boxNumber;
+  int frequencyMonths;
+  String? lastCollectionDate;
+  String? nextCollectionDate;
+  String status; // 'Active' | 'Inactive'
+  String? remarks;
+
+  SadqaPeti({
+    required this.id,
+    required this.petiCode,
+    required this.shopkeeperName,
+    required this.shopkeeperPhone,
+    required this.shopName,
+    this.shopAddress,
+    this.area,
+    required this.boxGivenDate,
+    this.boxNumber,
+    this.frequencyMonths = 2,
+    this.lastCollectionDate,
+    this.nextCollectionDate,
+    this.status = 'Active',
+    this.remarks,
+  });
+
+  factory SadqaPeti.fromJson(Map<String, dynamic> j) => SadqaPeti(
+        id: j['id'] as String,
+        petiCode: (j['peti_code'] as String?) ?? '',
+        shopkeeperName: (j['shopkeeper_name'] as String?) ?? '',
+        shopkeeperPhone: (j['shopkeeper_phone'] as String?) ?? '',
+        shopName: (j['shop_name'] as String?) ?? '',
+        shopAddress: j['shop_address'] as String?,
+        area: j['area'] as String?,
+        boxGivenDate: (j['box_given_date'] as String?) ?? '',
+        boxNumber: j['box_number'] as String?,
+        frequencyMonths: (j['collection_frequency_months'] as int?) ?? 2,
+        lastCollectionDate: j['last_collection_date'] as String?,
+        nextCollectionDate: j['next_collection_date'] as String?,
+        status: (j['status'] as String?) ?? 'Active',
+        remarks: j['remarks'] as String?,
+      );
+
+  // Derived schedule status (separate from the box's own Active/Inactive
+  // lifecycle status) - req: Upcoming / Due / Overdue / Collected, computed
+  // live from the stored dates rather than kept as another stored column
+  // that could drift out of sync with them.
+  String get scheduleStatus {
+    if (status == 'Inactive') return 'Inactive';
+    if (nextCollectionDate == null) return 'Upcoming';
+    final next = DateTime.tryParse(nextCollectionDate!);
+    if (next == null) return 'Upcoming';
+    final today = DateTime.now();
+    final d0 = DateTime(today.year, today.month, today.day);
+    final diff = d0.difference(next).inDays;
+    if (diff > 7) return 'Overdue';
+    if (diff >= 0) return 'Due';
+    return 'Upcoming';
+  }
+}
+
+// One recorded collection transaction - public.sadqa_peti_collections.
+class SadqaCollection {
+  final String id;
+  final String petiId;
+  final String txnNo;
+  final String receiptNo;
+  final String collectedAt;
+  final double amount;
+  final String collectorId;
+  String? collectorName; // filled in client-side from a known accounts list
+  final String? remarks;
+  final String status; // 'Confirmed' | 'Reversed'
+  final String? reversalReason;
+
+  SadqaCollection({
+    required this.id,
+    required this.petiId,
+    required this.txnNo,
+    required this.receiptNo,
+    required this.collectedAt,
+    required this.amount,
+    required this.collectorId,
+    this.collectorName,
+    this.remarks,
+    this.status = 'Confirmed',
+    this.reversalReason,
+  });
+
+  factory SadqaCollection.fromJson(Map<String, dynamic> j) => SadqaCollection(
+        id: j['id'] as String,
+        petiId: j['peti_id'] as String,
+        txnNo: (j['txn_no'] as String?) ?? '',
+        receiptNo: (j['receipt_no'] as String?) ?? '',
+        collectedAt: (j['collected_at'] as String?) ?? '',
+        amount: double.tryParse('${j['amount']}') ?? 0,
+        collectorId: (j['collector_id'] as String?) ?? '',
+        remarks: j['remarks'] as String?,
+        status: (j['status'] as String?) ?? 'Confirmed',
+        reversalReason: j['reversal_reason'] as String?,
+      );
+}
+
+// One collector-access grant - public.sadqa_peti_collectors.
+// petiId == null means access to every Sadqa Peti (a global collector).
+class SadqaCollector {
+  final String id;
+  final String? petiId;
+  final String userId;
+  String userName; // filled in client-side from a known accounts list
+
+  SadqaCollector({required this.id, this.petiId, required this.userId, this.userName = ''});
+
+  factory SadqaCollector.fromJson(Map<String, dynamic> j) => SadqaCollector(
+        id: j['id'] as String,
+        petiId: j['peti_id'] as String?,
+        userId: (j['user_id'] as String?) ?? '',
+      );
 }

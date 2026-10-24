@@ -35,17 +35,22 @@ jobs:
           with open(path) as f:
               xml = f.read()
 
-          # The app calls Supabase over the network (OTP login, data sync)
-          # and reads GPS location (Qibla direction), so the release build
-          # must declare both explicitly - without this the app would build
-          # fine but the relevant feature would silently fail on a real
-          # device, or the OS would never even show a permission prompt.
+          # The app calls Supabase over the network (OTP login, data sync),
+          # reads GPS location (Qibla direction), and (Sadqa Peti collection)
+          # can take an optional evidence photo of the opened donation box,
+          # so the release build must declare all of these explicitly -
+          # without this the app would build fine but the relevant feature
+          # would silently fail on a real device, or the OS would never even
+          # show a permission prompt.
           perms = [
               "android.permission.INTERNET",
               "android.permission.ACCESS_FINE_LOCATION",
               "android.permission.ACCESS_COARSE_LOCATION",
+              "android.permission.CAMERA",
           ]
           insert = "".join(f'    <uses-permission android:name="{p}"/>\n' for p in perms if p not in xml)
+          if "android.hardware.camera" not in xml:
+              insert += '    <uses-feature android:name="android.hardware.camera" android:required="false"/>\n'
           if insert:
               xml = xml.replace("<application", insert + "    <application", 1)
 

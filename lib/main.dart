@@ -10,6 +10,7 @@ import 'package:csv/csv.dart';
 import 'state.dart';
 import 'guest_tools.dart';
 import 'supabase_config.dart';
+import 'sadqa_peti.dart';
 
 final AppState st = AppState();
 const Color kGreen = Color(0xFF054D00);
@@ -196,6 +197,9 @@ Future<void> loadMasterData() async {
     await loadFees();
     await loadAnnouncements();
     await loadLeaves();
+    await loadSadqaCollectors(); // needed first: decides whether this account can even see Sadqa Peti screens
+    await loadSadqaPetis();
+    await loadSadqaCollections();
   } catch (_) {
     // Swallow - see note above. The Master Data screen still works off
     // whatever was already loaded; a retry happens next time this is
@@ -2394,6 +2398,37 @@ class _ShellState extends State<Shell> {
                   Navigator.pop(context);
                 },
               ),
+            if (u.role == 'super' || st.canRecordSadqaCollections) ...[
+              const Padding(padding: EdgeInsets.fromLTRB(16, 12, 16, 4), child: Text('Sadqa Peti', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.black54, fontSize: 12))),
+              if (u.role == 'super') ...[
+                ListTile(
+                  leading: const Icon(Icons.inventory_2),
+                  title: const Text('Manage Sadqa Peti Boxes'),
+                  onTap: () {
+                    Navigator.pop(context);
+                    pushPage(context, 'Sadqa Peti Boxes', const SadqaPetiMasterView());
+                  },
+                ),
+                ListTile(
+                  leading: const Icon(Icons.dashboard),
+                  title: const Text('Sadqa Peti Dashboard'),
+                  onTap: () {
+                    Navigator.pop(context);
+                    pushPage(context, 'Sadqa Peti Dashboard', const SadqaPetiDashboardView());
+                  },
+                ),
+              ],
+              if (st.canRecordSadqaCollections)
+                ListTile(
+                  leading: const Icon(Icons.volunteer_activism),
+                  title: const Text('Sadqa Peti Collection'),
+                  onTap: () {
+                    Navigator.pop(context);
+                    Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const SadqaCollectionScreen()));
+                  },
+                ),
+              const Divider(),
+            ],
             const Padding(padding: EdgeInsets.fromLTRB(16, 12, 16, 4), child: Text('No-login tools', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.black54, fontSize: 12))),
             ListTile(leading: const Icon(Icons.explore), title: const Text('Qibla Direction'), onTap: () { Navigator.pop(context); openTool(context, const QiblaScreen()); }),
             ListTile(leading: const Icon(Icons.calendar_month), title: const Text('Calendar'), onTap: () { Navigator.pop(context); openTool(context, const CalendarScreen()); }),
