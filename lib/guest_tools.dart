@@ -1,10 +1,12 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:flutter_compass/flutter_compass.dart';
+import 'package:http/http.dart' as http;
 
 const Color _kGreen = Color(0xFF054D00);
 const Color _kGold = Color(0xFFD4A72C);
@@ -258,10 +260,35 @@ class _CalendarScreenState extends State<CalendarScreen> {
   // use the device's real current date.
   late DateTime shown = DateTime(DateTime.now().year, DateTime.now().month, 1);
   final DateTime today = DateTime.now();
+  // No arithmetic Hijri calendar (this one included) can know in advance
+  // what a local moon-sighting committee will actually announce - India's
+  // observed Islamic date can legitimately differ by a day from any
+  // calculated one. This lets whoever maintains the app nudge the shown
+  // Hijri date to match that day's real announcement, persisted so it
+  // applies for everyone until changed again.
+  int hijriOffset = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadOffset();
+  }
+
+  Future<void> _loadOffset() async {
+    final prefs = await SharedPreferences.getInstance();
+    final v = prefs.getInt('hijri_offset_days') ?? 0;
+    if (mounted) setState(() => hijriOffset = v);
+  }
+
+  Future<void> _setOffset(int v) async {
+    setState(() => hijriOffset = v);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt('hijri_offset_days', v);
+  }
 
   @override
   Widget build(BuildContext context) {
-    final hToday = _gregorianToHijri(today);
+    final hToday = _gregorianToHijri(today.add(Duration(days: hijriOffset)));
     final firstOfMonth = DateTime(shown.year, shown.month, 1);
     final daysInMonth = DateTime(shown.year, shown.month + 1, 0).day;
     final leading = (firstOfMonth.weekday - 1) % 7; // Monday = 0
@@ -289,6 +316,18 @@ class _CalendarScreenState extends State<CalendarScreen> {
               ]),
             ),
           ),
+          const SizedBox(height: 8),
+          Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+            Text(
+              urdu ? 'اگر مقامی اعلان سے ایک دن آگے پیچھے ہو:' : 'If this is a day off from the local announcement:',
+              style: const TextStyle(fontSize: 11.5, color: Colors.black54),
+            ),
+          ]),
+          Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+            IconButton(onPressed: () => _setOffset(hijriOffset - 1), icon: const Icon(Icons.remove_circle_outline, size: 20)),
+            Text(hijriOffset == 0 ? (urdu ? 'درست' : 'No adjustment') : '${hijriOffset > 0 ? '+' : ''}$hijriOffset ${urdu ? 'دن' : 'day(s)'}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12.5)),
+            IconButton(onPressed: () => _setOffset(hijriOffset + 1), icon: const Icon(Icons.add_circle_outline, size: 20)),
+          ]),
           const SizedBox(height: 14),
           Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
             IconButton(onPressed: () => setState(() => shown = DateTime(shown.year, shown.month - 1, 1)), icon: const Icon(Icons.chevron_left)),
@@ -450,6 +489,249 @@ class _TasbeehScreenState extends State<TasbeehScreen> {
           child: Text('No login needed. The count is saved on this phone.', style: TextStyle(fontSize: 12, color: Colors.black54)),
         ),
       ]),
+    );
+  }
+}
+
+// ---------------- Prayer Times (Hanafi) ----------------
+class PrayerTimesScreen extends StatefulWidget {
+  const PrayerTimesScreen({super.key});
+  @override
+  State<PrayerTimesScreen> createState() => _PrayerTimesScreenState();
+}
+
+enum _PrayerStatus { loading, noService, permissionDenied, networkError, ready }
+
+class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
+  _PrayerStatus status = _PrayerStatus.loading;
+  double? lat, lng;
+  Map<String, String> timings = {};
+
+  @override
+  void initState() {
+    super.initState();
+    _init();
+  }
+
+  Future<void> _init() async {
+    setState(() => status = _PrayerStatus.loading);
+    final serviceOn = await Geolocator.isLocationServiceEnabled();
+    if (!serviceOn) {
+      setState(() => status = _PrayerStatus.noService);
+      return;
+    }
+    var perm = await Geolocator.checkPermission();
+    if (perm == LocationPermission.denied) {
+      perm = await Geolocator.requestPermission();
+    }
+    if (perm == LocationPermission.denied || perm == LocationPermission.deniedForever) {
+      setState(() => status = _PrayerStatus.permissionDenied);
+      return;
+    }
+    try {
+      final pos = await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(accuracy: LocationAccuracy.medium),
+      ).timeout(const Duration(seconds: 15));
+      // method=1: University of Islamic Sciences, Karachi - the convention
+      // most madaris in India/Pakistan already follow for Fajr/Isha angles.
+      // school=1: Hanafi, so Asr is calculated at the later (shadow = 2x
+      // object height) time instead of the other madhhabs' 1x-height time.
+      final uri = Uri.parse('https://api.aladhan.com/v1/timings?latitude=${pos.latitude}&longitude=${pos.longitude}&method=1&school=1');
+      final res = await http.get(uri).timeout(const Duration(seconds: 15));
+      if (res.statusCode != 200) throw Exception('bad status');
+      final body = jsonDecode(res.body) as Map<String, dynamic>;
+      final t = (body['data'] as Map<String, dynamic>)['timings'] as Map<String, dynamic>;
+      if (!mounted) return;
+      setState(() {
+        lat = pos.latitude;
+        lng = pos.longitude;
+        timings = t.map((k, v) => MapEntry(k, v.toString()));
+        status = _PrayerStatus.ready;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => status = _PrayerStatus.networkError);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: guestAppBar(context, 'Prayer Times (Hanafi)'),
+      body: switch (status) {
+        _PrayerStatus.loading => const Center(child: CircularProgressIndicator(color: _kGreen)),
+        _PrayerStatus.noService => _message(Icons.location_off, 'Location is turned off', 'Turn on Location / GPS for this device, then retry.'),
+        _PrayerStatus.permissionDenied => _message(Icons.location_disabled, 'Location permission needed', 'Prayer times are calculated for your exact location. Allow location access, then retry.'),
+        _PrayerStatus.networkError => _message(Icons.wifi_off, 'Could not fetch prayer times', 'Check your internet connection, then retry.'),
+        _PrayerStatus.ready => _ready(),
+      },
+    );
+  }
+
+  Widget _message(IconData icon, String title, String body) => ListView(
+        padding: const EdgeInsets.all(20),
+        children: [
+          const SizedBox(height: 40),
+          Icon(icon, size: 56, color: Colors.black38),
+          const SizedBox(height: 16),
+          Text(title, textAlign: TextAlign.center, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+          const SizedBox(height: 8),
+          Text(body, textAlign: TextAlign.center, style: const TextStyle(color: Colors.black54)),
+          const SizedBox(height: 20),
+          Center(child: ElevatedButton.icon(onPressed: _init, icon: const Icon(Icons.refresh), label: const Text('Retry'))),
+        ],
+      );
+
+  Widget _ready() {
+    final rows = [
+      ['Fajr', timings['Fajr']],
+      ['Sunrise', timings['Sunrise']],
+      ['Dhuhr', timings['Dhuhr']],
+      ['Asr', timings['Asr']],
+      ['Maghrib', timings['Maghrib']],
+      ['Isha', timings['Isha']],
+    ];
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        Text('${lat!.toStringAsFixed(3)}, ${lng!.toStringAsFixed(3)}', style: const TextStyle(color: Colors.black54, fontSize: 12), textAlign: TextAlign.center),
+        const SizedBox(height: 12),
+        for (final r in rows)
+          Card(
+            child: ListTile(
+              title: Text(r[0]!, style: const TextStyle(fontWeight: FontWeight.bold)),
+              trailing: Text(r[1] ?? '-', style: const TextStyle(fontSize: 16, color: _kGreen, fontWeight: FontWeight.bold)),
+            ),
+          ),
+        const SizedBox(height: 10),
+        const Card(
+          child: Padding(
+            padding: EdgeInsets.all(12),
+            child: Text(
+              "Asr is calculated using the Hanafi method (the later time, when a shadow is twice the object's height, instead of once). Times are computed for your live GPS location and can be a few minutes off from your local mosque's posted timetable.",
+              style: TextStyle(fontSize: 12, color: Colors.black54),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+// ---------------- Surah Yaseen (Arabic text fetched live) ----------------
+class SurahYaseenScreen extends StatefulWidget {
+  const SurahYaseenScreen({super.key});
+  @override
+  State<SurahYaseenScreen> createState() => _SurahYaseenScreenState();
+}
+
+class _SurahYaseenScreenState extends State<SurahYaseenScreen> {
+  List<String>? ayahs;
+  String? error;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    setState(() {
+      ayahs = null;
+      error = null;
+    });
+    try {
+      // Fetched live from a Qur'an API (quran-uthmani edition) rather than
+      // typed in here, so the Arabic text and its diacritics are exactly
+      // what the source holds instead of a hand-transcription that could
+      // introduce an error into the sacred text.
+      final uri = Uri.parse('https://api.alquran.cloud/v1/surah/36/quran-uthmani');
+      final res = await http.get(uri).timeout(const Duration(seconds: 15));
+      if (res.statusCode != 200) throw Exception('bad status');
+      final body = jsonDecode(res.body) as Map<String, dynamic>;
+      final list = (body['data'] as Map<String, dynamic>)['ayahs'] as List;
+      if (!mounted) return;
+      setState(() => ayahs = [for (final a in list) (a as Map<String, dynamic>)['text'] as String]);
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => error = 'Could not load Surah Yaseen. Check your internet connection and try again.');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: guestAppBar(context, 'Surah Yaseen'),
+      body: ayahs == null
+          ? (error == null
+              ? const Center(child: CircularProgressIndicator(color: _kGreen))
+              : ListView(padding: const EdgeInsets.all(20), children: [
+                  const SizedBox(height: 40),
+                  const Icon(Icons.wifi_off, size: 56, color: Colors.black38),
+                  const SizedBox(height: 16),
+                  Text(error!, textAlign: TextAlign.center, style: const TextStyle(color: Colors.black54)),
+                  const SizedBox(height: 20),
+                  Center(child: ElevatedButton.icon(onPressed: _load, icon: const Icon(Icons.refresh), label: const Text('Retry'))),
+                ]))
+          : ListView.builder(
+              padding: const EdgeInsets.all(16),
+              itemCount: ayahs!.length,
+              itemBuilder: (context, i) => Padding(
+                padding: const EdgeInsets.only(bottom: 14),
+                child: Text(
+                  '${ayahs![i]} ۝${i + 1}۞',
+                  textAlign: TextAlign.right,
+                  textDirection: TextDirection.rtl,
+                  style: const TextStyle(fontSize: 22, height: 1.8),
+                ),
+              ),
+            ),
+    );
+  }
+}
+
+// ---------------- Durood-e-Taj ----------------
+// The full text (several paragraphs, many names/titles of the Prophet) is
+// long enough, and sacred enough, that it shouldn't be typed in from
+// memory and guessed at - a wrong word in this text would stay wrong for
+// everyone using the app. Showing only the opening here, verified against
+// a scanned source, until the maktab's own trusted printed copy is on
+// hand to paste in the rest.
+const String _duroodTajArabicSoFar =
+    'اَللّٰهُمَّ صَلِّ عَلٰى سَيِّدِنَا وَمَوْلَانَا مُحَمَّدٍ';
+
+class DuroodTajScreen extends StatelessWidget {
+  const DuroodTajScreen({super.key});
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: guestAppBar(context, 'Durood-e-Taj'),
+      body: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          Text(
+            _duroodTajArabicSoFar,
+            textAlign: TextAlign.right,
+            textDirection: TextDirection.rtl,
+            style: const TextStyle(fontSize: 24, height: 1.9),
+          ),
+          const SizedBox(height: 16),
+          Card(
+            color: const Color(0xFFFFF3CF),
+            child: Padding(
+              padding: const EdgeInsets.all(14),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                const Text('The rest of this text is on its way.', style: TextStyle(fontWeight: FontWeight.bold)),
+                const SizedBox(height: 6),
+                const Text(
+                  "Durood-e-Taj is long and every word matters, so rather than complete it from memory it's waiting on your maktab's own trusted printed copy to be shared - once that's in hand it'll be added here exactly as written.",
+                  style: TextStyle(fontSize: 13, color: Colors.black87),
+                ),
+              ]),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

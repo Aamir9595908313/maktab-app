@@ -2167,10 +2167,13 @@ class _GuestHomeState extends State<GuestHome> {
             const SizedBox(height: 10),
             const Text('No login needed for these tools:', style: TextStyle(color: Colors.black54), textAlign: TextAlign.center),
             const SizedBox(height: 14),
-            Row(mainAxisAlignment: MainAxisAlignment.spaceEvenly, children: [
+            Wrap(alignment: WrapAlignment.center, spacing: 4, runSpacing: 10, children: [
               _bottomIcon(context, Icons.fingerprint, 'Tasbeeh', () => openTool(context, const TasbeehScreen())),
               _bottomIcon(context, Icons.explore, 'Qibla Direction', () => openTool(context, const QiblaScreen())),
               _bottomIcon(context, Icons.calendar_month, 'Islamic Calendar', () => openTool(context, const CalendarScreen())),
+              _bottomIcon(context, Icons.access_time, 'Prayer Times', () => openTool(context, const PrayerTimesScreen())),
+              _bottomIcon(context, Icons.menu_book, 'Surah Yaseen', () => openTool(context, const SurahYaseenScreen())),
+              _bottomIcon(context, Icons.auto_stories, 'Durood-e-Taj', () => openTool(context, const DuroodTajScreen())),
             ]),
           ],
         ),
@@ -2370,6 +2373,9 @@ class _ShellState extends State<Shell> {
             ListTile(leading: const Icon(Icons.explore), title: const Text('Qibla Direction'), onTap: () { Navigator.pop(context); openTool(context, const QiblaScreen()); }),
             ListTile(leading: const Icon(Icons.calendar_month), title: const Text('Calendar'), onTap: () { Navigator.pop(context); openTool(context, const CalendarScreen()); }),
             ListTile(leading: const Icon(Icons.fingerprint), title: const Text('Tasbeeh Counter'), onTap: () { Navigator.pop(context); openTool(context, const TasbeehScreen()); }),
+            ListTile(leading: const Icon(Icons.access_time), title: const Text('Prayer Times (Hanafi)'), onTap: () { Navigator.pop(context); openTool(context, const PrayerTimesScreen()); }),
+            ListTile(leading: const Icon(Icons.menu_book), title: const Text('Surah Yaseen'), onTap: () { Navigator.pop(context); openTool(context, const SurahYaseenScreen()); }),
+            ListTile(leading: const Icon(Icons.auto_stories), title: const Text('Durood-e-Taj'), onTap: () { Navigator.pop(context); openTool(context, const DuroodTajScreen()); }),
             const Divider(),
             ListTile(
               leading: const Icon(Icons.logout),
