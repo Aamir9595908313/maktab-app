@@ -159,6 +159,7 @@ Future<void> loadMasterData() async {
           bookName: r['book_name'] as String?,
           totalPages: (r['total_pages'] as int?) ?? 0,
           active: (r['is_active'] as bool?) ?? true,
+          isCore: (r['is_core'] as bool?) ?? false,
           dbId: r['id'] as String?,
         ),
     ]);
@@ -195,9 +196,11 @@ Future<void> loadMasterData() async {
     await loadTeachers();
     await loadChapters();
     await loadClassParas();
+    await loadClassBooks();
     await loadClassCourseAssignments();
     await loadAttendance();
     await loadSyllabusProgress();
+    await loadBookProgress();
     await loadCourseEnrollments();
     await loadMyTeacherAttendance();
     await loadAllTeacherAttendanceToday();
@@ -253,6 +256,8 @@ void subscribeRealtime() {
     'courses',
     'class_course_assignments',
     'course_enrollments',
+    'class_books',
+    'book_progress',
     'students',
     'teacher_class_assignments',
     'user_profiles',
@@ -1654,6 +1659,145 @@ Future<String?> updateClassDetailsRemote(ClassDef cd, {String? bookName, int? to
   }
 }
 
+// ---------------- Book Management (public.class_books / public.book_progress) ----------------
+// Book Management (Class 4 onward): a class can have several independent
+// Books, each with its own name/description/page count/display sequence/
+// active status (requirement 4). Classes 1-3 never have rows here - a DB
+// trigger (fn_block_books_on_core_classes) blocks it regardless of who
+// tries, same defence-in-depth pattern already used for the Hafizi Para
+// lock and mandatory-course class completion.
+Future<void> loadClassBooks() async {
+  try {
+    final rows = await sb.from('class_books').select('id, class_id, name, description, total_pages, sequence_order, is_active').order('sequence_order');
+    final byClass = <ClassDef, List<ClassBook>>{};
+    final classByDbId = {for (final cd in st.classDefs.values) if (cd.dbId != null) cd.dbId!: cd};
+    var nextId = 1;
+    for (final r in (rows as List)) {
+      final cd = classByDbId[r['class_id'] as String?];
+      if (cd == null) continue;
+      byClass.putIfAbsent(cd, () => []).add(ClassBook(
+            nextId++,
+            (r['name'] as String?) ?? '',
+            description: (r['description'] as String?) ?? '',
+            totalPages: (r['total_pages'] as int?) ?? 0,
+            sequenceOrder: (r['sequence_order'] as int?) ?? 0,
+            active: (r['is_active'] as bool?) ?? true,
+            dbId: r['id'] as String?,
+          ));
+    }
+    for (final cd in st.classDefs.values) {
+      st.setClassBooksFromDb(cd, byClass[cd] ?? []);
+    }
+  } catch (_) {}
+}
+
+Future<String?> addClassBookRemote(ClassDef cd, String name, String description, int totalPages, int sequenceOrder) async {
+  final n = name.trim();
+  if (n.isEmpty) return 'Enter a Book name';
+  if (cd.dbId == null) return 'This class is not saved to the database yet.';
+  try {
+    final row = await sb.from('class_books').insert({
+      'class_id': cd.dbId,
+      'name': n,
+      'description': description.trim(),
+      'total_pages': totalPages,
+      'sequence_order': sequenceOrder,
+      'created_by': sb.auth.currentUser?.id,
+    }).select().single();
+    final localId = cd.books.isEmpty ? 1 : (cd.books.map((b) => b.id).reduce((a, b) => a > b ? a : b) + 1);
+    st.addClassBookLocal(
+        cd, ClassBook(localId, n, description: description.trim(), totalPages: totalPages, sequenceOrder: sequenceOrder, dbId: row['id'] as String?));
+    return null;
+  } on PostgrestException catch (e) {
+    return 'Could not save: ${e.message}';
+  } catch (_) {
+    return 'Could not save. Check your internet connection and try again.';
+  }
+}
+
+Future<String?> updateClassBookRemote(ClassBook b, {String? name, String? description, int? totalPages, int? sequenceOrder}) async {
+  if (b.dbId == null) return 'This Book is not saved to the database yet.';
+  try {
+    final payload = <String, dynamic>{};
+    if (name != null) payload['name'] = name.trim();
+    if (description != null) payload['description'] = description.trim();
+    if (totalPages != null) payload['total_pages'] = totalPages;
+    if (sequenceOrder != null) payload['sequence_order'] = sequenceOrder;
+    if (payload.isNotEmpty) await sb.from('class_books').update(payload).eq('id', b.dbId as Object);
+    st.updateClassBookLocal(b, name: name?.trim(), description: description?.trim(), totalPages: totalPages, sequenceOrder: sequenceOrder);
+    return null;
+  } on PostgrestException catch (e) {
+    return 'Could not save: ${e.message}';
+  } catch (_) {
+    return 'Could not save. Check your internet connection and try again.';
+  }
+}
+
+Future<String?> setClassBookActiveRemote(ClassBook b, bool active) async {
+  if (b.dbId == null) return 'This Book is not saved to the database yet.';
+  try {
+    await sb.from('class_books').update({'is_active': active}).eq('id', b.dbId as Object);
+    st.setClassBookActiveLocal(b, active);
+    return null;
+  } on PostgrestException catch (e) {
+    return 'Could not save: ${e.message}';
+  } catch (_) {
+    return 'Could not save. Check your internet connection and try again.';
+  }
+}
+
+Future<void> loadBookProgress() async {
+  final studentByDbId = {for (final s in st.students) if (s.dbId != null) s.dbId!: s};
+  if (studentByDbId.isEmpty) return;
+  // Local Book id -> db id and back, across every class, so a loaded row's
+  // uuid book_id can be turned back into the local int id Student's
+  // bookPageDate/bookPageGrade maps are keyed with.
+  final bookByDbId = {for (final cd in st.classDefs.values) for (final b in cd.books) if (b.dbId != null) b.dbId!: b};
+  if (bookByDbId.isEmpty) return;
+  try {
+    final rows = await sb.from('book_progress').select('student_id, book_id, page_no, completed_on, grade');
+    final byStudent = <int, List<Map<String, dynamic>>>{};
+    for (final r in (rows as List)) {
+      final s = studentByDbId[r['student_id'] as String?];
+      if (s != null) byStudent.putIfAbsent(s.id, () => []).add(r as Map<String, dynamic>);
+    }
+    for (final s in st.students) {
+      final rs = byStudent[s.id];
+      if (rs == null) continue;
+      final dates = <String, String>{};
+      final grades = <String, String>{};
+      for (final r in rs) {
+        final b = bookByDbId[r['book_id'] as String?];
+        final pageNo = r['page_no'] as int?;
+        if (b == null || pageNo == null) continue;
+        final key = '${b.id}:$pageNo';
+        dates[key] = (r['completed_on'] as String?) ?? kToday;
+        grades[key] = (r['grade'] as String?) ?? '';
+      }
+      st.setBookProgressFromDb(s, dates, grades);
+    }
+  } catch (_) {}
+}
+
+Future<String?> markBookPageCompleteRemote(Student s, ClassBook b, int pageNo, String date, String grade) async {
+  st.markBookPageComplete(s, b, pageNo, date, grade);
+  if (s.dbId == null || b.dbId == null) return null;
+  try {
+    await sb.from('book_progress').upsert({
+      'student_id': s.dbId,
+      'book_id': b.dbId,
+      'page_no': pageNo,
+      'status': 'completed',
+      'completed_on': validDate(date) ? date : kToday,
+      'grade': grade,
+      'created_by': sb.auth.currentUser?.id,
+    }, onConflict: 'student_id,book_id,page_no');
+    return null;
+  } catch (e) {
+    return 'Could not save - this page will revert on refresh. Check your connection and try again.';
+  }
+}
+
 // Same pattern as addMadrasaRemote, for public.courses.
 Future<String?> addCourseRemote(String name, String description, {String code = ''}) async {
   final n = name.trim();
@@ -2451,6 +2595,12 @@ List<AppTab> tabsFor(Account u) {
         AppTab('My Attendance & Leave', Icons.how_to_reg, () => const TeacherSelf()),
         AppTab('Student Attendance', Icons.event_available, () => const StudentAttendanceMark()),
         AppTab('Syllabus', Icons.menu_book, () => const TeacherSyllabus()),
+        // Requirement 3: Teachers (not just Super Admin) can create/edit
+        // classes from Class 4 onward and manage Books - reuses the same
+        // MasterDataView screen Super Admin uses, which hides the
+        // Maktab/Teacher-invite/Admin-invite/Roles sections for a teacher
+        // and shows only Classes, Books and Add-on Courses.
+        AppTab('Classes & Books', Icons.menu_book, () => const MasterDataView()),
         AppTab('Students & Promotion', Icons.school, () => const StudentsView()),
         AppTab('Add-on Course Progress', Icons.verified, () => const CourseApprovalsView()),
         AppTab('Complaints', Icons.report_problem, () => const ComplaintsView()),
@@ -2823,6 +2973,7 @@ class SyllabusBody extends StatelessWidget {
           ),
         ),
       if (cur == null) const Padding(padding: EdgeInsets.only(top: 14), child: Text('All pages of this book are complete.', style: TextStyle(color: Colors.green, fontWeight: FontWeight.bold))),
+      ..._bookSectionWidgets(context),
     ]);
   }
 
@@ -2925,8 +3076,123 @@ class SyllabusBody extends StatelessWidget {
             ]),
           ),
         ),
+      ..._bookSectionWidgets(context),
     ]);
   }
+
+  // Book Management progress (Class 4+ Books, requirement 4/8) - shown
+  // under whichever body (page or chapter) this class otherwise uses, for
+  // every Book assigned to the student's class. Same shared widget used by
+  // student/parent (read-only) and teacher (editable), so a fix here
+  // reaches every screen automatically, same as the page/Para grids above.
+  List<Widget> _bookSectionWidgets(BuildContext context) {
+    final cd = st.classDefs[s.cls]!;
+    final books = st.booksForClass(cd.id);
+    if (books.isEmpty) return const [];
+    final widgets = <Widget>[
+      const SizedBox(height: 10),
+      const Divider(),
+      const Text('Books', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+    ];
+    for (final b in books) {
+      final prog = st.bookProg(s, b);
+      final cur = st.currentBookPageNo(s, b);
+      widgets.add(Card(
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(b.name, style: const TextStyle(fontWeight: FontWeight.bold)),
+            if (b.description.isNotEmpty) Text(b.description, style: const TextStyle(color: Colors.black54, fontSize: 12.5)),
+            const SizedBox(height: 6),
+            LinearProgressIndicator(value: b.totalPages == 0 ? 0 : prog.pct / 100),
+            const SizedBox(height: 6),
+            Text('${prog.label} (${prog.pct}%)'),
+            const SizedBox(height: 8),
+            if (b.totalPages > 0) _flatBookPageGrid(context, b, cur),
+            if (edit && cur != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 10),
+                child: ElevatedButton.icon(
+                  onPressed: () => markBookPageDialog(context, s, b, cur),
+                  icon: const Icon(Icons.check),
+                  label: Text('Mark page $cur complete'),
+                ),
+              ),
+            if (cur == null && b.totalPages > 0)
+              const Padding(padding: EdgeInsets.only(top: 10), child: Text('All pages of this Book are complete.', style: TextStyle(color: Colors.green, fontWeight: FontWeight.bold))),
+          ]),
+        ),
+      ));
+    }
+    return widgets;
+  }
+
+  Widget _flatBookPageGrid(BuildContext context, ClassBook b, int? cur) {
+    return GridView.builder(
+      shrinkWrap: true,
+      physics: const NeverScrollableScrollPhysics(),
+      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: 6, mainAxisSpacing: 6, crossAxisSpacing: 6, childAspectRatio: 1),
+      itemCount: b.totalPages,
+      itemBuilder: (context, i) {
+        final pageNo = i + 1;
+        final status = st.bookPageStatus(s, b, pageNo);
+        final color = status == 'Completed' ? const Color(0xFF2E7D32) : (status == 'In progress' ? kGold : const Color(0xFFDADFD3));
+        final textColor = status == 'Pending' ? Colors.black54 : Colors.white;
+        return GestureDetector(
+          onTap: () {
+            if (status == 'Completed') {
+              final date = s.bookPageDate['${b.id}:$pageNo'];
+              final grade = s.bookPageGrade['${b.id}:$pageNo'] ?? '';
+              toast(context, 'Page $pageNo: Completed ${date != null ? nice(date) : ''} - $grade');
+            } else if (edit && status == 'In progress') {
+              markBookPageDialog(context, s, b, pageNo);
+            } else if (status == 'Pending') {
+              toast(context, 'Page $pageNo is Pending. Complete page $cur first.');
+            }
+          },
+          child: Container(
+            decoration: BoxDecoration(color: color, borderRadius: BorderRadius.circular(6)),
+            alignment: Alignment.center,
+            child: Text('$pageNo', style: TextStyle(color: textColor, fontWeight: FontWeight.bold, fontSize: 12)),
+          ),
+        );
+      },
+    );
+  }
+}
+
+Future<void> markBookPageDialog(BuildContext c, Student s, ClassBook b, int pageNo) async {
+  final date = TextEditingController(text: kToday);
+  String grade = 'Good';
+  await showDialog<void>(
+    context: c,
+    builder: (ctx) => StatefulBuilder(
+      builder: (ctx, setD) => AlertDialog(
+        title: Text('Mark page $pageNo complete - ${b.name}'),
+        content: Column(mainAxisSize: MainAxisSize.min, children: [
+          TextField(controller: date, decoration: const InputDecoration(labelText: 'Completion date (yyyy-mm-dd)')),
+          const SizedBox(height: 8),
+          DropdownButton<String>(
+            value: grade,
+            isExpanded: true,
+            items: [for (final g in ['Excellent', 'Good', 'Needs practice']) DropdownMenuItem<String>(value: g, child: Text(g))],
+            onChanged: (v) => setD(() => grade = v ?? grade),
+          ),
+        ]),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+          ElevatedButton(
+            onPressed: () async {
+              final msg = await markBookPageCompleteRemote(s, b, pageNo, date.text.trim(), grade);
+              if (ctx.mounted) Navigator.pop(ctx);
+              if (msg != null && c.mounted) toast(c, msg);
+            },
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    ),
+  );
 }
 
 Future<void> markPageDialog(BuildContext c, Student s, int pageNo) async {
@@ -5261,6 +5527,13 @@ class _MasterDataViewState extends State<MasterDataView> {
   final Map<int, TextEditingController> paraPageCountCtrl = {};
   TextEditingController _paraCtrl(int cls) => paraPageCountCtrl.putIfAbsent(cls, () => TextEditingController());
   bool paraBusy = false;
+  // One "add Book" set of fields per class (Book Management, Class 4+).
+  final Map<int, TextEditingController> bookNameCtrl = {};
+  final Map<int, TextEditingController> bookDescCtrl = {};
+  final Map<int, TextEditingController> bookPagesCtrl = {};
+  final Map<int, TextEditingController> bookSeqCtrl = {};
+  TextEditingController _bookCtrl(Map<int, TextEditingController> m, int cls) => m.putIfAbsent(cls, () => TextEditingController());
+  bool bookBusy = false;
   final teacherName = TextEditingController();
   final teacherPhone = TextEditingController();
   final Set<String> teacherMadrasasSel = {};
@@ -5280,9 +5553,16 @@ class _MasterDataViewState extends State<MasterDataView> {
     // switch's real new value only became visible once something else
     // (like clicking Add Madrasa) happened to force a rebuild, which is
     // exactly the delayed-toggle behavior that was reported.
+    // Shared by Super Admin/Maktab Admin (full Master Data) and Teacher
+    // (reused here just for Classes/Books/Add-on Courses - requirement 3).
+    // Maktab, Teacher/Admin invites, Committee Members and Roles stay
+    // admin/super only, same access they've always had.
+    final u = st.user;
+    final canManageOrg = u?.role == 'admin' || u?.role == 'super';
     return AnimatedBuilder(
       animation: st,
       builder: (context, _) => page([
+      if (canManageOrg) ...[
       h('Maktab', icon: Icons.account_balance),
       ...st.madrasas.map((m) => Card(
             child: SwitchListTile(
@@ -5321,25 +5601,34 @@ class _MasterDataViewState extends State<MasterDataView> {
               },
         child: busy ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2)) : const Text('Add Maktab'),
       ),
+      ], // end canManageOrg (Maktab)
       h('Classes', icon: Icons.menu_book),
+      const Text(
+        'Classes 1-3 (Noorani Qaeda, Muallimul Qur\'an Qaeda, Hafeezi Qur\'an) are fixed: they cannot be renamed, deleted, or have their book/Para details changed. Class creation and editing is only open from Class 4 onward.',
+        style: TextStyle(fontSize: 11.5, color: Colors.black54),
+      ),
+      const SizedBox(height: 6),
       ...st.classDefs.values.map((cd) => Card(
             child: Column(children: [
               SwitchListTile(
                 title: Row(children: [
-                  Expanded(child: Text(cd.name)),
-                  InkWell(
-                    onTap: () async {
-                      final n = await askText(context, 'Rename class', initial: cd.name);
-                      if (n == null) return;
-                      final e = await renameClassRemote(cd, n);
-                      if (context.mounted && e != null) toast(context, e);
-                    },
-                    child: const Padding(padding: EdgeInsets.all(4), child: Icon(Icons.edit, size: 16, color: Colors.black45)),
-                  ),
+                  Expanded(child: Text(cd.isCore ? '${cd.name}  (fixed)' : cd.name)),
+                  // Requirement 2/3: Classes 1-3 are fixed - no rename, no
+                  // book-detail edit, by any role, for any reason.
+                  if (!cd.isCore)
+                    InkWell(
+                      onTap: () async {
+                        final n = await askText(context, 'Rename class', initial: cd.name);
+                        if (n == null) return;
+                        final e = await renameClassRemote(cd, n);
+                        if (context.mounted && e != null) toast(context, e);
+                      },
+                      child: const Padding(padding: EdgeInsets.all(4), child: Icon(Icons.edit, size: 16, color: Colors.black45)),
+                    ),
                   // Requirement 1: edit an EXISTING class's book details, not
                   // just its name - previously only rename was possible after
                   // a page-based class was created.
-                  if (cd.pageBased)
+                  if (!cd.isCore && cd.pageBased)
                     InkWell(
                       onTap: () async {
                         final bn = await askText(context, 'Book name', initial: cd.bookName ?? '');
@@ -5369,7 +5658,12 @@ class _MasterDataViewState extends State<MasterDataView> {
                 },
               ),
               if (cd.pageBased) _paraSection(cd),
-              _classCourseSection(cd),
+              if (!cd.isCore) _bookSection(cd),
+              // Course-class assignment stays admin/super only for now
+              // (same RLS as before this change) - a teacher reaching this
+              // screen via the new "Classes & Books" tab sees Classes and
+              // Books, not course assignment.
+              if (canManageOrg) _classCourseSection(cd),
             ]),
           )),
       field(className, 'New class name (e.g. Class 5 - ...)'),
@@ -5403,6 +5697,7 @@ class _MasterDataViewState extends State<MasterDataView> {
               },
         child: busy ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2)) : const Text('Add Class'),
       ),
+      if (canManageOrg) ...[
       h('Teachers', icon: Icons.groups),
       if (st.teacherAccounts.isEmpty) const Text('No teachers yet.', style: TextStyle(color: Colors.black54)),
       ...st.teacherAccounts.map((t) => Card(
@@ -5595,6 +5890,7 @@ class _MasterDataViewState extends State<MasterDataView> {
               },
         child: busy ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2)) : const Text('Add Add-on Course'),
       ),
+      ], // end canManageOrg (Teachers..Add-on Courses)
       ]),
     );
   }
@@ -5658,57 +5954,147 @@ class _MasterDataViewState extends State<MasterDataView> {
       padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         if (cd.paras.isNotEmpty) ...[
-          const Text('Para (book split into sections, each with its own page count):', style: TextStyle(fontSize: 12, color: Colors.black54)),
+          Text(cd.isCore ? 'Para (fixed at ${cd.paras.length}, cannot be added, edited, or removed):' : 'Para (book split into sections, each with its own page count):',
+              style: const TextStyle(fontSize: 12, color: Colors.black54)),
           const SizedBox(height: 4),
           Wrap(spacing: 6, runSpacing: 6, children: [
             for (final p in cd.paras)
               InputChip(
                 label: Text('Para ${p.paraNo}: ${p.pageCount}p'),
-                onPressed: () async {
-                  final n = await askText(context, 'Para ${p.paraNo} - page count', initial: '${p.pageCount}');
-                  if (n == null) return;
-                  final pc = int.tryParse(n.trim());
-                  if (pc == null || pc <= 0) {
-                    if (context.mounted) toast(context, 'Enter a valid page count');
-                    return;
-                  }
-                  final e = await updateParaPageCountRemote(cd, p, pc);
-                  if (context.mounted && e != null) toast(context, e);
-                },
+                // Requirement 1: Hafizi Qur'an's (and every other core
+                // class's) Para are fixed - no add/edit/delete, so the chip
+                // becomes a plain non-interactive label once isCore.
+                onPressed: cd.isCore
+                    ? null
+                    : () async {
+                        final n = await askText(context, 'Para ${p.paraNo} - page count', initial: '${p.pageCount}');
+                        if (n == null) return;
+                        final pc = int.tryParse(n.trim());
+                        if (pc == null || pc <= 0) {
+                          if (context.mounted) toast(context, 'Enter a valid page count');
+                          return;
+                        }
+                        final e = await updateParaPageCountRemote(cd, p, pc);
+                        if (context.mounted && e != null) toast(context, e);
+                      },
               ),
           ]),
           const SizedBox(height: 6),
           Text('Total: ${cd.totalPages} pages across ${cd.paras.length} Para', style: const TextStyle(fontSize: 12, color: Colors.black54)),
           const SizedBox(height: 8),
         ],
-        Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
-          Expanded(
-            child: TextField(
-              controller: _paraCtrl(cd.id),
-              keyboardType: TextInputType.number,
-              decoration: InputDecoration(labelText: cd.paras.isEmpty ? 'Page count for Para 1 (leave all Para unused for a plain flat book)' : 'Page count for Para ${cd.paras.isEmpty ? 1 : cd.paras.map((p) => p.paraNo).reduce((a, b) => a > b ? a : b) + 1}'),
+        if (!cd.isCore)
+          Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
+            Expanded(
+              child: TextField(
+                controller: _paraCtrl(cd.id),
+                keyboardType: TextInputType.number,
+                decoration: InputDecoration(labelText: cd.paras.isEmpty ? 'Page count for Para 1 (leave all Para unused for a plain flat book)' : 'Page count for Para ${cd.paras.isEmpty ? 1 : cd.paras.map((p) => p.paraNo).reduce((a, b) => a > b ? a : b) + 1}'),
+              ),
             ),
-          ),
-          const SizedBox(width: 8),
-          ElevatedButton(
-            onPressed: paraBusy
-                ? null
-                : () async {
-                    final pc = int.tryParse(_paraCtrl(cd.id).text.trim());
-                    if (pc == null || pc <= 0) {
-                      toast(context, 'Enter a valid page count');
-                      return;
-                    }
-                    setState(() => paraBusy = true);
-                    final e = await addParaRemote(cd, pc);
-                    if (!mounted) return;
-                    setState(() => paraBusy = false);
-                    toast(context, e ?? 'Para ${cd.paras.last.paraNo} added.');
-                    if (e == null) _paraCtrl(cd.id).clear();
+            const SizedBox(width: 8),
+            ElevatedButton(
+              onPressed: paraBusy
+                  ? null
+                  : () async {
+                      final pc = int.tryParse(_paraCtrl(cd.id).text.trim());
+                      if (pc == null || pc <= 0) {
+                        toast(context, 'Enter a valid page count');
+                        return;
+                      }
+                      setState(() => paraBusy = true);
+                      final e = await addParaRemote(cd, pc);
+                      if (!mounted) return;
+                      setState(() => paraBusy = false);
+                      toast(context, e ?? 'Para ${cd.paras.last.paraNo} added.');
+                      if (e == null) _paraCtrl(cd.id).clear();
+                    },
+              child: const Text('Add Para'),
+            ),
+          ]),
+      ]),
+    );
+  }
+
+  // Book Management (Class 4+ only - never shown for a core class, see the
+  // `!cd.isCore` guard where this is called): list of Books under this
+  // class, each editable (name/description/pages/sequence/active), plus an
+  // "Add Book" form. Several Books can exist for the same class (e.g. Class
+  // 4 may have Book 1, Book 2, Book 3, all staying associated with it).
+  Widget _bookSection(ClassDef cd) {
+    final books = List<ClassBook>.from(cd.books)..sort((a, b) => a.sequenceOrder.compareTo(b.sequenceOrder));
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        const Text('Books:', style: TextStyle(fontSize: 12, color: Colors.black54)),
+        const SizedBox(height: 4),
+        if (books.isEmpty) const Text('No Books added yet.', style: TextStyle(fontSize: 12, color: Colors.black38)),
+        ...books.map((b) => Card(
+              color: const Color(0xFFF7F7F2),
+              child: ListTile(
+                dense: true,
+                title: Row(children: [
+                  Expanded(child: Text('${b.name} - ${b.totalPages}p - seq ${b.sequenceOrder}')),
+                  InkWell(
+                    onTap: () async {
+                      final n = await askText(context, 'Book name', initial: b.name);
+                      if (n == null) return;
+                      if (!context.mounted) return;
+                      final d = await askText(context, 'Description (optional)', initial: b.description);
+                      if (d == null) return;
+                      if (!context.mounted) return;
+                      final pText = await askText(context, 'Total pages', initial: '${b.totalPages}');
+                      if (pText == null) return;
+                      final p = int.tryParse(pText.trim());
+                      if (!context.mounted) return;
+                      final sText = await askText(context, 'Display/learning sequence (lower = earlier)', initial: '${b.sequenceOrder}');
+                      if (sText == null) return;
+                      final seq = int.tryParse(sText.trim());
+                      final e = await updateClassBookRemote(b, name: n, description: d, totalPages: p, sequenceOrder: seq);
+                      if (context.mounted && e != null) toast(context, e);
+                    },
+                    child: const Padding(padding: EdgeInsets.all(4), child: Icon(Icons.edit, size: 16, color: Colors.black45)),
+                  ),
+                ]),
+                subtitle: Text(b.description.isEmpty ? (b.active ? 'Active' : 'Inactive') : '${b.description} - ${b.active ? 'Active' : 'Inactive'}'),
+                trailing: Switch(
+                  value: b.active,
+                  onChanged: (v) async {
+                    final e = await setClassBookActiveRemote(b, v);
+                    if (context.mounted && e != null) toast(context, e);
                   },
-            child: const Text('Add Para'),
-          ),
+                ),
+              ),
+            )),
+        const SizedBox(height: 6),
+        field(_bookCtrl(bookNameCtrl, cd.id), 'New Book name'),
+        field(_bookCtrl(bookDescCtrl, cd.id), 'Book description (optional)'),
+        Row(children: [
+          Expanded(child: field(_bookCtrl(bookPagesCtrl, cd.id), 'Total pages', number: true)),
+          const SizedBox(width: 8),
+          Expanded(child: field(_bookCtrl(bookSeqCtrl, cd.id), 'Sequence (optional)', number: true)),
         ]),
+        ElevatedButton(
+          onPressed: bookBusy
+              ? null
+              : () async {
+                  final pages = int.tryParse(_bookCtrl(bookPagesCtrl, cd.id).text.trim()) ?? 0;
+                  final seqText = _bookCtrl(bookSeqCtrl, cd.id).text.trim();
+                  final seq = seqText.isEmpty ? books.length + 1 : (int.tryParse(seqText) ?? books.length + 1);
+                  setState(() => bookBusy = true);
+                  final e = await addClassBookRemote(cd, _bookCtrl(bookNameCtrl, cd.id).text, _bookCtrl(bookDescCtrl, cd.id).text, pages, seq);
+                  if (!mounted) return;
+                  setState(() => bookBusy = false);
+                  toast(context, e ?? 'Book added to ${cd.name}.');
+                  if (e == null) {
+                    _bookCtrl(bookNameCtrl, cd.id).clear();
+                    _bookCtrl(bookDescCtrl, cd.id).clear();
+                    _bookCtrl(bookPagesCtrl, cd.id).clear();
+                    _bookCtrl(bookSeqCtrl, cd.id).clear();
+                  }
+                },
+          child: bookBusy ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2)) : const Text('Add Book'),
+        ),
       ]),
     );
   }

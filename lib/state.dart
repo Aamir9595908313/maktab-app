@@ -46,6 +46,16 @@ class ClassDef {
   int totalPages;
   final int paceDays; // expected days per page, page-based classes only
   bool active;
+  // Classes 1-3 (Noorani Qaeda, Muallimul Qur'an Qaeda, Hafeezi Qur'an) are
+  // fixed/core classes: they can never be renamed, have their book details
+  // edited, be deleted, or have their Para structure changed (Class 3
+  // specifically), and no duplicate of one can be created. Mirrors
+  // public.classes.is_core - the actual enforcement is a DB trigger
+  // (fn_protect_core_classes), this flag just drives hiding the
+  // now-pointless edit controls in the UI. Defaults to false so any
+  // locally-created class (not yet synced) is editable like every other
+  // non-core class.
+  bool isCore;
   // The matching row's id in Supabase public.classes, once this record has
   // been loaded from (or successfully saved to) the real database. Null
   // means this is still local-only demo data that hasn't been synced.
@@ -58,7 +68,32 @@ class ClassDef {
   // instead of one long flat count - see AppState.paraPosition. When empty,
   // the class behaves exactly as a plain flat page-based book always has.
   List<ParaDef> paras;
-  ClassDef(this.id, this.name, {this.pageBased = false, this.bookName, this.totalPages = 0, this.paceDays = 2, this.active = true, this.dbId, List<ParaDef>? paras}) : paras = paras ?? [];
+  // Book Management (Class 4 onward): a class can have several independent
+  // books, each with its own page count/sequence/active status, tracked
+  // separately per student (AppState.bookProg et al) - unlike `paras`
+  // above, which splits ONE book's single flat page range into named
+  // sections. Always empty for Classes 1-3 (enforced server-side too).
+  List<ClassBook> books;
+  ClassDef(this.id, this.name,
+      {this.pageBased = false, this.bookName, this.totalPages = 0, this.paceDays = 2, this.active = true, this.isCore = false, this.dbId, List<ParaDef>? paras, List<ClassBook>? books})
+      : paras = paras ?? [],
+        books = books ?? [];
+}
+
+// One Book under a class's Book Management (Class 4 onward) -
+// public.class_books. Independent of the single bookName/totalPages a
+// page-based class (Classes 1-3) already has, and independent of other
+// Books under the same class - each has its own 1..totalPages range.
+class ClassBook {
+  final int id;
+  String name;
+  String description;
+  int totalPages;
+  int sequenceOrder;
+  bool active;
+  // public.class_books row id, once loaded from (or saved to) the database.
+  String? dbId;
+  ClassBook(this.id, this.name, {this.description = '', this.totalPages = 0, this.sequenceOrder = 0, this.active = true, this.dbId});
 }
 
 // One Para (section) of a Para-wise book - public.class_paras.
@@ -111,6 +146,12 @@ class Student {
   // chapter-based progress (Class 4+): chapterIndex -> date / grade
   Map<int, String> chDate;
   Map<int, String> chGrade;
+  // Book Management progress (Class 4+ books): keyed by "bookId:pageNo"
+  // since each Book under a class has its own independent 1..totalPages
+  // range (unlike pageDate/pageGrade above, which assume one flat range
+  // per class and would collide across several Books).
+  Map<String, String> bookPageDate;
+  Map<String, String> bookPageGrade;
   List<String> absent;
   List<String> history;
   // The matching row's id in Supabase public.students, once this record has
@@ -139,6 +180,8 @@ class Student {
     Map<int, String>? pageGrade,
     Map<int, String>? chDate,
     Map<int, String>? chGrade,
+    Map<String, String>? bookPageDate,
+    Map<String, String>? bookPageGrade,
     List<String>? absent,
     List<String>? history,
     this.dbId,
@@ -146,6 +189,8 @@ class Student {
         pageGrade = pageGrade ?? {},
         chDate = chDate ?? {},
         chGrade = chGrade ?? {},
+        bookPageDate = bookPageDate ?? {},
+        bookPageGrade = bookPageGrade ?? {},
         absent = absent ?? [],
         history = history ?? [];
 }
@@ -995,6 +1040,83 @@ class AppState extends ChangeNotifier {
   void setPageProgressFromDb(Student s, Map<int, String> dates, Map<int, String> grades) {
     s.pageDate = dates;
     s.pageGrade = grades;
+    notifyListeners();
+  }
+
+  // ---------- Book Management (Class 4+ books) ----------
+  List<ClassBook> booksForClass(int classId) {
+    final cd = classDefs[classId];
+    if (cd == null) return const [];
+    final list = cd.books.where((b) => b.active).toList()..sort((a, b) => a.sequenceOrder.compareTo(b.sequenceOrder));
+    return list;
+  }
+
+  String _bookKey(int bookId, int pageNo) => '$bookId:$pageNo';
+
+  // First not-yet-completed page of this Book, 1..totalPages in plain
+  // order (a Book has no reordered teaching sequence like Hafizi Qur'an's
+  // Para do - "display/learning sequence" for a Book is which Book comes
+  // first among several, not a reorder of its own pages).
+  int? currentBookPageNo(Student s, ClassBook b) {
+    for (var p = 1; p <= b.totalPages; p++) {
+      if (!s.bookPageDate.containsKey(_bookKey(b.id, p))) return p;
+    }
+    return null;
+  }
+
+  String bookPageStatus(Student s, ClassBook b, int pageNo) {
+    if (s.bookPageDate.containsKey(_bookKey(b.id, pageNo))) return 'Completed';
+    if (pageNo == currentBookPageNo(s, b)) return 'In progress';
+    return 'Pending';
+  }
+
+  Prog bookProg(Student s, ClassBook b) {
+    var n = 0;
+    for (var p = 1; p <= b.totalPages; p++) {
+      if (s.bookPageDate.containsKey(_bookKey(b.id, p))) n++;
+    }
+    final cur = currentBookPageNo(s, b);
+    final label = cur == null ? 'All pages complete' : 'Page $cur of ${b.totalPages}';
+    return Prog(n, b.totalPages, 0, label: label);
+  }
+
+  void markBookPageComplete(Student s, ClassBook b, int pageNo, String date, String grade) {
+    final d = validDate(date) ? date : kToday;
+    s.bookPageDate[_bookKey(b.id, pageNo)] = d;
+    s.bookPageGrade[_bookKey(b.id, pageNo)] = grade;
+    notes.add(Note(s.parentPhone, '${b.name} page $pageNo completed for ${s.name} on ${nice(d)} - $grade'));
+    notifyListeners();
+  }
+
+  // Replaces a student's Book-progress for every Book of their class with
+  // what the database has (same reload/refresh/other-device purpose as
+  // setPageProgressFromDb).
+  void setBookProgressFromDb(Student s, Map<String, String> dates, Map<String, String> grades) {
+    s.bookPageDate = dates;
+    s.bookPageGrade = grades;
+    notifyListeners();
+  }
+
+  void setClassBooksFromDb(ClassDef cd, List<ClassBook> books) {
+    cd.books = books;
+    notifyListeners();
+  }
+
+  void addClassBookLocal(ClassDef cd, ClassBook b) {
+    cd.books.add(b);
+    notifyListeners();
+  }
+
+  void updateClassBookLocal(ClassBook b, {String? name, String? description, int? totalPages, int? sequenceOrder}) {
+    if (name != null) b.name = name;
+    if (description != null) b.description = description;
+    if (totalPages != null) b.totalPages = totalPages;
+    if (sequenceOrder != null) b.sequenceOrder = sequenceOrder;
+    notifyListeners();
+  }
+
+  void setClassBookActiveLocal(ClassBook b, bool active) {
+    b.active = active;
     notifyListeners();
   }
 
