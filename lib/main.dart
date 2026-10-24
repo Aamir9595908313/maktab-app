@@ -2009,6 +2009,37 @@ class _GuestHomeState extends State<GuestHome> {
     }
   }
 
+  // Lets someone re-request a fresh OTP without having to tap "Change
+  // number" and re-type the same number, or reload the whole app - the
+  // only two ways to recover before this existed once the first OTP's
+  // short validity window (a minute or so) had passed.
+  Future<void> _resendOtp() async {
+    setState(() {
+      busy = true;
+      err = '';
+      otp.clear();
+    });
+    try {
+      await sb.auth.signInWithOtp(phone: '+91${digits(phone.text)}');
+      if (!mounted) return;
+      setState(() {
+        busy = false;
+        err = '';
+      });
+      toast(context, 'A new OTP has been sent.');
+    } on AuthException catch (e) {
+      setState(() {
+        busy = false;
+        err = e.message;
+      });
+    } catch (e) {
+      setState(() {
+        busy = false;
+        err = 'Could not reach the server. Check your internet connection and try again.';
+      });
+    }
+  }
+
   Future<void> _verifyOtp() async {
     final p = digits(phone.text);
     setState(() {
@@ -2057,9 +2088,14 @@ class _GuestHomeState extends State<GuestHome> {
       // ChangeNotifier, so any screen listening to it redraws).
       unawaited(loadMasterData().then((_) => subscribeRealtime()));
     } on AuthException catch (e) {
+      // Supabase's own wording here ("Token has expired or is invalid") is
+      // accurate but doesn't tell someone what to do about it - an OTP is
+      // only valid for a short window, so this fires often simply because
+      // it was typed in a bit too slowly, not because anything is broken.
+      final expired = e.message.toLowerCase().contains('expired') || e.message.toLowerCase().contains('invalid');
       setState(() {
         busy = false;
-        err = e.message;
+        err = expired ? 'This OTP has expired or was entered incorrectly. Tap "Resend OTP" below to get a new one.' : e.message;
       });
     } catch (e) {
       setState(() {
@@ -2121,7 +2157,10 @@ class _GuestHomeState extends State<GuestHome> {
                   child: busy ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white)) : const Text('Verify & Login'),
                 ),
               ),
-              Center(child: TextButton(onPressed: busy ? null : () => setState(() => step2 = false), child: const Text('Change number'))),
+              Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+                TextButton(onPressed: busy ? null : _resendOtp, child: const Text('Resend OTP')),
+                TextButton(onPressed: busy ? null : () => setState(() => step2 = false), child: const Text('Change number')),
+              ]),
             ],
             const SizedBox(height: 28),
             const Divider(),
