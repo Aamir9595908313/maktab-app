@@ -42,11 +42,22 @@ jobs:
           # without this the app would build fine but the relevant feature
           # would silently fail on a real device, or the OS would never even
           # show a permission prompt.
+          # Prayer-time reminders (flutter_local_notifications): POST_NOTIFICATIONS
+          # is the Android 13+ runtime prompt the app requests before
+          # scheduling anything; SCHEDULE_EXACT_ALARM lets a reminder fire at
+          # the exact prayer-start minute (an inexact alarm could be off by up
+          # to 15 minutes); RECEIVE_BOOT_COMPLETED lets the plugin's own
+          # built-in boot receiver re-arm already-scheduled reminders after the
+          # phone restarts, instead of them silently vanishing.
           perms = [
               "android.permission.INTERNET",
               "android.permission.ACCESS_FINE_LOCATION",
               "android.permission.ACCESS_COARSE_LOCATION",
               "android.permission.CAMERA",
+              "android.permission.POST_NOTIFICATIONS",
+              "android.permission.SCHEDULE_EXACT_ALARM",
+              "android.permission.RECEIVE_BOOT_COMPLETED",
+              "android.permission.VIBRATE",
           ]
           insert = "".join(f'    <uses-permission android:name="{p}"/>\n' for p in perms if p not in xml)
           if "android.hardware.camera" not in xml:

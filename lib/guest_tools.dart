@@ -9,6 +9,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:flutter_compass/flutter_compass.dart';
 import 'package:http/http.dart' as http;
 import 'package:printing/printing.dart';
+import 'prayer_notifications.dart';
 
 const Color _kGreen = Color(0xFF054D00);
 const Color _kGold = Color(0xFFD4A72C);
@@ -330,6 +331,24 @@ class _CalendarScreenState extends State<CalendarScreen> {
             Text(hijriOffset == 0 ? (urdu ? 'درست' : 'No adjustment') : '${hijriOffset > 0 ? '+' : ''}$hijriOffset ${urdu ? 'دن' : 'day(s)'}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12.5)),
             IconButton(onPressed: () => _setOffset(hijriOffset + 1), icon: const Icon(Icons.add_circle_outline, size: 20)),
           ]),
+          // This same +/- adjustment is the general-purpose way to align the
+          // shown Hijri date to ANY specific moon-sighting source (a local
+          // committee's announcement, or a particular named calendar such as
+          // a Razwi one) - it is not limited to "the local announcement"
+          // wording above. Nobody has supplied an actual Razwi calendar
+          // source/dates to calibrate against yet, so there is nothing
+          // Razwi-specific to encode here; once a source is provided, the
+          // correct offset for it can be set the same way.
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8),
+            child: Text(
+              urdu
+                  ? 'نوٹ: یہی ایڈجسٹمنٹ کسی بھی مخصوص کیلنڈر (مثلاً رضوی کیلنڈر) سے ملانے کے لیے بھی استعمال کی جا سکتی ہے۔ فی الحال رضوی کیلنڈر کا کوئی مصدر فراہم نہیں کیا گیا، اس لیے کوئی علیحدہ ایڈجسٹمنٹ سیٹ نہیں کی گئی۔'
+                  : 'Note: this same adjustment can be used to match any specific calendar (e.g. a Razwi calendar) once a source for it is provided - no Razwi-specific source has been supplied yet, so no separate adjustment has been set.',
+              textAlign: TextAlign.center,
+              style: const TextStyle(fontSize: 10.5, color: Colors.black45, fontStyle: FontStyle.italic),
+            ),
+          ),
           const SizedBox(height: 14),
           Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
             IconButton(onPressed: () => setState(() => shown = DateTime(shown.year, shown.month - 1, 1)), icon: const Icon(Icons.chevron_left)),
@@ -508,15 +527,62 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
   _PrayerStatus status = _PrayerStatus.loading;
   double? lat, lng;
   Map<String, String> timings = {};
+  String? placeName;
+  bool placeLoading = false;
+  bool notifEnabled = false;
+  bool notifBusy = false;
 
   @override
   void initState() {
     super.initState();
+    _loadNotifPref();
     _init();
   }
 
+  Future<void> _loadNotifPref() async {
+    final enabled = await PrayerNotificationService.isEnabled();
+    if (!mounted) return;
+    setState(() => notifEnabled = enabled);
+  }
+
+  // Reverse-geocodes (lat, lng) to a human place name via OpenStreetMap's
+  // free Nominatim API, so the screen can show "Mehkar, Maharashtra"
+  // instead of raw coordinates - this runs on the end user's device/network
+  // (not this build environment), so it's reachable at runtime even though
+  // it can't be tested from here. Best-effort: on any failure the screen
+  // just falls back to showing the coordinates, which were already shown
+  // before this feature existed.
+  Future<void> _reverseGeocode(double latitude, double longitude) async {
+    setState(() => placeLoading = true);
+    try {
+      final uri = Uri.parse(
+          'https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=$latitude&lon=$longitude&zoom=10&addressdetails=1');
+      final res = await http
+          .get(uri, headers: {'User-Agent': 'MaktabETajushshriahApp/1.0 (Faiz-E-Raza Group Mehkar)'})
+          .timeout(const Duration(seconds: 10));
+      if (res.statusCode != 200) throw Exception('bad status');
+      final body = jsonDecode(res.body) as Map<String, dynamic>;
+      final addr = body['address'] as Map<String, dynamic>?;
+      final city = addr?['city'] ?? addr?['town'] ?? addr?['village'] ?? addr?['county'] ?? addr?['suburb'];
+      final state = addr?['state'];
+      final parts = [city, state].whereType<String>().toList();
+      final name = parts.isNotEmpty ? parts.join(', ') : (body['display_name'] as String?);
+      if (!mounted) return;
+      setState(() {
+        placeName = name;
+        placeLoading = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => placeLoading = false);
+    }
+  }
+
   Future<void> _init() async {
-    setState(() => status = _PrayerStatus.loading);
+    setState(() {
+      status = _PrayerStatus.loading;
+      placeName = null;
+    });
     final serviceOn = await Geolocator.isLocationServiceEnabled();
     if (!serviceOn) {
       setState(() => status = _PrayerStatus.noService);
@@ -550,10 +616,40 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
         timings = t.map((k, v) => MapEntry(k, v.toString()));
         status = _PrayerStatus.ready;
       });
+      // Best-effort, non-blocking: the place name and any scheduled
+      // reminders should never hold up showing the prayer times themselves.
+      unawaited(_reverseGeocode(pos.latitude, pos.longitude));
+      if (notifEnabled) {
+        unawaited(PrayerNotificationService.scheduleUpcoming(latitude: pos.latitude, longitude: pos.longitude));
+      }
     } catch (_) {
       if (!mounted) return;
       setState(() => status = _PrayerStatus.networkError);
     }
+  }
+
+  Future<void> _onToggleNotif(bool value) async {
+    setState(() => notifBusy = true);
+    if (value) {
+      final granted = await PrayerNotificationService.requestPermissions();
+      await PrayerNotificationService.setEnabled(true);
+      if (!mounted) return;
+      if (!granted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text("Notification permission wasn't granted, so reminders may not appear. You can allow it from the device's app settings."),
+        ));
+      }
+      if (lat != null && lng != null) {
+        await PrayerNotificationService.scheduleUpcoming(latitude: lat!, longitude: lng!);
+      }
+    } else {
+      await PrayerNotificationService.setEnabled(false);
+    }
+    if (!mounted) return;
+    setState(() {
+      notifEnabled = value;
+      notifBusy = false;
+    });
   }
 
   @override
@@ -596,8 +692,43 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        Text('${lat!.toStringAsFixed(3)}, ${lng!.toStringAsFixed(3)}', style: const TextStyle(color: Colors.black54, fontSize: 12), textAlign: TextAlign.center),
-        const SizedBox(height: 12),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.location_on, size: 16, color: _kGreen),
+            const SizedBox(width: 4),
+            Flexible(
+              child: Text(
+                placeLoading ? 'Finding your location…' : (placeName ?? '${lat!.toStringAsFixed(3)}, ${lng!.toStringAsFixed(3)}'),
+                style: const TextStyle(color: Colors.black87, fontSize: 13, fontWeight: FontWeight.w600),
+                textAlign: TextAlign.center,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 2),
+        Text('${lat!.toStringAsFixed(3)}, ${lng!.toStringAsFixed(3)}', style: const TextStyle(color: Colors.black38, fontSize: 11), textAlign: TextAlign.center),
+        const SizedBox(height: 4),
+        TextButton.icon(
+          onPressed: status == _PrayerStatus.loading ? null : _init,
+          icon: const Icon(Icons.my_location, size: 16),
+          label: const Text('Update to my current location', style: TextStyle(fontSize: 12)),
+        ),
+        const SizedBox(height: 8),
+        Card(
+          child: SwitchListTile(
+            value: notifEnabled,
+            onChanged: notifBusy ? null : _onToggleNotif,
+            activeColor: _kGreen,
+            title: const Text('Notify me at prayer time', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+            subtitle: const Text(
+              'Shows an in-app notification the moment each prayer starts (not WhatsApp/SMS). Works even if the app is closed.',
+              style: TextStyle(fontSize: 11.5),
+            ),
+          ),
+        ),
+        const SizedBox(height: 10),
         for (final r in rows)
           Card(
             child: ListTile(

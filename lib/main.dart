@@ -11,6 +11,7 @@ import 'state.dart';
 import 'guest_tools.dart';
 import 'supabase_config.dart';
 import 'sadqa_peti.dart';
+import 'prayer_notifications.dart';
 
 final AppState st = AppState();
 const Color kGreen = Color(0xFF054D00);
@@ -20,6 +21,12 @@ SupabaseClient get sb => Supabase.instance.client;
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
+  // Registers the notification channel/plugin so the OS already knows
+  // about it by the time the user opens Prayer Times and turns the toggle
+  // on. Deliberately not awaited - this must never delay the first screen,
+  // and it does no network I/O of its own (that only happens when
+  // PrayerNotificationService.scheduleUpcoming() is actually called).
+  unawaited(PrayerNotificationService.initialize());
   // Connecting to Supabase must never block the app from showing a screen:
   // if it's awaited directly in main() and the connection is slow, blocked,
   // or the device has no network yet, the app sits on a blank screen with
