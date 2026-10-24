@@ -18,7 +18,6 @@
 import 'dart:convert';
 
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
-import 'package:flutter_timezone/flutter_timezone.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:timezone/data/latest_all.dart' as tzdata;
@@ -53,15 +52,20 @@ class PrayerNotificationService {
   static Future<void> initialize() async {
     if (_initialized) return;
     tzdata.initializeTimeZones();
-    try {
-      final name = await FlutterTimezone.getLocalTimezone();
-      tz.setLocalLocation(tz.getLocation(name));
-    } catch (_) {
-      // Couldn't detect the device's IANA timezone name - fall back to UTC
-      // rather than crash; schedule accuracy may be off by the device's
-      // offset until this succeeds on a later call.
-      tz.setLocalLocation(tz.UTC);
-    }
+    // No device-timezone-detection plugin is wired up (the one tried here
+    // broke the Android build on this Flutter toolchain - see git history),
+    // so the notification wall-clock reference is pinned to the timezone
+    // every user of this app is actually in: all of India uses a single
+    // IST offset (UTC+5:30) with no DST, whichever city/state the user is
+    // physically in, so "Asia/Kolkata" is correct for every user without
+    // needing to detect anything. The prayer TIMES themselves are still
+    // computed correctly for the user's live GPS coordinates (via the
+    // Aladhan API) regardless of this - only the local wall-clock moment a
+    // scheduled notification fires is anchored to IST. If this app is ever
+    // used by someone physically outside India's timezone, this would need
+    // revisiting (e.g. by adding a timezone-detection plugin once one is
+    // found that builds cleanly).
+    tz.setLocalLocation(tz.getLocation('Asia/Kolkata'));
     const androidInit = AndroidInitializationSettings('@mipmap/ic_launcher');
     const iosInit = DarwinInitializationSettings();
     await _plugin.initialize(const InitializationSettings(android: androidInit, iOS: iosInit));
