@@ -66,10 +66,15 @@ jobs:
           with open(path, "w") as f:
               f.write(xml)
           PYEOF
-      - run: flutter pub get
       - name: Build release APK
         id: build
         continue-on-error: true
+        # pub get is run as part of this same step (not a separate one) so
+        # a dependency-resolution failure also lands in build-log.txt and
+        # gets published the same way a compile failure does - a plain
+        # separate `flutter pub get` step has no log capture at all, and
+        # its failure output is only reachable through the Actions log
+        # viewer's own storage, which isn't reachable from every network.
         # --split-per-abi: one APK per CPU architecture (arm64-v8a,
         # armeabi-v7a, x86_64) instead of one "universal" APK carrying all
         # three copies of every native library. Same Dart/Flutter code and
@@ -83,7 +88,7 @@ jobs:
         # APK produced.
         run: |
           set -o pipefail
-          flutter build apk --release --split-per-abi 2>&1 | tee build-log.txt
+          (flutter pub get && flutter build apk --release --split-per-abi) 2>&1 | tee build-log.txt
       - uses: actions/upload-artifact@v4
         if: steps.build.outcome == 'success'
         with:
