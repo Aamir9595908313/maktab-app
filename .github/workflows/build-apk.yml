@@ -77,6 +77,41 @@ jobs:
           with open(path, "w") as f:
               f.write(xml)
           PYEOF
+          python3 - <<'PYEOF'
+          import os
+
+          # flutter_local_notifications uses java.time APIs that only exist
+          # natively on Android 8+ (API 26) - on anything older the app's
+          # own compileOptions already target Java 11 bytecode, but the
+          # Android Gradle Plugin still needs "core library desugaring"
+          # explicitly turned on before it will let a dependency that uses
+          # those APIs into a release build at all (it refuses the build
+          # with checkReleaseAarMetadata otherwise, regardless of minSdk).
+          # Flutter's own scaffold template doesn't enable this by default,
+          # so it has to be patched in here. Handles whichever build file
+          # format this Flutter version scaffolds (Kotlin DSL is current,
+          # Groovy is the older format some versions still generate).
+          kts_path = "android/app/build.gradle.kts"
+          groovy_path = "android/app/build.gradle"
+          path = kts_path if os.path.exists(kts_path) else groovy_path
+          is_kts = path == kts_path
+
+          with open(path) as f:
+              src = f.read()
+
+          if "coreLibraryDesugaring" not in src:
+              if is_kts:
+                  if "isCoreLibraryDesugaringEnabled" not in src:
+                      src = src.replace("compileOptions {", "compileOptions {\n        isCoreLibraryDesugaringEnabled = true", 1)
+                  src += '\n\ndependencies {\n    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.2")\n}\n'
+              else:
+                  if "coreLibraryDesugaringEnabled" not in src:
+                      src = src.replace("compileOptions {", "compileOptions {\n        coreLibraryDesugaringEnabled true", 1)
+                  src += "\n\ndependencies {\n    coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.1.2'\n}\n"
+
+          with open(path, "w") as f:
+              f.write(src)
+          PYEOF
       - name: Build release APK
         id: build
         continue-on-error: true
