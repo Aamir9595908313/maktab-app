@@ -12,6 +12,7 @@ import 'guest_tools.dart';
 import 'supabase_config.dart';
 import 'sadqa_peti.dart';
 import 'prayer_notifications.dart';
+import 'monthly_members.dart';
 
 final AppState st = AppState();
 const Color kGreen = Color(0xFF054D00);
@@ -4461,6 +4462,7 @@ class _StaffHomeState extends State<StaffHome> {
           tile('Leave requests', '$pendingLeave pending', icon: Icons.event_busy, onTap: () => pushPage(context, 'Teachers & Leave', const TeachersView())),
           tile('Complaints open', '$open', icon: Icons.report_problem, onTap: () => pushPage(context, 'Complaints', const ComplaintsView())),
           tile('Committee members', '${st.committeeAccounts.where((m) => !m.pending).length}', icon: Icons.diversity_3, onTap: () => pushPage(context, 'Committee', const CommitteeAdmin())),
+          tile('Monthly Members', '${st.monthlyMembers.where((m) => m.isActive).length} active', icon: Icons.volunteer_activism, onTap: () => pushPage(context, 'Monthly Members', const MonthlyMembersDashboard())),
         ]),
         h('Post common announcement (all Makatib, all roles)'),
         field(title, 'Title'),

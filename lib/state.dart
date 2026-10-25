@@ -2103,6 +2103,38 @@ class AppState extends ChangeNotifier {
 
   bool isSadqaCollectorFor(String petiId) =>
       user?.role == 'super' || sadqaCollectors.any((c) => c.petiId == null || c.petiId == petiId);
+
+  // ---------- Monthly Member Contribution module (Super Admin only) ----------
+  final List<MonthlyMember> monthlyMembers = [];
+  // Every due row for every member, across every month - small enough a
+  // dataset for one Maktab community that loading it all at once (same as
+  // teachers/students elsewhere in this app) keeps the dashboard and
+  // reports simple, instead of re-querying per screen.
+  final List<MonthlyDue> monthlyDues = [];
+
+  void setMonthlyMembersFromDb(List<MonthlyMember> list) {
+    monthlyMembers
+      ..clear()
+      ..addAll(list);
+    notifyListeners();
+  }
+
+  void setMonthlyDuesFromDb(List<MonthlyDue> list) {
+    monthlyDues
+      ..clear()
+      ..addAll(list);
+    notifyListeners();
+  }
+
+  List<MonthlyDue> duesForMember(String memberId) => monthlyDues.where((d) => d.memberId == memberId).toList()
+    ..sort((a, b) => (a.year * 12 + a.month).compareTo(b.year * 12 + b.month));
+
+  MonthlyMember? monthlyMemberById(String id) {
+    for (final m in monthlyMembers) {
+      if (m.id == id) return m;
+    }
+    return null;
+  }
 }
 
 class ChapPlan {
@@ -2239,5 +2271,164 @@ class SadqaCollector {
         id: j['id'] as String,
         petiId: j['peti_id'] as String?,
         userId: (j['user_id'] as String?) ?? '',
+      );
+}
+
+// ---------------- Monthly Member Contribution module models ----------------
+// One standing community member who pays an ongoing monthly contribution -
+// public.monthly_members. Not a student and not an app user (no login) -
+// just a name, phone and amount the Super Admin tracks and messages.
+class MonthlyMember {
+  final String id;
+  String fullName;
+  String phone;
+  double monthlyAmount;
+  String joiningDate; // yyyy-mm-dd
+  String? address;
+  String? remarks;
+  bool isActive;
+
+  MonthlyMember({
+    required this.id,
+    required this.fullName,
+    required this.phone,
+    required this.monthlyAmount,
+    required this.joiningDate,
+    this.address,
+    this.remarks,
+    this.isActive = true,
+  });
+
+  factory MonthlyMember.fromJson(Map<String, dynamic> j) => MonthlyMember(
+        id: j['id'] as String,
+        fullName: (j['full_name'] as String?) ?? '',
+        phone: (j['phone'] as String?) ?? '',
+        monthlyAmount: double.tryParse('${j['monthly_amount']}') ?? 0,
+        joiningDate: (j['joining_date'] as String?) ?? '',
+        address: j['address'] as String?,
+        remarks: j['remarks'] as String?,
+        isActive: (j['is_active'] as bool?) ?? true,
+      );
+}
+
+// One member's contribution obligation for one calendar month -
+// public.monthly_dues. amount_paid/status are derived server-side (a
+// trigger on monthly_payments) from the actual saved payments, never set
+// directly by the client, so they can't drift out of sync with reality.
+class MonthlyDue {
+  final String id;
+  final String memberId;
+  final int year;
+  final int month;
+  double amountDue;
+  double amountPaid;
+  String status; // due | part_paid | complete | overdue
+
+  MonthlyDue({
+    required this.id,
+    required this.memberId,
+    required this.year,
+    required this.month,
+    required this.amountDue,
+    required this.amountPaid,
+    required this.status,
+  });
+
+  factory MonthlyDue.fromJson(Map<String, dynamic> j) => MonthlyDue(
+        id: j['id'] as String,
+        memberId: (j['member_id'] as String?) ?? '',
+        year: (j['year'] as int?) ?? (j['year'] is num ? (j['year'] as num).toInt() : 0),
+        month: (j['month'] as int?) ?? (j['month'] is num ? (j['month'] as num).toInt() : 0),
+        amountDue: double.tryParse('${j['amount_due']}') ?? 0,
+        amountPaid: double.tryParse('${j['amount_paid']}') ?? 0,
+        status: (j['status'] as String?) ?? 'due',
+      );
+
+  double get outstanding => amountDue - amountPaid < 0 ? 0 : amountDue - amountPaid;
+
+  String get displayStatus {
+    switch (status) {
+      case 'complete':
+        return 'Paid';
+      case 'part_paid':
+        return 'Partially Paid';
+      case 'overdue':
+        return 'Overdue';
+      default:
+        return 'Due';
+    }
+  }
+
+  String get monthLabel => '${AppState.kMonthAbbrevs[month - 1]} $year';
+}
+
+// One recorded installment against a due - public.monthly_payments.
+class MonthlyPayment {
+  final String id;
+  final String dueId;
+  final String memberId;
+  final double amount;
+  final String method; // cash | bank_transfer | upi | other
+  final String? txnRef;
+  final String? remarks;
+  final String paidAt;
+
+  MonthlyPayment({
+    required this.id,
+    required this.dueId,
+    required this.memberId,
+    required this.amount,
+    required this.method,
+    this.txnRef,
+    this.remarks,
+    required this.paidAt,
+  });
+
+  factory MonthlyPayment.fromJson(Map<String, dynamic> j) => MonthlyPayment(
+        id: j['id'] as String,
+        dueId: (j['due_id'] as String?) ?? '',
+        memberId: (j['member_id'] as String?) ?? '',
+        amount: double.tryParse('${j['amount']}') ?? 0,
+        method: (j['method'] as String?) ?? 'cash',
+        txnRef: j['txn_ref'] as String?,
+        remarks: j['remarks'] as String?,
+        paidAt: (j['paid_at'] as String?) ?? '',
+      );
+}
+
+// One WhatsApp/SMS send attempt (receipt or reminder) - public.monthly_notifications.
+class MonthlyNotificationLog {
+  final String id;
+  final String memberId;
+  final String? dueId;
+  final String? paymentId;
+  final String notifType; // payment_receipt | due_reminder
+  final String channel;
+  final String status; // Pending | Sent | Delivered | Failed
+  final String? errorDetail;
+  final String createdAt;
+
+  MonthlyNotificationLog({
+    required this.id,
+    required this.memberId,
+    this.dueId,
+    this.paymentId,
+    required this.notifType,
+    required this.channel,
+    required this.status,
+    this.errorDetail,
+    required this.createdAt,
+  });
+
+  factory MonthlyNotificationLog.fromJson(Map<String, dynamic> j) => MonthlyNotificationLog(
+        id: j['id'] as String,
+        memberId: (j['member_id'] as String?) ?? '',
+        dueId: j['due_id'] as String?,
+        paymentId: j['payment_id'] as String?,
+        notifType: (j['notif_type'] as String?) ?? '',
+        channel: (j['channel'] as String?) ?? '',
+        status: (j['status'] as String?) ?? 'Pending',
+        errorDetail: j['error_detail'] as String?,
+        createdAt: (j['created_at'] as String?) ?? '',
       );
 }
