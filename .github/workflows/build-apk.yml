@@ -112,6 +112,19 @@ jobs:
           with open(path, "w") as f:
               f.write(src)
           PYEOF
+      - name: Generate app launcher icon
+        # The android/ folder above is freshly scaffolded on every run (it's
+        # gitignored, not checked in), so it always starts with Flutter's
+        # stock default icon - this has to regenerate the real one
+        # (assets/icon/app_icon.png, the Maktab-e-Tajushshriah emblem, per
+        # pubspec.yaml's flutter_launcher_icons config) every single build,
+        # right after the android/ folder exists and before it gets built.
+        # `flutter pub get` first because flutter_launcher_icons is a dev
+        # dependency - "Build release APK" below does its own pub get too,
+        # but that happens after this step and would be too late.
+        run: |
+          flutter pub get
+          dart run flutter_launcher_icons -f pubspec.yaml
       - name: Build release APK
         id: build
         continue-on-error: true

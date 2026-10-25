@@ -21,8 +21,25 @@ dependencies:
   share_plus: ^13.3.1
   flutter_local_notifications: ^18.0.1
   timezone: ^0.9.4
+dev_dependencies:
+  flutter_launcher_icons: ^0.14.3
 flutter:
   uses-material-design: true
   assets:
     - assets/logo.png
+    - assets/icon/app_icon.png
     - assets/surah_yaseen.pdf
+
+# Generates the Android launcher icon (the "app icon" shown on the home
+# screen, app drawer and Play Store listing - distinct from assets/logo.png,
+# which is the logo shown inside the app's own header/banner) from the
+# Maktab-e-Tajushshriah emblem. CI's Android platform folder is scaffolded
+# fresh on every build (see .github/workflows/build-apk.yml), so this only
+# takes effect there via `dart run flutter_launcher_icons` run right after
+# that scaffold step - running it locally (`flutter pub run
+# flutter_launcher_icons`) would do nothing since this repo has no android/
+# folder checked in to write into.
+flutter_launcher_icons:
+  android: true
+  image_path: "assets/icon/app_icon.png"
+  min_sdk_android: 21
