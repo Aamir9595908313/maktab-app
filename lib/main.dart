@@ -1772,9 +1772,7 @@ Future<String?> addTeacherInviteRemote(String name, String phone, List<String> m
     }
     return (data is Map ? data['error'] as String? : null) ?? 'Could not save the teacher.';
   } on FunctionException catch (e) {
-    final details = e.details;
-    final msg = (details is Map ? details['error'] as String? : null);
-    return msg ?? 'Could not save: ${e.reasonPhrase ?? e.toString()}';
+    return friendlyFunctionError(e);
   } catch (_) {
     return 'Could not save. Check your internet connection and try again.';
   }
@@ -1855,9 +1853,7 @@ Future<String?> updateTeacherRemote(Account a, {required String name, required S
     }
     return (data is Map ? data['error'] as String? : null) ?? 'Could not save the teacher.';
   } on FunctionException catch (e) {
-    final details = e.details;
-    final msg = (details is Map ? details['error'] as String? : null);
-    return msg ?? 'Could not save: ${e.reasonPhrase ?? e.toString()}';
+    return friendlyFunctionError(e);
   } catch (_) {
     return 'Could not save. Check your internet connection and try again.';
   }
@@ -2636,6 +2632,24 @@ class _ConnectErrorScreen extends StatelessWidget {
 
 // ---------------- helpers ----------------
 void toast(BuildContext c, String m) => ScaffoldMessenger.of(c).showSnackBar(SnackBar(content: Text(m, style: const TextStyle(fontSize: 13.5))));
+
+// Turns a FunctionException from sb.functions.invoke into a message a
+// Teacher/Admin can actually act on, instead of a raw exception dump like
+// "FunctionsFetchException(status: 0, details: ClientException: Failed to
+// fetch, ...)". status 0 (or no status at all) means the request never
+// got a response from the server at all - almost always a connectivity
+// problem (or, on web, a blocked/CORS'd request) rather than anything the
+// Edge Function itself returned, so that's reported as a plain
+// connectivity message rather than the exception's own text.
+String friendlyFunctionError(FunctionException e) {
+  final details = e.details;
+  final msg = (details is Map ? details['error'] as String? : null);
+  if (msg != null) return msg;
+  if (e.status == 0) {
+    return 'Could not reach the server. Check your internet connection and try again.';
+  }
+  return 'Could not save: ${e.reasonPhrase ?? "the server returned an unexpected error (status ${e.status})."}';
+}
 
 // Compact, consistently-styled inline message strip for errors/warnings/
 // info, instead of a bare red Text() at whatever the surrounding default
