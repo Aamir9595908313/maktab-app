@@ -354,13 +354,30 @@ class _CalendarScreenState extends State<CalendarScreen> {
           const SizedBox(height: 14),
           Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
             IconButton(onPressed: () => setState(() => shown = DateTime(shown.year, shown.month - 1, 1)), icon: const Icon(Icons.chevron_left)),
-            Text('${urdu ? _gMonthsUr[shown.month - 1] : _gMonthsEn[shown.month - 1]} ${shown.year}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+            Column(children: [
+              Text('${urdu ? _gMonthsUr[shown.month - 1] : _gMonthsEn[shown.month - 1]} ${shown.year}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+              // A Gregorian month almost always spans parts of two Hijri
+              // months (Hijri months run ~29-30 days against a 30/31-day
+              // Gregorian month) - like a printed Razvi calendar, this shows
+              // both names ("Rajab - Sha'ban 1447") rather than just the
+              // first day's month, which would silently drop the second one.
+              Builder(builder: (context) {
+                final hijriFirst = _gregorianToHijri(DateTime(shown.year, shown.month, 1).add(Duration(days: hijriOffset)));
+                final hijriLast = _gregorianToHijri(DateTime(shown.year, shown.month, daysInMonth).add(Duration(days: hijriOffset)));
+                final names = urdu ? _hijriMonthsUr : _hijriMonthsEn;
+                final label = hijriFirst[1] == hijriLast[1] ? names[hijriFirst[1] - 1] : '${names[hijriFirst[1] - 1]} - ${names[hijriLast[1] - 1]}';
+                final yearLabel = hijriFirst[0] == hijriLast[0] ? '${hijriFirst[0]}' : '${hijriFirst[0]}-${hijriLast[0]}';
+                return Text('$label $yearLabel${urdu ? ' ہجری' : ' AH'}', style: const TextStyle(fontSize: 12, color: _kGreen, fontWeight: FontWeight.w600));
+              }),
+            ]),
             IconButton(onPressed: () => setState(() => shown = DateTime(shown.year, shown.month + 1, 1)), icon: const Icon(Icons.chevron_right)),
           ]),
+          const SizedBox(height: 6),
           GridView.count(
             crossAxisCount: 7,
             shrinkWrap: true,
             physics: const NeverScrollableScrollPhysics(),
+            childAspectRatio: 0.82,
             children: [
               for (final w in (urdu ? _wdUr : _wdEn)) Center(child: Text(w, style: const TextStyle(fontSize: 11, color: Colors.black54, fontWeight: FontWeight.bold))),
               for (var i = 0; i < leading; i++) const SizedBox(),
@@ -369,14 +386,23 @@ class _CalendarScreenState extends State<CalendarScreen> {
                   final date = DateTime(shown.year, shown.month, d);
                   final isFriday = date.weekday == DateTime.friday;
                   final isToday = date.year == today.year && date.month == today.month && date.day == today.day;
+                  // Both dates in the one box - the Gregorian day large on
+                  // top, the Hijri day (same month shown in the header
+                  // above, so just the day number here) small underneath,
+                  // same pairing a printed Razvi calendar box shows.
+                  final hDay = _gregorianToHijri(date.add(Duration(days: hijriOffset)))[2];
                   return Container(
-                    margin: const EdgeInsets.all(2),
+                    margin: const EdgeInsets.all(1.5),
                     decoration: BoxDecoration(
-                      color: isToday ? _kGreen : (isFriday ? const Color(0xFFFFF3CF) : null),
-                      shape: BoxShape.circle,
+                      color: isToday ? _kGreen : (isFriday ? const Color(0xFFFFF3CF) : const Color(0xFFFAFAF5)),
+                      borderRadius: BorderRadius.circular(6),
+                      border: Border.all(color: isToday ? _kGreen : const Color(0xFFE3E0D0), width: 1),
                     ),
                     alignment: Alignment.center,
-                    child: Text('$d', style: TextStyle(color: isToday ? Colors.white : Colors.black87, fontWeight: isFriday || isToday ? FontWeight.bold : FontWeight.normal, fontSize: 12)),
+                    child: Column(mainAxisAlignment: MainAxisAlignment.center, mainAxisSize: MainAxisSize.min, children: [
+                      Text('$d', style: TextStyle(color: isToday ? Colors.white : Colors.black87, fontWeight: isFriday || isToday ? FontWeight.bold : FontWeight.normal, fontSize: 13)),
+                      Text('$hDay', style: TextStyle(color: isToday ? Colors.white70 : const Color(0xFFC62828), fontSize: 9.5, fontWeight: FontWeight.w600)),
+                    ]),
                   );
                 }),
             ],
