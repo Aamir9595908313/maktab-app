@@ -2537,7 +2537,7 @@ class _MaktabAppState extends State<MaktabApp> {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Maktab E Tajushshriah',
+      title: 'Maktab-E-Tajushshriah',
       debugShowCheckedModeBanner: false,
       // themeMode defaults to following the OS; without an explicit
       // darkTheme, Flutter would otherwise keep using this same light
@@ -2742,26 +2742,78 @@ Widget msgBox(String text, {MsgKind kind = MsgKind.error}) {
 // onTap is optional: dashboards that only show a number (e.g. "Average
 // attendance") leave it out, while anything that's really a shortcut to a
 // list screen (Madrasas, Students, Teachers...) passes one so the tile is
-// an actual way to get there, not just a static stat card.
+// Maps a dashboard tile's plain Material icon to a full-colour emoji that
+// renders as a glossy "3D" glyph on every platform this app ships to
+// (Android's system Noto Color Emoji, Chrome/desktop emoji fonts) - no new
+// image assets to bundle or keep in sync. Tiles whose icon isn't in this
+// (deliberately covering every icon actually passed to tile() in this
+// codebase) map fall back to the plain Material icon further down.
+const Map<IconData, String> _kTileEmoji = {
+  Icons.search: '🔍',
+  Icons.storage: '🗄️',
+  Icons.account_tree: '🌳',
+  Icons.groups: '👥',
+  Icons.co_present: '🧑‍🏫',
+  Icons.event_available: '📅',
+  Icons.menu_book: '📖',
+  Icons.event_busy: '🗓️',
+  Icons.report_problem: '⚠️',
+  Icons.diversity_3: '🤝',
+  Icons.volunteer_activism: '🤲',
+  Icons.payments: '💰',
+  Icons.how_to_reg: '📝',
+  Icons.calendar_month: '📅',
+  Icons.check_circle: '✅',
+  Icons.done_all: '✅',
+  Icons.error_outline: '❗',
+  Icons.filter_alt: '🧮',
+  Icons.hourglass_top: '⏳',
+  Icons.incomplete_circle: '🟠',
+  Icons.inventory_2: '📦',
+  Icons.savings: '🏦',
+  Icons.schedule: '⏰',
+  Icons.storefront: '🏪',
+  Icons.task_alt: '✅',
+  Icons.trending_up: '📈',
+  Icons.undo: '↩️',
+  Icons.warning_amber: '⚠️',
+  Icons.admin_panel_settings: '🛡️',
+  Icons.people: '👥',
+  Icons.bar_chart: '📊',
+  Icons.notifications: '🔔',
+};
+
+// One dashboard stat/shortcut card: a big glossy icon on the left, label +
+// value on the right. Fixed-height icon/text blocks (rather than centering
+// loosely in whatever space the grid cell happens to give it) are what
+// keep this from leaving the large gaps a short label and a 16px icon used
+// to leave in a much taller box - this fills that box instead of floating
+// in the middle of it.
 Widget tile(String label, String value, {Color? color, VoidCallback? onTap, IconData? icon}) {
+  final emoji = icon == null ? null : _kTileEmoji[icon];
   final card = Card(
     child: Padding(
       padding: const EdgeInsets.all(10),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisAlignment: MainAxisAlignment.center, children: [
-        Row(children: [
-          if (icon != null) ...[
+      child: Row(crossAxisAlignment: CrossAxisAlignment.center, children: [
+        if (icon != null) ...[
+          if (emoji != null)
+            Text(emoji, style: const TextStyle(fontSize: 34))
+          else
             Container(
-              padding: const EdgeInsets.all(6),
-              decoration: BoxDecoration(color: kGreen.withOpacity(0.1), borderRadius: BorderRadius.circular(8)),
-              child: Icon(icon, size: 16, color: kGreen),
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(color: kGreen.withOpacity(0.1), borderRadius: BorderRadius.circular(10)),
+              child: Icon(icon, size: 26, color: kGreen),
             ),
-            const SizedBox(width: 8),
-          ],
-          Expanded(child: Text(label, style: const TextStyle(fontSize: 11, color: Colors.black54))),
-          if (onTap != null) const Icon(Icons.chevron_right, size: 14, color: Colors.black38),
-        ]),
-        const SizedBox(height: 4),
-        Text(value, style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: color)),
+          const SizedBox(width: 10),
+        ],
+        Expanded(
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
+            Text(label, style: const TextStyle(fontSize: 11.5, color: Colors.black54), maxLines: 2, overflow: TextOverflow.ellipsis),
+            const SizedBox(height: 3),
+            Text(value, style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold, color: color), maxLines: 1, overflow: TextOverflow.ellipsis),
+          ]),
+        ),
+        if (onTap != null) const Icon(Icons.chevron_right, size: 16, color: Colors.black38),
       ]),
     ),
   );
@@ -2782,7 +2834,7 @@ Widget grid(List<Widget> tiles) => LayoutBuilder(
           crossAxisCount: cols,
           shrinkWrap: true,
           physics: const NeverScrollableScrollPhysics(),
-          childAspectRatio: 2.1,
+          childAspectRatio: 2.35,
           mainAxisSpacing: 6,
           crossAxisSpacing: 6,
           children: tiles,
@@ -3484,7 +3536,7 @@ class _ShellState extends State<Shell> {
               child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                 Image.asset('assets/logo.png', height: 64),
                 const SizedBox(height: 8),
-                const Text('Maktab E Tajushshriah', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                const Text('Maktab-E-Tajushshriah', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
                 Text(roleLabel(u), style: const TextStyle(color: Color(0xFFF0D98A))),
               ]),
             ),

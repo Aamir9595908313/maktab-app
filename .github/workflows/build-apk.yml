@@ -29,7 +29,7 @@ jobs:
         run: |
           flutter create --org com.faizeraza --project-name maktab_app --platforms=android /tmp/scaffold
           cp -r /tmp/scaffold/android ./android
-          sed -i 's/android:label="[^"]*"/android:label="Maktab Madrasa"/' android/app/src/main/AndroidManifest.xml
+          sed -i 's/android:label="[^"]*"/android:label="Maktab-E-Tajushshriah"/' android/app/src/main/AndroidManifest.xml
           python3 - <<'PYEOF'
           path = "android/app/src/main/AndroidManifest.xml"
           with open(path) as f:
