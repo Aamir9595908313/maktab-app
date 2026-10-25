@@ -1639,27 +1639,87 @@ Future<String?> createRoleRemote(String name, Set<String> perms) async {
   }
 }
 
-// Gives someone a custom role the same way Teacher/Admin/Committee invites
-// already work: a pending_role_invites row (base_role='custom', plus the
-// role's id) that the handle_new_auth_user trigger turns into a real
-// account - with the right custom_role_id and madrasa scope - the moment
-// that phone number signs in with OTP.
-Future<String?> assignRoleRemote(String phone, String name, String roleName, List<String> branches) async {
+// Gives a person ANY role in the system - Super Admin, Maktab Admin,
+// Teacher, Committee Member, or any existing Custom Role - including
+// promoting someone to Super Admin, which (before this) was impossible
+// anywhere in the app.
+//
+// Handles both cases a phone number can be in:
+//  - It already belongs to a real, signed-in account (public.user_profiles)
+//    - this updates that row directly (base_role/custom_role_id), and
+//    replaces its Maktab scope (public.user_madrasa_scope) and, if the
+//    account is moving away from being a teacher, clears any class
+//    assignments (public.teacher_class_assignments) left over from that -
+//    a Super Admin or Committee Member has no classes to assign.
+//  - It hasn't signed in yet - this queues a public.pending_role_invites
+//    row (same mechanism Teacher/Admin/Committee invites already use) that
+//    becomes a real account, with this exact role, the moment that phone
+//    number completes its first OTP sign-in.
+// Every table involved already grants a Super Admin full access via RLS
+// (confirmed: profiles_super_all / scope_super_all / tca_super_all /
+// invites_super_all), so this is plain client calls - no Edge Function.
+Future<String?> setUserRoleRemote({
+  required String phone,
+  required String name,
+  required String dbRole,
+  String? customRoleName,
+  List<String> branches = const [],
+}) async {
   final p = digits(phone);
   if (p.length != 10) return 'Enter a 10-digit mobile number';
-  if (name.trim().isEmpty) return 'Enter the name';
-  if (roleName.isEmpty) return 'Choose a role';
-  if (branches.isEmpty) return 'Choose at least one Maktab';
+  final n = name.trim();
+  if (n.isEmpty) return 'Enter the name';
+  final needsBranches = dbRole != 'super_admin';
+  if (needsBranches && branches.isEmpty) return 'Choose at least one Maktab';
+
   try {
-    final roleRow = await sb.from('roles').select('id').eq('name', roleName).maybeSingle();
-    if (roleRow == null) return 'That role was not found - try Create role again.';
+    String? customRoleId;
+    if (dbRole == 'custom') {
+      if (customRoleName == null || customRoleName.isEmpty) return 'Choose a role';
+      final roleRow = await sb.from('roles').select('id').eq('name', customRoleName).maybeSingle();
+      if (roleRow == null) return 'That role was not found - try Create role again.';
+      customRoleId = roleRow['id'] as String?;
+    }
+
+    final fullPhone = '91$p';
+    final existing = await sb.from('user_profiles').select('id').eq('phone', fullPhone).maybeSingle();
+
+    if (existing != null) {
+      final uid = existing['id'];
+      await sb.from('user_profiles').update({
+        'full_name': n,
+        'base_role': dbRole,
+        'custom_role_id': customRoleId,
+      }).eq('id', uid as Object);
+
+      await sb.from('user_madrasa_scope').delete().eq('user_id', uid);
+      if (branches.isNotEmpty) {
+        final rows = <Map<String, Object?>>[];
+        for (final bname in branches) {
+          final mid = st.madrasas.firstWhere((m) => m.name == bname, orElse: () => st.madrasas.first).dbId;
+          if (mid != null) rows.add({'user_id': uid, 'madrasa_id': mid});
+        }
+        if (rows.isNotEmpty) await sb.from('user_madrasa_scope').insert(rows);
+      }
+
+      if (dbRole != 'teacher') {
+        await sb.from('teacher_class_assignments').delete().eq('teacher_id', uid);
+      }
+
+      await loadTeachers();
+      await loadCommitteeMembers();
+      return null;
+    }
+
     await sb.from('pending_role_invites').upsert({
-      'phone': '91$p',
-      'base_role': 'custom',
-      'full_name': name.trim(),
+      'phone': fullPhone,
+      'base_role': dbRole,
+      'full_name': n,
       'madrasa_names': branches,
-      'custom_role_id': roleRow['id'],
+      'custom_role_id': customRoleId,
     });
+    if (dbRole == 'teacher') await loadTeachers();
+    if (dbRole == 'committee') await loadCommitteeMembers();
     return null;
   } on PostgrestException catch (e) {
     if (e.code == '42501') return 'Only a Super Admin can assign a role.';
@@ -6570,6 +6630,7 @@ class _RolesViewState extends State<RolesView> {
   final Set<String> branches = {};
   bool busy = false;
   static const List<String> screens = ['Students', 'Fees', 'Reports', 'Leave'];
+  static const List<String> builtInRoles = ['Super Admin', 'Maktab Admin', 'Teacher', 'Committee Member'];
 
   @override
   Widget build(BuildContext context) {
@@ -6607,45 +6668,82 @@ class _RolesViewState extends State<RolesView> {
       ),
       h('Existing custom roles', icon: Icons.admin_panel_settings),
       ...names.map((n) => Card(child: ListTile(title: Text(n), subtitle: Text('Screens: ${(st.customRoles[n] ?? <String>{}).join(', ')}')))),
-      h('Give role to a person', icon: Icons.admin_panel_settings),
+      h('Assign / change role', icon: Icons.admin_panel_settings),
+      const Padding(
+        padding: EdgeInsets.only(bottom: 6),
+        child: Text(
+          "Works for anyone - a brand-new phone number, or someone who already has an account. If they're already in the system, their role changes right away. A Super Admin sees every Maktab, so no need to pick one for that role.",
+          style: TextStyle(color: Colors.black54, fontSize: 12.5),
+        ),
+      ),
       field(aPhone, 'Mobile number', number: true),
       field(aName, 'Name'),
       DropdownButtonFormField<String>(
         value: pick,
         decoration: const InputDecoration(labelText: 'Role', border: OutlineInputBorder()),
-        items: [for (final n in names) DropdownMenuItem<String>(value: n, child: Text(n))],
+        items: [
+          for (final n in builtInRoles) DropdownMenuItem<String>(value: n, child: Text(n)),
+          for (final n in names) DropdownMenuItem<String>(value: n, child: Text(n)),
+        ],
         onChanged: (v) => setState(() => pick = v),
       ),
-      const Padding(padding: EdgeInsets.only(top: 4, bottom: 4), child: Text('Makatib this person can see:', style: TextStyle(color: Colors.black54, fontSize: 12.5))),
-      Wrap(spacing: 4, children: [
-        FilterChip(
-          label: const Text('All Makatib'),
-          selected: st.activeMadrasaNames.isNotEmpty && branches.length == st.activeMadrasaNames.length,
-          onSelected: (v) => setState(() {
-            if (v) {
-              branches..clear()..addAll(st.activeMadrasaNames);
-            } else {
-              branches.clear();
-            }
-          }),
-        ),
-        for (final m in st.activeMadrasaNames)
+      if (pick != null && pick != 'Super Admin') ...[
+        const Padding(padding: EdgeInsets.only(top: 4, bottom: 4), child: Text('Makatib this person can see:', style: TextStyle(color: Colors.black54, fontSize: 12.5))),
+        Wrap(spacing: 4, children: [
           FilterChip(
-            label: Text(m),
-            selected: branches.contains(m),
-            onSelected: (v) => setState(() => v ? branches.add(m) : branches.remove(m)),
+            label: const Text('All Makatib'),
+            selected: st.activeMadrasaNames.isNotEmpty && branches.length == st.activeMadrasaNames.length,
+            onSelected: (v) => setState(() {
+              if (v) {
+                branches..clear()..addAll(st.activeMadrasaNames);
+              } else {
+                branches.clear();
+              }
+            }),
           ),
-      ]),
+          for (final m in st.activeMadrasaNames)
+            FilterChip(
+              label: Text(m),
+              selected: branches.contains(m),
+              onSelected: (v) => setState(() => v ? branches.add(m) : branches.remove(m)),
+            ),
+        ]),
+      ],
       const SizedBox(height: 8),
       ElevatedButton(
-        onPressed: busy
+        onPressed: busy || pick == null
             ? null
             : () async {
                 setState(() => busy = true);
-                final e = await assignRoleRemote(digits(aPhone.text), aName.text, pick ?? '', branches.toList());
+                String dbRole;
+                String? customRoleName;
+                switch (pick) {
+                  case 'Super Admin':
+                    dbRole = 'super_admin';
+                    break;
+                  case 'Maktab Admin':
+                    dbRole = 'madrasa_admin';
+                    break;
+                  case 'Teacher':
+                    dbRole = 'teacher';
+                    break;
+                  case 'Committee Member':
+                    dbRole = 'committee';
+                    break;
+                  default:
+                    dbRole = 'custom';
+                    customRoleName = pick;
+                }
+                final e = await setUserRoleRemote(
+                  phone: aPhone.text,
+                  name: aName.text,
+                  dbRole: dbRole,
+                  customRoleName: customRoleName,
+                  branches: dbRole == 'super_admin' ? const [] : branches.toList(),
+                );
                 if (!mounted) return;
                 setState(() => busy = false);
-                toast(context, e ?? 'Role given. That person now sees only the ticked screens, the moment they log in with OTP.');
+                toast(context, e ?? 'Role saved - right away for an existing account, or the moment this phone number first logs in with OTP.');
                 if (e == null) {
                   aPhone.clear();
                   aName.clear();
@@ -6655,7 +6753,7 @@ class _RolesViewState extends State<RolesView> {
                   });
                 }
               },
-        child: busy ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2)) : const Text('Assign role'),
+        child: busy ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2)) : const Text('Save role'),
       ),
     ]);
   }
