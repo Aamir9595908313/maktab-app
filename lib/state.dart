@@ -9,6 +9,10 @@ String get kToday => fd(DateTime.now());
 const List<String> kMon = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const List<String> kBranches = ['Hanfi', 'Jama', 'Khwajapiya', 'Bagwanpura'];
 const List<String> kBatches = ['Morning', 'Afternoon', 'Evening'];
+// Fixed list of values (LOV) for Maktab Category - public.madrasas.category.
+// Not free text: every place that lets a user set this must offer exactly
+// these three and nothing else.
+const List<String> kMadrasaCategories = ['Boys', 'Girls', 'Children'];
 
 DateTime pd(String s) => DateTime.parse('${s}T00:00:00Z');
 String fd(DateTime d) => '${d.year.toString().padLeft(4, '0')}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
@@ -238,6 +242,33 @@ class MaktabEvent {
   });
 }
 
+// Mirrors one row of public.attendance_sessions: whether a Teacher
+// Attendance session (one Maktab + class + batch + date) has already been
+// finally submitted via submit_attendance_session, and if so by whom/when
+// and how many authorized corrections it has had. This is display/decision
+// data only (e.g. whether the next submit for this exact session should be
+// worded as a first submission or a correction, and whether a reason is
+// required) - the actual completeness/lock enforcement lives entirely in
+// the database function, not here.
+class AttendanceSessionMeta {
+  String? dbId;
+  int totalExpected;
+  int presentCount;
+  int absentCount;
+  String? submittedByName;
+  DateTime? submittedAt;
+  int correctionCount;
+  AttendanceSessionMeta({
+    this.dbId,
+    this.totalExpected = 0,
+    this.presentCount = 0,
+    this.absentCount = 0,
+    this.submittedByName,
+    this.submittedAt,
+    this.correctionCount = 0,
+  });
+}
+
 // One calendar day's classification for a student's attendance history -
 // used by the Parent attendance report. Exactly one of these per date
 // (never double-counted across categories - see computeMonthAttendance).
@@ -394,12 +425,17 @@ class Account {
 class MadrasaRec {
   String name;
   bool active;
+  // 'Boys' / 'Girls' / 'Children' - public.madrasas.category, one of
+  // kMadrasaCategories. Null means an existing Maktab created before this
+  // field existed and not yet categorized - never invented, always shown
+  // as "Not set" rather than guessed.
+  String? category;
   // The matching row's id in Supabase public.madrasas, once this record has
   // been loaded from (or successfully saved to) the real database. Null
   // means this is still local-only demo data that hasn't been synced -
   // Supabase calls in main.dart use this to know which row to update.
   String? dbId;
-  MadrasaRec(this.name, {this.active = true, this.dbId});
+  MadrasaRec(this.name, {this.active = true, this.category, this.dbId});
 }
 
 class Course {
@@ -691,11 +727,11 @@ class AppState extends ChangeNotifier {
   // pattern before this round existed). Prefer addMadrasaRemote in
   // main.dart, which writes to Supabase first and then calls this with the
   // new row's dbId so the local list and the database agree.
-  String? addMadrasa(String name, {String? dbId}) {
+  String? addMadrasa(String name, {String? dbId, String? category}) {
     final n = name.trim();
     if (n.isEmpty) return 'Enter a Maktab name';
     if (madrasas.any((m) => m.name.toLowerCase() == n.toLowerCase())) return 'This Maktab already exists';
-    madrasas.add(MadrasaRec(n, dbId: dbId));
+    madrasas.add(MadrasaRec(n, dbId: dbId, category: category));
     notifyListeners();
     return null;
   }
@@ -707,6 +743,11 @@ class AppState extends ChangeNotifier {
 
   void renameMadrasa(MadrasaRec m, String name) {
     m.name = name;
+    notifyListeners();
+  }
+
+  void setMadrasaCategoryLocal(MadrasaRec m, String category) {
+    m.category = category;
     notifyListeners();
   }
 
@@ -1549,6 +1590,62 @@ class AppState extends ChangeNotifier {
     }
     return null;
   }
+
+  // ---------- Attendance Sessions (final-submission lock + correction audit) ----------
+  // Keyed by Maktab name + local class id + batch + date so the UI can look
+  // up "has this exact session already been finally submitted" without a
+  // round trip, right next to todayAtt (which only tracks each student's
+  // own Present/Absent/Pending mark, not the session as a whole).
+  final Map<String, AttendanceSessionMeta> attendanceSessions = {};
+
+  String attSessionKey(String madrasa, int cls, String batch, String date) => '$madrasa|$cls|$batch|$date';
+
+  AttendanceSessionMeta? sessionFor(String madrasa, int cls, String batch, String date) => attendanceSessions[attSessionKey(madrasa, cls, batch, date)];
+
+  void setAttendanceSessionsFromDb(Map<String, AttendanceSessionMeta> map) {
+    attendanceSessions
+      ..clear()
+      ..addAll(map);
+    notifyListeners();
+  }
+
+  void setAttendanceSessionLocal(String madrasa, int cls, String batch, String date, AttendanceSessionMeta meta) {
+    attendanceSessions[attSessionKey(madrasa, cls, batch, date)] = meta;
+    notifyListeners();
+  }
+
+  // The Teacher assigned to this Maktab+class, if teacher_class_assignments
+  // has one on file - display only (Working Committee Maktab Timings
+  // screen); attendance submission itself doesn't depend on this.
+  String? teacherNameFor(String madrasa, int cls) {
+    for (final t in teacherAccounts) {
+      if (t.myClasses.any((a) => a.madrasa == madrasa && a.cls == cls)) return t.name;
+    }
+    return null;
+  }
+
+  // Updates the in-memory model with the outcome of a successful
+  // submit_attendance_session call: every submitted student's status is no
+  // longer Pending, and each Absent student's date is recorded in their
+  // local absent-history (kept in sync with the database so attPct and
+  // other already-loaded summaries don't wait for the next full reload).
+  void recordSessionSubmission({required List<Student> present, required List<Student> absent, required String date}) {
+    for (final s in present) {
+      todayAtt[s.id] = 'P';
+      s.absent.remove(date);
+    }
+    for (final s in absent) {
+      todayAtt[s.id] = 'A';
+      if (!s.absent.contains(date)) s.absent.add(date);
+    }
+    notifyListeners();
+  }
+
+  // Public entry point for the new session-based submit flow to send (and
+  // log) the absence WhatsApp alert for one student, after the caller has
+  // already claimed the send via student_attendance.absence_notified_at so
+  // it can only happen once per student+date, across devices and retries.
+  void sendAbsenceNotification(Student s, String madrasa, String date) => _sendAbsenceWhatsApp(s, madrasa, date);
 
   // ---------- Notification Templates ----------
   // Loaded from public.notification_templates after login. Every real or

@@ -132,7 +132,7 @@ Future<void> loadMasterData() async {
     final madrasaRows = await sb.from('madrasas').select().order('name');
     st.setMadrasasFromDb([
       for (final r in (madrasaRows as List))
-        MadrasaRec((r['name'] as String?) ?? '', active: (r['is_active'] as bool?) ?? true, dbId: r['id'] as String?),
+        MadrasaRec((r['name'] as String?) ?? '', active: (r['is_active'] as bool?) ?? true, category: r['category'] as String?, dbId: r['id'] as String?),
     ]);
 
     final courseRows = await sb.from('courses').select().order('name');
@@ -199,6 +199,7 @@ Future<void> loadMasterData() async {
     await loadClassBooks();
     await loadClassCourseAssignments();
     await loadAttendance();
+    await loadAttendanceSessions();
     await loadEvents();
     await loadNotifTemplates();
     await loadAboutUsData();
@@ -269,6 +270,7 @@ void subscribeRealtime() {
     'user_profiles',
     'pending_role_invites',
     'student_attendance',
+    'attendance_sessions',
     'teacher_attendance',
     'syllabus_progress',
     'complaints',
@@ -354,34 +356,173 @@ Future<void> setAttRemote(Student s, String v) async {
   }
 }
 
-// Final Submit: marks every row final (is_draft=false) in the database,
-// same as before locally updating each student's absent list and sending
-// the WhatsApp alert simulation, then returns the absence count exactly as
-// the old purely-local version did so the UI/toast text is unchanged.
-Future<int> submitAttRemote(List<Student> list) async {
-  final rows = [
-    for (final s in list)
-      if (s.status == 'Active' && s.dbId != null)
-        {
-          'student_id': s.dbId,
-          'madrasa_id': _madrasaDbId(s.madrasa),
-          'class_id': _classDbId(s.cls),
-          'attendance_date': kToday,
-          'status': (st.todayAtt[s.id] ?? 'P') == 'A' ? 'absent' : 'present',
-          'is_draft': false,
-          'final_submitted_by': sb.auth.currentUser?.id,
-          'final_submitted_at': DateTime.now().toIso8601String(),
-        },
-  ];
-  if (rows.isNotEmpty) {
-    try {
-      await sb.from('student_attendance').upsert(rows, onConflict: 'student_id,attendance_date');
-    } catch (_) {
-      // Local side effects (below) still happen so the teacher isn't
-      // blocked; the rows just didn't make it to the database this time.
+// ---------------- Teacher Attendance: session verify & final submit (public.attendance_sessions) ----------------
+//
+// Loads every attendance session already on file (so the UI knows, per
+// Maktab+class+batch+date, whether the next submit is a first-time
+// submission or an authorized correction over something already locked).
+Future<void> loadAttendanceSessions() async {
+  try {
+    final rows = await sb
+        .from('attendance_sessions')
+        .select('madrasa_id, class_id, batch, attendance_date, total_expected, present_count, absent_count, correction_count, submitted_at, submitted_by, madrasas(name)');
+    final clsIdByDbId = {for (final e in st.classDefs.entries) if (e.value.dbId != null) e.value.dbId!: e.key};
+    final userIds = <String>{for (final r in (rows as List)) if (r['submitted_by'] != null) r['submitted_by'] as String};
+    final nameByUser = <String, String>{};
+    if (userIds.isNotEmpty) {
+      final profRows = await sb.from('user_profiles').select('id, name').inFilter('id', userIds.toList());
+      for (final r in (profRows as List)) {
+        nameByUser[r['id'] as String] = (r['name'] as String?) ?? '';
+      }
+    }
+    final map = <String, AttendanceSessionMeta>{};
+    for (final r in rows) {
+      final madrasaName = (r['madrasas'] as Map?)?['name'] as String?;
+      final cls = clsIdByDbId[r['class_id'] as String?];
+      final batch = r['batch'] as String?;
+      final date = r['attendance_date'] as String?;
+      if (madrasaName == null || cls == null || batch == null || date == null) continue;
+      map[st.attSessionKey(madrasaName, cls, batch, date)] = AttendanceSessionMeta(
+        totalExpected: (r['total_expected'] as int?) ?? 0,
+        presentCount: (r['present_count'] as int?) ?? 0,
+        absentCount: (r['absent_count'] as int?) ?? 0,
+        correctionCount: (r['correction_count'] as int?) ?? 0,
+        submittedByName: nameByUser[r['submitted_by'] as String?],
+        submittedAt: DateTime.tryParse((r['submitted_at'] as String?) ?? ''),
+      );
+    }
+    st.setAttendanceSessionsFromDb(map);
+  } catch (_) {}
+}
+
+// Claims the one-time right to send the absence alert for one student on
+// one date by flipping student_attendance.absence_notified_at from null to
+// now() - the update only matches (and only one caller ever gets a
+// non-empty result back) the first time this is attempted for that exact
+// student+date, so a retried submission or a second device can never send
+// the same alert twice. Returns true only if this call did the claiming.
+Future<bool> _claimAbsenceNotification(Student s, String date) async {
+  if (s.dbId == null) return false;
+  try {
+    final claimed = await sb
+        .from('student_attendance')
+        .update({'absence_notified_at': DateTime.now().toIso8601String()})
+        .eq('student_id', s.dbId as Object)
+        .eq('attendance_date', date)
+        .isFilter('absence_notified_at', null)
+        .select();
+    return claimed is List && claimed.isNotEmpty;
+  } catch (_) {
+    return false;
+  }
+}
+
+// Result of a Verify and Submit Attendance attempt: a null error means the
+// database accepted the submission (completeness, scope and batch were all
+// valid) - notifiedCount/retryNeeded report how the absence alerts went,
+// separately, since a notification failure must never be treated as the
+// submission itself having failed.
+class AttendanceSubmitResult {
+  final String? error;
+  final int notifiedCount;
+  final List<Student> retryNeeded;
+  AttendanceSubmitResult({this.error, this.notifiedCount = 0, List<Student>? retryNeeded}) : retryNeeded = retryNeeded ?? [];
+}
+
+// The single path to finally submit (or correct) a Teacher Attendance
+// session. All completeness/scope/batch validation happens inside the
+// submit_attendance_session database function - this wrapper never decides
+// those things itself, it only calls the function, reflects what it did
+// into the local model, and then (only for students marked Absent, and
+// only once the call itself succeeded) attempts the parent notification.
+Future<AttendanceSubmitResult> submitAttendanceSessionRemote({
+  required String madrasa,
+  required int cls,
+  required String batch,
+  required String date,
+  required List<Student> present,
+  required List<Student> absent,
+  String? reason,
+}) async {
+  final madrasaId = _madrasaDbId(madrasa);
+  final classId = _classDbId(cls);
+  if (madrasaId == null || classId == null) {
+    return AttendanceSubmitResult(error: 'This Maktab or class is not saved to the database yet.');
+  }
+  final presentIds = [for (final s in present) if (s.dbId != null) s.dbId!];
+  final absentIds = [for (final s in absent) if (s.dbId != null) s.dbId!];
+  Map<String, dynamic> map;
+  try {
+    final res = await sb.rpc('submit_attendance_session', params: {
+      'p_madrasa_id': madrasaId,
+      'p_class_id': classId,
+      'p_batch': batch,
+      'p_date': date,
+      'p_present_ids': presentIds,
+      'p_absent_ids': absentIds,
+      'p_reason': reason,
+    });
+    map = (res as Map?)?.cast<String, dynamic>() ?? <String, dynamic>{};
+  } on PostgrestException catch (e) {
+    return AttendanceSubmitResult(error: e.message);
+  } catch (_) {
+    return AttendanceSubmitResult(error: 'Could not submit. Check your internet connection and try again.');
+  }
+
+  st.recordSessionSubmission(present: present, absent: absent, date: date);
+  final wasCorrection = map['was_correction'] == true;
+  final prevCorrections = st.sessionFor(madrasa, cls, batch, date)?.correctionCount ?? 0;
+  st.setAttendanceSessionLocal(
+    madrasa,
+    cls,
+    batch,
+    date,
+    AttendanceSessionMeta(
+      dbId: map['session_id'] as String?,
+      totalExpected: present.length + absent.length,
+      presentCount: present.length,
+      absentCount: absent.length,
+      submittedByName: st.user?.name,
+      submittedAt: DateTime.now(),
+      correctionCount: wasCorrection ? prevCorrections + 1 : 0,
+    ),
+  );
+
+  // Parent absence notifications: only for students marked Absent, only
+  // after this successful final submission, each one claimed in the
+  // database first so a retry or another device never double-sends.
+  var notified = 0;
+  final retryNeeded = <Student>[];
+  for (final s in absent) {
+    if (s.status != 'Active') continue;
+    final claimedHere = await _claimAbsenceNotification(s, date);
+    if (claimedHere) {
+      st.sendAbsenceNotification(s, madrasa, date);
+      notified++;
+    } else if (s.dbId != null) {
+      // Either already notified earlier (not a failure - correctly
+      // deduplicated) or the claim call itself errored. Either way, it's
+      // safe to offer a retry: the same claim-first logic means a retry
+      // on an already-sent one is a harmless no-op, never a duplicate.
+      retryNeeded.add(s);
     }
   }
-  return st.submitAtt(list);
+  return AttendanceSubmitResult(error: null, notifiedCount: notified, retryNeeded: retryNeeded);
+}
+
+// Lets an authorized user (the screen that shows this is Teacher-only
+// already) retry absence notifications that didn't go out the first time -
+// reuses the exact same claim-first logic, so retrying one that actually
+// did already send simply does nothing instead of sending a duplicate.
+Future<int> retryAbsenceNotificationsRemote(List<Student> list, String madrasa, String date) async {
+  var n = 0;
+  for (final s in list) {
+    if (await _claimAbsenceNotification(s, date)) {
+      st.sendAbsenceNotification(s, madrasa, date);
+      n++;
+    }
+  }
+  return n;
 }
 
 // ---------------- Maktab Events / Holidays (public.maktab_events) ----------------
@@ -1816,13 +1957,14 @@ Future<String?> editStudentRemote(Student s, {String? name, String? parentPhone,
 // Inserts a new row into public.madrasas and, on success, adds it to the
 // local list with its real database id attached. Returns null on success
 // or a short message to show the user on failure.
-Future<String?> addMadrasaRemote(String name) async {
+Future<String?> addMadrasaRemote(String name, String? category) async {
   final n = name.trim();
   if (n.isEmpty) return 'Enter a Maktab name';
+  if (category == null || !kMadrasaCategories.contains(category)) return 'Choose a Maktab Category (Boys, Girls, or Children)';
   if (st.madrasas.any((m) => m.name.toLowerCase() == n.toLowerCase())) return 'This Maktab already exists';
   try {
-    final row = await sb.from('madrasas').insert({'name': n}).select().single();
-    st.addMadrasa(n, dbId: row['id'] as String?);
+    final row = await sb.from('madrasas').insert({'name': n, 'category': category}).select().single();
+    st.addMadrasa(n, dbId: row['id'] as String?, category: category);
     return null;
   } on PostgrestException catch (e) {
     if (e.code == '23505') return 'This Maktab already exists';
@@ -1860,6 +2002,25 @@ Future<String?> renameMadrasaRemote(MadrasaRec m, String name) async {
     return null;
   } on PostgrestException catch (e) {
     if (e.code == '23505') return 'This Maktab already exists';
+    return 'Could not save: ${e.message}';
+  } catch (_) {
+    return 'Could not save. Check your internet connection and try again.';
+  }
+}
+
+// Sets (or changes) a Maktab's category to one of the three fixed values.
+// The database's check constraint is the real guard against an invalid
+// value getting in by any other route (direct API calls included) - this
+// is just the same validation given back early, before a network round
+// trip, for a friendlier message.
+Future<String?> setMadrasaCategoryRemote(MadrasaRec m, String category) async {
+  if (!kMadrasaCategories.contains(category)) return 'Choose Boys, Girls, or Children.';
+  if (m.dbId == null) return 'This Maktab was not saved to the database yet.';
+  try {
+    await sb.from('madrasas').update({'category': category}).eq('id', m.dbId as Object);
+    st.setMadrasaCategoryLocal(m, category);
+    return null;
+  } on PostgrestException catch (e) {
     return 'Could not save: ${e.message}';
   } catch (_) {
     return 'Could not save. Check your internet connection and try again.';
@@ -4427,44 +4588,60 @@ class _BulkImportStudentsState extends State<BulkImportStudents> {
   }
 }
 
-class StudentAttendanceMark extends StatelessWidget {
+const String kAttendanceIncompleteMessage =
+    'Attendance cannot be submitted. Please verify the complete student list. Some students have not been marked Present or Absent.';
+
+class StudentAttendanceMark extends StatefulWidget {
   const StudentAttendanceMark({super.key});
   @override
-  Widget build(BuildContext context) =>
-      // Own AnimatedBuilder: without this, tapping Present/Absent updated
-      // st.todayAtt (and saved fine) but the button never visually
-      // reflected it - a const StatelessWidget returned from a bottom tab
-      // is the same canonical widget instance every rebuild, so Flutter's
-      // element diffing skips calling build() again unless the widget
-      // listens for changes itself (same fix already applied to
-      // TeacherSelf/MyDayView for the same reason).
-      AnimatedBuilder(animation: st, builder: (context, _) => _body(context));
+  State<StudentAttendanceMark> createState() => _StudentAttendanceMarkState();
+}
+
+class _StudentAttendanceMarkState extends State<StudentAttendanceMark> {
+  // Session keys (batch||cls) for which the Teacher has already attempted
+  // Verify and Submit while students were still Pending - only these get
+  // the red "unmarked" highlight, so a class the Teacher hasn't touched
+  // yet doesn't open already covered in red.
+  final Set<String> _verifyAttempted = {};
+  final Set<String> _busySessions = {};
+
+  @override
+  Widget build(BuildContext context) => AnimatedBuilder(animation: st, builder: (context, _) => _body(context));
 
   Widget _body(BuildContext context) {
     // Deactivated students never appear here, so they can't be marked and never get an alert.
     final list = st.myStudents().where((s) => s.status == 'Active').toList();
-    // Same class can run more than one session a day (e.g. Morning and
-    // Evening batches) - grouping by batch keeps the roster the teacher is
-    // physically looking at distinct from students due in at another time,
-    // so nobody gets lost in one undifferentiated list.
-    final groups = <String, List<Student>>{for (final b in kBatches) b: []};
+    // A Maktab class may run several sessions a day (different batches)
+    // and a Teacher may be assigned more than one class, so attendance is
+    // opened per Maktab + class + batch - exactly the identity
+    // submit_attendance_session itself validates against - rather than one
+    // undifferentiated roster.
+    final groups = <String, List<Student>>{};
     for (final s in list) {
-      (groups[kBatches.contains(s.batch) ? s.batch : 'Morning'] ??= []).add(s);
+      final b = kBatches.contains(s.batch) ? s.batch : 'Morning';
+      (groups['$b||${s.cls}'] ??= []).add(s);
     }
-    Widget studentTile(Student s) {
-      final v = st.todayAtt[s.id] ?? 'P';
+    final keys = groups.keys.toList()
+      ..sort((a, b) {
+        final pa = a.split('||');
+        final pb = b.split('||');
+        final bi = kBatches.indexOf(pa[0]).compareTo(kBatches.indexOf(pb[0]));
+        if (bi != 0) return bi;
+        return int.parse(pa[1]).compareTo(int.parse(pb[1]));
+      });
+
+    Widget progressRowFor(BuildContext context, Student s) {
       final cd = st.classDefs[s.cls]!;
       // Lets the teacher log today's syllabus page/chapter right here while
       // marking attendance, instead of having to leave this screen and find
       // the student again in the separate Syllabus tab. Reuses the same
       // markPageDialog/tickChapterDialog already used there, so progress
       // logged here shows up identically in Syllabus.
-      Widget progressRow;
       if (cd.pageBased) {
         final cur = st.currentPageNo(s);
         final pos = cur == null ? null : st.paraPosition(cd, cur);
         final label = cur == null ? '' : (pos != null ? 'Para ${pos.paraNo}, Page ${pos.pageInPara} of ${pos.paraPageCount}' : 'Page $cur of ${cd.totalPages}');
-        progressRow = cur == null
+        return cur == null
             ? const Text('All pages complete', style: TextStyle(fontSize: 14.5, fontWeight: FontWeight.w600, color: Colors.green))
             : Row(children: [
                 Text(label, style: const TextStyle(fontSize: 14.5, fontWeight: FontWeight.w600, color: Colors.black87)),
@@ -4476,34 +4653,46 @@ class StudentAttendanceMark extends StatelessWidget {
                   onPressed: () => markPageDialog(context, s, cur),
                 ),
               ]);
-      } else {
-        final plan = st.chapterPlan(s);
-        var nextIdx = -1;
-        for (var i = 0; i < plan.length; i++) {
-          if (plan[i].done == null) {
-            nextIdx = i;
-            break;
-          }
-        }
-        progressRow = nextIdx == -1
-            ? const Text('All chapters complete', style: TextStyle(fontSize: 14.5, fontWeight: FontWeight.w600, color: Colors.green))
-            : Row(children: [
-                Flexible(child: Text('Next: ${plan[nextIdx].title}', style: const TextStyle(fontSize: 14.5, fontWeight: FontWeight.w600, color: Colors.black87), overflow: TextOverflow.ellipsis)),
-                IconButton(
-                  icon: const Icon(Icons.add_circle, size: 24, color: kGreen),
-                  tooltip: 'Mark chapter complete',
-                  padding: EdgeInsets.zero,
-                  constraints: const BoxConstraints(),
-                  onPressed: () => tickChapterDialog(context, s, nextIdx),
-                ),
-              ]);
       }
+      final plan = st.chapterPlan(s);
+      var nextIdx = -1;
+      for (var i = 0; i < plan.length; i++) {
+        if (plan[i].done == null) {
+          nextIdx = i;
+          break;
+        }
+      }
+      return nextIdx == -1
+          ? const Text('All chapters complete', style: TextStyle(fontSize: 14.5, fontWeight: FontWeight.w600, color: Colors.green))
+          : Row(children: [
+              Flexible(child: Text('Next: ${plan[nextIdx].title}', style: const TextStyle(fontSize: 14.5, fontWeight: FontWeight.w600, color: Colors.black87), overflow: TextOverflow.ellipsis)),
+              IconButton(
+                icon: const Icon(Icons.add_circle, size: 24, color: kGreen),
+                tooltip: 'Mark chapter complete',
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(),
+                onPressed: () => tickChapterDialog(context, s, nextIdx),
+              ),
+            ]);
+    }
+
+    Widget studentTile(String sessionKey, Student s) {
+      final v = st.todayAtt[s.id]; // null = Pending - never defaulted to Present.
+      final isPending = v == null;
+      final highlight = isPending && _verifyAttempted.contains(sessionKey);
       return Card(
+        color: highlight ? const Color(0xFFFFE3E0) : null,
+        shape: highlight ? RoundedRectangleBorder(borderRadius: BorderRadius.circular(8), side: const BorderSide(color: Colors.red, width: 1.4)) : null,
         child: ListTile(
-          title: Text(s.name),
+          title: Row(children: [
+            Expanded(child: Text(s.name)),
+            if (highlight) const Icon(Icons.error, color: Colors.red, size: 18),
+          ]),
           subtitle: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Text(st.className(s.cls)),
-            progressRow,
+            Text(isPending ? 'Pending / Not Yet Marked' : (v == 'P' ? 'Present' : 'Absent'),
+                style: TextStyle(fontWeight: FontWeight.bold, color: isPending ? Colors.orange.shade800 : (v == 'P' ? Colors.green : Colors.red))),
+            progressRowFor(context, s),
           ]),
           trailing: Row(mainAxisSize: MainAxisSize.min, children: [
             OutlinedButton(
@@ -4522,10 +4711,182 @@ class StudentAttendanceMark extends StatelessWidget {
       );
     }
 
+    Widget sessionBlock(String batch, int cls, List<Student> students) {
+      final sessionKey = '$batch||$cls';
+      final present = students.where((s) => st.todayAtt[s.id] == 'P').toList();
+      final absent = students.where((s) => st.todayAtt[s.id] == 'A').toList();
+      final pending = students.where((s) => st.todayAtt[s.id] == null).toList();
+      final existing = st.sessionFor(st.teacherMadrasa, cls, batch, kToday);
+      final isCorrection = existing != null;
+
+      Future<void> markRemainingAbsent() async {
+        if (pending.isEmpty) {
+          toast(context, 'No Pending students in this class/batch.');
+          return;
+        }
+        final confirmed = await showDialog<bool>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Text('Mark Remaining Students Absent'),
+            content: SingleChildScrollView(
+              child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+                const Text('These students are still Pending. Confirm to mark them Absent - students already marked Present are never changed.'),
+                const SizedBox(height: 8),
+                for (final s in pending) Text('- ${s.name}'),
+              ]),
+            ),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+              ElevatedButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Confirm')),
+            ],
+          ),
+        );
+        if (confirmed != true) return;
+        // Re-read Pending right before applying, in case something changed
+        // while the confirm dialog was open - never overwrites a student
+        // who was marked Present in the meantime.
+        for (final s in pending) {
+          if (st.todayAtt[s.id] == null) await setAttRemote(s, 'A');
+        }
+        if (context.mounted) toast(context, '${pending.length} student(s) marked Absent.');
+      }
+
+      Future<void> verifyAndSubmit() async {
+        if (pending.isNotEmpty) {
+          setState(() => _verifyAttempted.add(sessionKey));
+          toast(context, kAttendanceIncompleteMessage);
+          return;
+        }
+        String? reason;
+        if (isCorrection) {
+          final meta = existing!;
+          final ctrl = TextEditingController();
+          final ok = await showDialog<bool>(
+            context: context,
+            builder: (ctx) => AlertDialog(
+              title: const Text('Submit Correction'),
+              content: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text('This session was already submitted${meta.submittedByName != null ? ' by ${meta.submittedByName}' : ''}${meta.submittedAt != null ? ' on ${nice(fd(meta.submittedAt!))}' : ''}. Re-submitting now will be recorded as an authorized correction with an audit trail.'),
+                const SizedBox(height: 8),
+                TextField(controller: ctrl, decoration: const InputDecoration(labelText: 'Reason for correction (required)')),
+              ]),
+              actions: [
+                TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+                ElevatedButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Submit Correction')),
+              ],
+            ),
+          );
+          if (ok != true) return;
+          if (ctrl.text.trim().isEmpty) {
+            if (context.mounted) toast(context, 'Enter a reason for this correction.');
+            return;
+          }
+          reason = ctrl.text.trim();
+        } else {
+          final confirmed = await showDialog<bool>(
+            context: context,
+            builder: (ctx) => AlertDialog(
+              title: const Text('Confirm Final Submission'),
+              content: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text('Total Expected Students: ${students.length}'),
+                Text('Present: ${present.length}'),
+                Text('Absent: ${absent.length}'),
+                const Text('Pending: 0'),
+                const SizedBox(height: 8),
+                const Text('Once submitted, this session is locked. Later changes require the authorized correction process.', style: TextStyle(fontSize: 12, color: Colors.black54)),
+              ]),
+            ),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+              ElevatedButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Confirm Submission')),
+            ],
+          );
+          if (confirmed != true) return;
+        }
+
+        setState(() => _busySessions.add(sessionKey));
+        final res = await submitAttendanceSessionRemote(
+          madrasa: st.teacherMadrasa,
+          cls: cls,
+          batch: batch,
+          date: kToday,
+          present: present,
+          absent: absent,
+          reason: reason,
+        );
+        if (!mounted) return;
+        setState(() {
+          _busySessions.remove(sessionKey);
+          _verifyAttempted.remove(sessionKey);
+        });
+        if (res.error != null) {
+          toast(context, res.error!);
+          return;
+        }
+        var msg = '${isCorrection ? 'Correction' : 'Attendance'} submitted for $batch batch - ${st.className(cls)}. ${res.notifiedCount} absence alert(s) sent.';
+        if (res.retryNeeded.isNotEmpty) msg += ' ${res.retryNeeded.length} notification(s) need a retry.';
+        toast(context, msg);
+        if (res.retryNeeded.isNotEmpty) {
+          final retryList = res.retryNeeded;
+          await showDialog<void>(
+            context: context,
+            builder: (ctx) => AlertDialog(
+              title: const Text('Retry failed notifications'),
+              content: Text('${retryList.length} absence notification(s) did not go out. Retry now? (Already-sent ones will never be duplicated.)'),
+              actions: [
+                TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Later')),
+                ElevatedButton(
+                  onPressed: () async {
+                    final n = await retryAbsenceNotificationsRemote(retryList, st.teacherMadrasa, kToday);
+                    if (ctx.mounted) Navigator.pop(ctx);
+                    if (context.mounted) toast(context, '$n notification(s) sent.');
+                  },
+                  child: const Text('Retry now'),
+                ),
+              ],
+            ),
+          );
+        }
+      }
+
+      final busy = _busySessions.contains(sessionKey);
+      return Padding(
+        padding: const EdgeInsets.only(bottom: 16),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          h('$batch - ${st.className(cls)} (${students.length})'),
+          if (pending.isNotEmpty && _verifyAttempted.contains(sessionKey))
+            Card(
+              color: const Color(0xFFFFE3E0),
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: Text(kAttendanceIncompleteMessage, style: const TextStyle(color: Colors.red, fontWeight: FontWeight.bold)),
+              ),
+            ),
+          Text('Present ${present.length} - Absent ${absent.length} - Pending ${pending.length} - Total ${students.length}', style: const TextStyle(color: Colors.black54, fontSize: 12.5)),
+          const SizedBox(height: 6),
+          ...students.map((s) => studentTile(sessionKey, s)),
+          const SizedBox(height: 4),
+          Wrap(spacing: 8, runSpacing: 8, children: [
+            OutlinedButton.icon(
+              icon: const Icon(Icons.playlist_remove),
+              label: const Text('Mark Remaining Students Absent'),
+              onPressed: busy ? null : markRemainingAbsent,
+            ),
+            ElevatedButton(
+              onPressed: busy ? null : verifyAndSubmit,
+              child: busy
+                  ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                  : Text(isCorrection ? 'Verify and Submit Correction' : 'Verify and Submit Attendance'),
+            ),
+          ]),
+        ]),
+      );
+    }
+
     return page([
       h('Mark attendance - ${st.teacherMadrasa} - ${nice(kToday)}', icon: Icons.event_available),
       const Text(
-        'Tap Present or Absent, then Final Submit for that batch once its session is over. Each batch has its own Final Submit - submitting Morning never touches Afternoon or Evening, so a batch whose session hasn\'t happened yet is left alone instead of being marked. Absent students\' parents get a WhatsApp alert only after that batch\'s Final Submit.',
+        'Mark each student Present as they finish their performance, or leave them Pending until then. Attendance stays a draft until Verify and Submit - every student must be Present or Absent before that class/batch session can be submitted. Absent students\' parents get a WhatsApp alert only after a successful final submission.',
         style: TextStyle(color: Colors.black54, fontSize: 12.5),
       ),
       const SizedBox(height: 8),
@@ -4546,46 +4907,38 @@ class StudentAttendanceMark extends StatelessWidget {
       ]),
       const SizedBox(height: 8),
       for (final b in kBatches)
-        if (groups[b]!.isNotEmpty) ...[
-          h('$b batch (${groups[b]!.length})'),
+        if (keys.any((k) => k.startsWith('$b||'))) ...[
           () {
             final blocking = st.blockingEventFor(st.teacherMadrasa, kToday, b);
             if (blocking != null) {
-              return Card(
-                color: blocking.type == 'holiday' ? const Color(0xFFFFE3E0) : const Color(0xFFFFF3CF),
-                child: Padding(
-                  padding: const EdgeInsets.all(12),
-                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                    Text('${blocking.type == 'holiday' ? 'Holiday' : 'Event'}: ${blocking.name}', style: const TextStyle(fontWeight: FontWeight.bold)),
-                    if (blocking.startTime != null || blocking.endTime != null) Text('${blocking.startTime ?? ''} - ${blocking.endTime ?? ''}'),
-                    if (blocking.description.isNotEmpty) Text(blocking.description),
-                    const SizedBox(height: 6),
-                    const Text(
-                      'Normal Present/Absent attendance cannot be submitted for this batch today. Students are left as Not Recorded, not marked Absent.',
-                      style: TextStyle(fontSize: 12, color: Colors.black54),
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 16),
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  h('$b batch'),
+                  Card(
+                    color: blocking.type == 'holiday' ? const Color(0xFFFFE3E0) : const Color(0xFFFFF3CF),
+                    child: Padding(
+                      padding: const EdgeInsets.all(12),
+                      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                        Text('${blocking.type == 'holiday' ? 'Holiday' : 'Event'}: ${blocking.name}', style: const TextStyle(fontWeight: FontWeight.bold)),
+                        if (blocking.startTime != null || blocking.endTime != null) Text('${blocking.startTime ?? ''} - ${blocking.endTime ?? ''}'),
+                        if (blocking.description.isNotEmpty) Text(blocking.description),
+                        const SizedBox(height: 6),
+                        const Text(
+                          'Normal Present/Absent attendance cannot be submitted for this batch today. Students are left as Not Recorded, not marked Absent.',
+                          style: TextStyle(fontSize: 12, color: Colors.black54),
+                        ),
+                      ]),
                     ),
-                  ]),
-                ),
+                  ),
+                ]),
               );
             }
-            return Column(children: [
-              ...groups[b]!.map(studentTile),
-              const SizedBox(height: 4),
-              Align(
-                alignment: Alignment.centerLeft,
-                child: ElevatedButton(
-                  onPressed: () async {
-                    final n = await submitAttRemote(groups[b]!);
-                    if (context.mounted) {
-                      toast(context, '$b batch Final Submitted. $n absence WhatsApp alert(s) sent to parents.');
-                    }
-                  },
-                  child: Text('Final Submit - $b batch'),
-                ),
-              ),
+            final clsKeys = keys.where((k) => k.startsWith('$b||')).toList();
+            return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              for (final k in clsKeys) sessionBlock(b, int.parse(k.split('||')[1]), groups[k]!),
             ]);
           }(),
-          const SizedBox(height: 16),
         ],
     ]);
   }
@@ -5996,6 +6349,138 @@ class CommitteeDashboard extends StatelessWidget {
           onTap: () => pushPage(context, 'Makatib', const CommitteeBranches()),
         ),
       ),
+      Card(
+        child: ListTile(
+          leading: const CircleAvatar(backgroundColor: Color(0xFFEEF4E8), child: Icon(Icons.schedule, color: kGreen)),
+          title: const Text('Maktab Timings', style: TextStyle(fontWeight: FontWeight.bold)),
+          subtitle: const Text('Existing Morning/Afternoon/Evening timing by Maktab and class (view-only)'),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () => pushPage(context, 'Maktab Timings', const CommitteeMaktabTimings()),
+        ),
+      ),
+    ]);
+  }
+}
+
+// One row of the Working Committee's Maktab Timings view - computed from
+// the existing Maktab/class/batch/student data, never a separate timing
+// table. "Timing Not Set" is used rather than inventing a value when a
+// student's batch field is missing.
+class _TimingRow {
+  final String maktab;
+  final String? category;
+  final int cls;
+  final String className;
+  final String? timing;
+  final String? teacher;
+  _TimingRow({required this.maktab, this.category, required this.cls, required this.className, this.timing, this.teacher});
+}
+
+class CommitteeMaktabTimings extends StatefulWidget {
+  const CommitteeMaktabTimings({super.key});
+  @override
+  State<CommitteeMaktabTimings> createState() => _CommitteeMaktabTimingsState();
+}
+
+class _CommitteeMaktabTimingsState extends State<CommitteeMaktabTimings> {
+  String? fCategory;
+  String? fMaktab;
+  int? fCls;
+  String? fTiming;
+  String q = '';
+
+  @override
+  Widget build(BuildContext context) {
+    // Existing data only: every (Maktab, class, batch) combination that
+    // actually has at least one active student, reusing
+    // students/madrasas/classes/teacher_class_assignments as they already
+    // are - no new timing fields or a separate timetable module.
+    final seen = <String>{};
+    final rows = <_TimingRow>[];
+    for (final s in st.students.where((s) => s.status == 'Active')) {
+      final cd = st.classDefs[s.cls];
+      if (cd == null) continue;
+      final timing = kBatches.contains(s.batch) ? s.batch : null;
+      final key = '${s.madrasa}|${s.cls}|${timing ?? ''}';
+      if (!seen.add(key)) continue;
+      final m = st.madrasas.where((m) => m.name == s.madrasa).toList();
+      rows.add(_TimingRow(
+        maktab: s.madrasa,
+        category: m.isNotEmpty ? m.first.category : null,
+        cls: s.cls,
+        className: cd.name,
+        timing: timing,
+        teacher: st.teacherNameFor(s.madrasa, s.cls),
+      ));
+    }
+    rows.sort((a, b) {
+      final c = a.maktab.compareTo(b.maktab);
+      if (c != 0) return c;
+      return a.cls.compareTo(b.cls);
+    });
+
+    final maktabs = {for (final r in rows) r.maktab}.toList()..sort();
+    final classes = {for (final r in rows) r.cls}.toList()..sort();
+
+    final filtered = rows.where((r) {
+      if (fCategory != null && (r.category ?? '') != fCategory) return false;
+      if (fMaktab != null && r.maktab != fMaktab) return false;
+      if (fCls != null && r.cls != fCls) return false;
+      if (fTiming != null && (r.timing ?? '') != fTiming) return false;
+      if (q.isNotEmpty && !('${r.maktab} ${r.className}'.toLowerCase().contains(q.toLowerCase()))) return false;
+      return true;
+    }).toList();
+
+    Widget dd<T>(String label, T? value, List<T> options, String Function(T) show, void Function(T?) onChanged) {
+      return DropdownButtonFormField<T>(
+        value: value,
+        isExpanded: true,
+        decoration: InputDecoration(labelText: label, isDense: true),
+        items: [DropdownMenuItem<T>(value: null, child: Text('All')), for (final o in options) DropdownMenuItem<T>(value: o, child: Text(show(o)))],
+        onChanged: onChanged,
+      );
+    }
+
+    return page([
+      h('Maktab Timings', icon: Icons.schedule),
+      const Text(
+        'Existing Morning/Afternoon/Evening class timing, Maktab and class relationships, shown here view-only. Filtering and searching never change the underlying data.',
+        style: TextStyle(color: Colors.black54, fontSize: 12.5),
+      ),
+      const SizedBox(height: 8),
+      TextField(decoration: const InputDecoration(labelText: 'Search Maktab or class', border: OutlineInputBorder(), isDense: true), onChanged: (v) => setState(() => q = v)),
+      const SizedBox(height: 8),
+      LayoutBuilder(builder: (context, c) {
+        final narrow = c.maxWidth < 560;
+        final filters = [
+          SizedBox(width: narrow ? c.maxWidth : 180, child: dd<String>('Category', fCategory, kMadrasaCategories, (v) => v, (v) => setState(() => fCategory = v))),
+          SizedBox(width: narrow ? c.maxWidth : 180, child: dd<String>('Maktab', fMaktab, maktabs, (v) => v, (v) => setState(() => fMaktab = v))),
+          SizedBox(width: narrow ? c.maxWidth : 180, child: dd<int>('Class', fCls, classes, (v) => st.className(v), (v) => setState(() => fCls = v))),
+          SizedBox(width: narrow ? c.maxWidth : 180, child: dd<String>('Timing', fTiming, kBatches, (v) => v, (v) => setState(() => fTiming = v))),
+        ];
+        return Wrap(spacing: 8, runSpacing: 8, children: filters);
+      }),
+      const SizedBox(height: 12),
+      Text('${filtered.length} record(s)', style: const TextStyle(color: Colors.black54, fontSize: 12.5)),
+      const SizedBox(height: 6),
+      // Cards, not a wide DataTable - stacked fields never overlap or get
+      // clipped on a phone, and the whole screen scrolls normally.
+      for (final r in filtered)
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text(r.maktab, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+              const SizedBox(height: 2),
+              Text('Branch: ${r.maktab}', style: const TextStyle(fontSize: 12.5, color: Colors.black54)),
+              Text('Category: ${r.category ?? 'Not set'}', style: const TextStyle(fontSize: 12.5)),
+              Text('Class: ${r.className}', style: const TextStyle(fontSize: 12.5)),
+              Text('Timing: ${r.timing ?? 'Timing Not Set'}', style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600, color: r.timing == null ? Colors.orange.shade800 : Colors.black87)),
+              if (r.teacher != null) Text('Teacher: ${r.teacher}', style: const TextStyle(fontSize: 12.5)),
+            ]),
+          ),
+        ),
+      if (filtered.isEmpty) const Padding(padding: EdgeInsets.all(16), child: Text('No records match these filters.')),
     ]);
   }
 }
@@ -6456,6 +6941,7 @@ class MasterDataView extends StatefulWidget {
 
 class _MasterDataViewState extends State<MasterDataView> {
   final madrasaName = TextEditingController();
+  String? newMadrasaCategory;
   final courseName = TextEditingController();
   final courseDesc = TextEditingController();
   final courseCode = TextEditingController();
@@ -6519,7 +7005,32 @@ class _MasterDataViewState extends State<MasterDataView> {
                   child: const Padding(padding: EdgeInsets.all(4), child: Icon(Icons.edit, size: 16, color: Colors.black45)),
                 ),
               ]),
-              subtitle: Text(m.active ? 'Active - shown in registration dropdown' : 'Deactivated - hidden from new registrations'),
+              subtitle: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text(m.active ? 'Active - shown in registration dropdown' : 'Deactivated - hidden from new registrations'),
+                const SizedBox(height: 4),
+                Row(mainAxisSize: MainAxisSize.min, children: [
+                  Text('Category: ${m.category ?? 'Not set'}', style: TextStyle(color: m.category == null ? Colors.orange.shade800 : Colors.black87, fontWeight: FontWeight.w600)),
+                  const SizedBox(width: 6),
+                  InkWell(
+                    onTap: () async {
+                      final picked = await showDialog<String>(
+                        context: context,
+                        builder: (ctx) => SimpleDialog(
+                          title: const Text('Maktab Category'),
+                          children: [
+                            for (final c in kMadrasaCategories)
+                              SimpleDialogOption(onPressed: () => Navigator.pop(ctx, c), child: Text(c)),
+                          ],
+                        ),
+                      );
+                      if (picked == null) return;
+                      final e = await setMadrasaCategoryRemote(m, picked);
+                      if (context.mounted && e != null) toast(context, e);
+                    },
+                    child: const Padding(padding: EdgeInsets.all(4), child: Icon(Icons.edit, size: 14, color: Colors.black45)),
+                  ),
+                ]),
+              ]),
               value: m.active,
               onChanged: (v) async {
                 final e = await setMadrasaActiveRemote(m, v);
@@ -6529,16 +7040,26 @@ class _MasterDataViewState extends State<MasterDataView> {
             ),
           )),
       field(madrasaName, 'New Maktab name'),
+      DropdownButtonFormField<String>(
+        value: newMadrasaCategory,
+        decoration: const InputDecoration(labelText: 'Maktab Category (required)'),
+        items: [for (final c in kMadrasaCategories) DropdownMenuItem(value: c, child: Text(c))],
+        onChanged: (v) => setState(() => newMadrasaCategory = v),
+      ),
+      const SizedBox(height: 8),
       ElevatedButton(
         onPressed: busy
             ? null
             : () async {
                 setState(() => busy = true);
-                final e = await addMadrasaRemote(madrasaName.text);
+                final e = await addMadrasaRemote(madrasaName.text, newMadrasaCategory);
                 if (!mounted) return;
                 setState(() => busy = false);
                 toast(context, e ?? 'Maktab added. It now appears in the registration dropdown.');
-                if (e == null) madrasaName.clear();
+                if (e == null) {
+                  madrasaName.clear();
+                  setState(() => newMadrasaCategory = null);
+                }
               },
         child: busy ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2)) : const Text('Add Maktab'),
       ),
