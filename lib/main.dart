@@ -437,14 +437,21 @@ Future<NotifyOutcome> _claimAbsenceNotification(Student s, String date) async {
 // waiting for the final batch submission. Safe to call again for the same
 // student+date: the upsert simply re-saves the same row, and the
 // notification claim only succeeds once.
-Future<String?> submitOneAttendanceRemote(Student s, String status, {required String madrasa, required int cls}) async {
+// date defaults to today, but the Mark Attendance screen also uses this for
+// the previous two days (its "last 3 days" edit window) - for a date whose
+// session isn't finalized yet this plain upsert is exactly right, whether
+// it's a first submission or the Teacher editing their own earlier choice,
+// since the backend lock (fn_lock_submitted_attendance) only blocks writes
+// to a row that's already final. Editing a row in an already-finalized
+// session must go through editFinalizedStudentRemote below instead.
+Future<String?> submitOneAttendanceRemote(Student s, String status, {required String madrasa, required int cls, required String date}) async {
   if (s.dbId == null) return 'This student is not saved to the database yet.';
   try {
     await sb.from('student_attendance').upsert({
       'student_id': s.dbId,
       'madrasa_id': _madrasaDbId(madrasa),
       'class_id': _classDbId(cls),
-      'attendance_date': kToday,
+      'attendance_date': date,
       'status': status == 'A' ? 'absent' : 'present',
       'is_draft': true,
     }, onConflict: 'student_id,attendance_date');
@@ -453,13 +460,32 @@ Future<String?> submitOneAttendanceRemote(Student s, String status, {required St
   } catch (_) {
     return 'Could not save. Check your internet connection and try again.';
   }
-  st.setAtt(s.id, status);
+  st.setAttOneForDate(date, s.id, status);
   if (status == 'A' && s.status == 'Active') {
-    if (await _claimAbsenceNotification(s, kToday) == NotifyOutcome.sentNow) {
-      st.sendAbsenceNotification(s, madrasa, kToday);
+    if (await _claimAbsenceNotification(s, date) == NotifyOutcome.sentNow) {
+      st.sendAbsenceNotification(s, madrasa, date);
     }
   }
   return null;
+}
+
+// Loads one past date's attendance for whichever students are already in
+// memory, caching it in st.attByDate - used by the Mark Attendance screen's
+// "last 3 days" date switcher. Today itself is never loaded here; todayAtt
+// already stays current via loadAttendance()/realtime sync.
+Future<void> loadAttendanceForDate(String date) async {
+  if (date == kToday) return;
+  final idByDbId = {for (final s in st.students) if (s.dbId != null) s.dbId!: s};
+  if (idByDbId.isEmpty) return;
+  try {
+    final rows = await sb.from('student_attendance').select('student_id, status').eq('attendance_date', date);
+    final map = <int, String>{};
+    for (final r in (rows as List)) {
+      final s = idByDbId[r['student_id'] as String?];
+      if (s != null) map[s.id] = (r['status'] as String?) == 'absent' ? 'A' : 'P';
+    }
+    st.setAttByDateFromDb(date, map);
+  } catch (_) {}
 }
 
 // Result of a Verify and Submit Attendance attempt: a null error means the
@@ -566,6 +592,43 @@ Future<int> retryAbsenceNotificationsRemote(List<Student> list, String madrasa, 
     }
   }
   return n;
+}
+
+// Edits one student's status within a session for a recent (last 3 days)
+// date that has ALREADY been finalized (Verify and Submit already run).
+// Per the "no separate correction workflow" rule, this does not surface any
+// reason prompt to the Teacher - it just recomputes the full expected
+// roster for that madrasa+class+batch+date with the one student's status
+// swapped in, then resubmits through the same submit_attendance_session
+// path everything else uses, so the backend's existing correction-logging
+// (attendance_correction_log) still captures the audit trail automatically.
+Future<String?> editFinalizedStudentRemote(Student edited, String newStatus, {required String madrasa, required int cls, required String batch, required String date}) async {
+  final roster = st.students.where((s) => s.madrasa == madrasa && s.cls == cls && s.batch == batch && s.status == 'Active').toList();
+  final present = <Student>[];
+  final absent = <Student>[];
+  for (final s in roster) {
+    final status = s.id == edited.id ? newStatus : st.attForDate(date)[s.id];
+    if (status == 'A') {
+      absent.add(s);
+    } else if (status == 'P') {
+      present.add(s);
+    }
+    // A roster member with no recorded status and not the one being edited
+    // is left out of both lists entirely - that should not happen for an
+    // already-finalized session (every expected student was required to be
+    // Submitted before it could finalize), but if it ever does, this never
+    // silently invents a status for them.
+  }
+  final res = await submitAttendanceSessionRemote(
+    madrasa: madrasa,
+    cls: cls,
+    batch: batch,
+    date: date,
+    present: present,
+    absent: absent,
+    reason: 'Edited via Mark Attendance (${st.user?.name ?? 'Teacher'})',
+  );
+  return res.error;
 }
 
 // ---------------- Maktab Events / Holidays (public.maktab_events) ----------------
@@ -4654,9 +4717,51 @@ class _StudentAttendanceMarkState extends State<StudentAttendanceMark> {
   // (st.todayAtt then becomes the source of truth for them).
   final Map<int, String> _selected = {};
   final Set<int> _submittingIds = {};
+  // Which date this screen is marking/editing. Defaults to today; a Teacher
+  // can switch to Yesterday or 2 days ago to review or correct recent
+  // attendance (per-student edits only - no separate "correction workflow"
+  // dialog, just the same Present/Absent/Submit controls reopened for that
+  // date). Dates beyond this 3-day window are never offered.
+  String _selectedDate = kToday;
+  bool _loadingDate = false;
+  // Students whose individual Submit is being reopened for editing on a
+  // past (already-submitted, not-yet-finalized) date.
+  final Set<int> _editing = {};
 
   @override
   Widget build(BuildContext context) => AnimatedBuilder(animation: st, builder: (context, _) => _body(context));
+
+  Future<void> _switchDate(String date) async {
+    if (date == _selectedDate) return;
+    setState(() {
+      _selectedDate = date;
+      _selected.clear();
+      _editing.clear();
+      _verifyAttempted.clear();
+    });
+    if (date != kToday) {
+      setState(() => _loadingDate = true);
+      await loadAttendanceForDate(date);
+      if (mounted) setState(() => _loadingDate = false);
+    }
+  }
+
+  Widget _dateSelector(BuildContext context) {
+    final options = [
+      (kToday, 'Today'),
+      (addDays(kToday, -1), 'Yesterday'),
+      (addDays(kToday, -2), '2 days ago'),
+    ];
+    return Wrap(spacing: 8, runSpacing: 8, children: [
+      for (final o in options)
+        ChoiceChip(
+          label: Text(o.$2),
+          selected: _selectedDate == o.$1,
+          onSelected: (_) => _switchDate(o.$1),
+        ),
+      if (_loadingDate) const Padding(padding: EdgeInsets.symmetric(horizontal: 8), child: SizedBox(height: 20, width: 20, child: CircularProgressIndicator(strokeWidth: 2))),
+    ]);
+  }
 
   Widget _body(BuildContext context) {
     // Deactivated students never appear here, so they can't be marked and never get an alert.
@@ -4727,33 +4832,64 @@ class _StudentAttendanceMarkState extends State<StudentAttendanceMark> {
     }
 
     Widget studentTile(String sessionKey, Student s, String batch, int cls, {required bool sessionFinalized}) {
-      final submitted = st.todayAtt[s.id]; // 'P'/'A' only once actually Submitted; null until then.
+      final submitted = st.attForDate(_selectedDate)[s.id]; // 'P'/'A' only once actually Submitted; null until then.
       final isSubmitted = submitted != null;
-      final selected = _selected[s.id]; // local choice, before Submit
+      final isEditing = _editing.contains(s.id);
+      // Controls reopen either because nothing has been submitted yet, or
+      // because the Teacher tapped Edit on an already-submitted (but not
+      // session-finalized) record for this recent date.
+      final showControls = !sessionFinalized && (!isSubmitted || isEditing);
+      final selected = _selected[s.id] ?? (isEditing ? submitted : null); // local choice, before Submit
       final isPending = !isSubmitted;
       final highlight = isPending && _verifyAttempted.contains(sessionKey);
       final submitting = _submittingIds.contains(s.id);
 
       Future<void> submitOne(String status) async {
         setState(() => _submittingIds.add(s.id));
-        final err = await submitOneAttendanceRemote(s, status, madrasa: st.teacherMadrasa, cls: cls);
+        final err = await submitOneAttendanceRemote(s, status, madrasa: st.teacherMadrasa, cls: cls, date: _selectedDate);
         if (!mounted) return;
         setState(() {
           _submittingIds.remove(s.id);
-          if (err == null) _selected.remove(s.id);
+          if (err == null) {
+            _selected.remove(s.id);
+            _editing.remove(s.id);
+          }
         });
         if (err != null && context.mounted) toast(context, err);
       }
 
+      Future<void> submitEditWhileFinalized(String status) async {
+        setState(() => _submittingIds.add(s.id));
+        final err = await editFinalizedStudentRemote(s, status, madrasa: st.teacherMadrasa, cls: cls, batch: batch, date: _selectedDate);
+        if (!mounted) return;
+        setState(() {
+          _submittingIds.remove(s.id);
+          if (err == null) {
+            _selected.remove(s.id);
+            _editing.remove(s.id);
+          }
+        });
+        if (context.mounted) toast(context, err ?? 'Updated.');
+      }
+
       Widget statusLine() {
         if (isSubmitted) {
-          return Text('Submitted - ${submitted == 'P' ? 'Present' : 'Absent'}', style: TextStyle(fontWeight: FontWeight.bold, color: submitted == 'P' ? Colors.green : Colors.red));
+          return Row(children: [
+            Text('Submitted - ${submitted == 'P' ? 'Present' : 'Absent'}', style: TextStyle(fontWeight: FontWeight.bold, color: submitted == 'P' ? Colors.green : Colors.red)),
+            if (!sessionFinalized && _selectedDate != kToday && !isEditing) ...[
+              const SizedBox(width: 8),
+              TextButton(
+                onPressed: () => setState(() => _editing.add(s.id)),
+                child: const Text('Edit'),
+              ),
+            ],
+          ]);
         }
         return Text('Pending / Not Yet Marked', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.orange.shade800));
       }
 
       Widget controls() {
-        if (sessionFinalized || isSubmitted) return const SizedBox.shrink();
+        if (!showControls) return const SizedBox.shrink();
         return Row(mainAxisSize: MainAxisSize.min, children: [
           OutlinedButton(
             style: OutlinedButton.styleFrom(backgroundColor: selected == 'P' ? Colors.green : null, foregroundColor: selected == 'P' ? Colors.white : Colors.green),
@@ -4771,6 +4907,37 @@ class _StudentAttendanceMarkState extends State<StudentAttendanceMark> {
             onPressed: (selected == null || submitting) ? null : () => submitOne(selected),
             child: submitting ? const SizedBox(height: 16, width: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white)) : const Text('Submit'),
           ),
+          if (isEditing) ...[
+            const SizedBox(width: 6),
+            TextButton(onPressed: submitting ? null : () => setState(() => _editing.remove(s.id)), child: const Text('Cancel')),
+          ],
+        ]);
+      }
+
+      Widget finalizedEditControls() {
+        // Editing a student within an already-finalized session for a recent
+        // date: same Present/Absent choice, but saved via
+        // editFinalizedStudentRemote instead of the per-student submit path.
+        if (!sessionFinalized || !isEditing) return const SizedBox.shrink();
+        return Row(mainAxisSize: MainAxisSize.min, children: [
+          OutlinedButton(
+            style: OutlinedButton.styleFrom(backgroundColor: selected == 'P' ? Colors.green : null, foregroundColor: selected == 'P' ? Colors.white : Colors.green),
+            onPressed: submitting ? null : () => setState(() => _selected[s.id] = 'P'),
+            child: const Text('Present'),
+          ),
+          const SizedBox(width: 6),
+          OutlinedButton(
+            style: OutlinedButton.styleFrom(backgroundColor: selected == 'A' ? Colors.red : null, foregroundColor: selected == 'A' ? Colors.white : Colors.red),
+            onPressed: submitting ? null : () => setState(() => _selected[s.id] = 'A'),
+            child: const Text('Absent'),
+          ),
+          const SizedBox(width: 6),
+          ElevatedButton(
+            onPressed: (selected == null || submitting) ? null : () => submitEditWhileFinalized(selected),
+            child: submitting ? const SizedBox(height: 16, width: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white)) : const Text('Save'),
+          ),
+          const SizedBox(width: 6),
+          TextButton(onPressed: submitting ? null : () => setState(() => _editing.remove(s.id)), child: const Text('Cancel')),
         ]);
       }
 
@@ -4783,12 +4950,15 @@ class _StudentAttendanceMarkState extends State<StudentAttendanceMark> {
             Row(children: [
               Expanded(child: Text(s.name, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15))),
               if (highlight) const Icon(Icons.error, color: Colors.red, size: 18),
+              if (sessionFinalized && isSubmitted && _selectedDate != kToday && !isEditing)
+                TextButton(onPressed: () => setState(() => _editing.add(s.id)), child: const Text('Edit')),
             ]),
             Text(st.className(s.cls), style: const TextStyle(fontSize: 12.5, color: Colors.black54)),
             statusLine(),
             progressRowFor(context, s),
             const SizedBox(height: 6),
             controls(),
+            finalizedEditControls(),
           ]),
         ),
       );
@@ -4796,13 +4966,14 @@ class _StudentAttendanceMarkState extends State<StudentAttendanceMark> {
 
     Widget sessionBlock(String batch, int cls, List<Student> students) {
       final sessionKey = '$batch||$cls';
-      final present = students.where((s) => st.todayAtt[s.id] == 'P').toList();
-      final absent = students.where((s) => st.todayAtt[s.id] == 'A').toList();
+      final att = st.attForDate(_selectedDate);
+      final present = students.where((s) => att[s.id] == 'P').toList();
+      final absent = students.where((s) => att[s.id] == 'A').toList();
       // A student counts as Pending until THEY have been individually
       // Submitted - merely tapping Present/Absent (an unsaved local
       // selection) does not remove them from this count.
-      final pending = students.where((s) => st.todayAtt[s.id] == null).toList();
-      final existing = st.sessionFor(st.teacherMadrasa, cls, batch, kToday);
+      final pending = students.where((s) => att[s.id] == null).toList();
+      final existing = st.sessionFor(st.teacherMadrasa, cls, batch, _selectedDate);
       final finalized = existing != null;
 
       Future<void> markRemainingAbsent() async {
@@ -4833,8 +5004,8 @@ class _StudentAttendanceMarkState extends State<StudentAttendanceMark> {
         // who was already Submitted in the meantime.
         var n = 0;
         for (final s in pending) {
-          if (st.todayAtt[s.id] == null) {
-            final err = await submitOneAttendanceRemote(s, 'A', madrasa: st.teacherMadrasa, cls: cls);
+          if (st.attForDate(_selectedDate)[s.id] == null) {
+            final err = await submitOneAttendanceRemote(s, 'A', madrasa: st.teacherMadrasa, cls: cls, date: _selectedDate);
             if (err == null) n++;
           }
         }
@@ -4876,7 +5047,7 @@ class _StudentAttendanceMarkState extends State<StudentAttendanceMark> {
           madrasa: st.teacherMadrasa,
           cls: cls,
           batch: batch,
-          date: kToday,
+          date: _selectedDate,
           present: present,
           absent: absent,
         );
@@ -4904,7 +5075,7 @@ class _StudentAttendanceMarkState extends State<StudentAttendanceMark> {
                 TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Later')),
                 ElevatedButton(
                   onPressed: () async {
-                    final n = await retryAbsenceNotificationsRemote(retryList, st.teacherMadrasa, kToday);
+                    final n = await retryAbsenceNotificationsRemote(retryList, st.teacherMadrasa, _selectedDate);
                     if (ctx.mounted) Navigator.pop(ctx);
                     if (context.mounted) toast(context, '$n notification(s) sent.');
                   },
@@ -4963,32 +5134,43 @@ class _StudentAttendanceMarkState extends State<StudentAttendanceMark> {
     }
 
     return page([
-      h('Mark attendance - ${st.teacherMadrasa} - ${nice(kToday)}', icon: Icons.event_available),
+      h('Mark attendance - ${st.teacherMadrasa} - ${nice(_selectedDate)}', icon: Icons.event_available),
       const Text(
         'Select Present or Absent for a student, then press that student\'s own Submit to save it - an absent student\'s parent is notified right away. A student stays Pending until Submitted. Once every expected student is Submitted, use Verify and Submit to finalize the batch.',
         style: TextStyle(color: Colors.black54, fontSize: 12.5),
       ),
       const SizedBox(height: 8),
-      Row(children: [
-        Expanded(
-          child: OutlinedButton.icon(
-            icon: const Icon(Icons.event_busy),
-            label: const Text('Record Event / Holiday for today'),
-            onPressed: () => addEventDialog(context, st.teacherMadrasa, kToday),
+      _dateSelector(context),
+      if (_selectedDate != kToday)
+        const Padding(
+          padding: EdgeInsets.only(top: 6),
+          child: Text(
+            'Reviewing a past date. Already-Submitted students can be edited here; this does not create a separate correction workflow - it just resubmits with the corrected status.',
+            style: TextStyle(color: Colors.black54, fontSize: 12.5),
           ),
         ),
-        const SizedBox(width: 8),
-        OutlinedButton.icon(
-          icon: const Icon(Icons.history),
-          label: const Text('History'),
-          onPressed: () => pushPage(context, 'Event / Holiday history', const EventHistoryView()),
-        ),
-      ]),
+      const SizedBox(height: 8),
+      if (_selectedDate == kToday)
+        Row(children: [
+          Expanded(
+            child: OutlinedButton.icon(
+              icon: const Icon(Icons.event_busy),
+              label: const Text('Record Event / Holiday for today'),
+              onPressed: () => addEventDialog(context, st.teacherMadrasa, kToday),
+            ),
+          ),
+          const SizedBox(width: 8),
+          OutlinedButton.icon(
+            icon: const Icon(Icons.history),
+            label: const Text('History'),
+            onPressed: () => pushPage(context, 'Event / Holiday history', const EventHistoryView()),
+          ),
+        ]),
       const SizedBox(height: 8),
       for (final b in kBatches)
         if (keys.any((k) => k.startsWith('$b||'))) ...[
           () {
-            final blocking = st.blockingEventFor(st.teacherMadrasa, kToday, b);
+            final blocking = st.blockingEventFor(st.teacherMadrasa, _selectedDate, b);
             if (blocking != null) {
               return Padding(
                 padding: const EdgeInsets.only(bottom: 16),

@@ -1545,6 +1545,35 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
+  // Attendance for dates other than today (last few days, so a Teacher can
+  // review/edit recent attendance from the Mark Attendance screen). todayAtt
+  // above stays the live, realtime-synced view of just today's marks; this
+  // cache additionally holds whichever other recent dates have been loaded.
+  // attForDate/setAttOneForDate route through todayAtt for kToday so there
+  // is exactly one source of truth for "today", never two copies that could
+  // drift apart.
+  final Map<String, Map<int, String>> attByDate = {};
+
+  Map<int, String> attForDate(String date) => date == kToday ? todayAtt : (attByDate[date] ?? const {});
+
+  void setAttByDateFromDb(String date, Map<int, String> att) {
+    if (date == kToday) {
+      setTodayAttendanceFromDb(att);
+    } else {
+      attByDate[date] = att;
+      notifyListeners();
+    }
+  }
+
+  void setAttOneForDate(String date, int studentId, String v) {
+    if (date == kToday) {
+      setAtt(studentId, v);
+    } else {
+      (attByDate[date] ??= {})[studentId] = v;
+      notifyListeners();
+    }
+  }
+
   void setAbsentHistoryFromDb(Map<int, List<String>> byLocalId) {
     for (final s in students) {
       s.absent = List<String>.from(byLocalId[s.id] ?? []);
@@ -1630,12 +1659,13 @@ class AppState extends ChangeNotifier {
   // local absent-history (kept in sync with the database so attPct and
   // other already-loaded summaries don't wait for the next full reload).
   void recordSessionSubmission({required List<Student> present, required List<Student> absent, required String date}) {
+    final map = date == kToday ? todayAtt : (attByDate[date] ??= {});
     for (final s in present) {
-      todayAtt[s.id] = 'P';
+      map[s.id] = 'P';
       s.absent.remove(date);
     }
     for (final s in absent) {
-      todayAtt[s.id] = 'A';
+      map[s.id] = 'A';
       if (!s.absent.contains(date)) s.absent.add(date);
     }
     notifyListeners();
