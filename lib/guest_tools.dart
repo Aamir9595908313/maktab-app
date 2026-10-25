@@ -400,8 +400,9 @@ class _CalendarScreenState extends State<CalendarScreen> {
                     ),
                     alignment: Alignment.center,
                     child: Column(mainAxisAlignment: MainAxisAlignment.center, mainAxisSize: MainAxisSize.min, children: [
-                      Text('$d', style: TextStyle(color: isToday ? Colors.white : Colors.black87, fontWeight: isFriday || isToday ? FontWeight.bold : FontWeight.normal, fontSize: 13)),
-                      Text('$hDay', style: TextStyle(color: isToday ? Colors.white70 : const Color(0xFFC62828), fontSize: 9.5, fontWeight: FontWeight.w600)),
+                      Text('$d', style: TextStyle(color: isToday ? Colors.white : Colors.black87, fontWeight: isFriday || isToday ? FontWeight.bold : FontWeight.normal, fontSize: 24)),
+                      const SizedBox(height: 2),
+                      Text('$hDay', style: TextStyle(color: isToday ? Colors.white70 : const Color(0xFFC62828), fontSize: 14, fontWeight: FontWeight.w600)),
                     ]),
                   );
                 }),
