@@ -199,6 +199,7 @@ Future<void> loadMasterData() async {
     await loadClassBooks();
     await loadClassCourseAssignments();
     await loadAttendance();
+    await loadEvents();
     await loadSyllabusProgress();
     await loadBookProgress();
     await loadCourseEnrollments();
@@ -258,6 +259,7 @@ void subscribeRealtime() {
     'course_enrollments',
     'class_books',
     'book_progress',
+    'maktab_events',
     'students',
     'teacher_class_assignments',
     'user_profiles',
@@ -376,6 +378,138 @@ Future<int> submitAttRemote(List<Student> list) async {
     }
   }
   return st.submitAtt(list);
+}
+
+// ---------------- Maktab Events / Holidays (public.maktab_events) ----------------
+Future<void> loadEvents() async {
+  final madrasaNameById = {for (final m in st.madrasas) if (m.dbId != null) m.dbId!: m.name};
+  try {
+    final rows = await sb.from('maktab_events').select().order('event_date', ascending: false);
+    final userIds = <String>{for (final r in (rows as List)) if (r['created_by'] != null) r['created_by'] as String};
+    final nameByUser = <String, String>{};
+    if (userIds.isNotEmpty) {
+      final profRows = await sb.from('user_profiles').select('id, name').inFilter('id', userIds.toList());
+      for (final r in (profRows as List)) {
+        nameByUser[r['id'] as String] = (r['name'] as String?) ?? '';
+      }
+    }
+    st.setEventsFromDb([
+      for (final r in rows)
+        MaktabEvent(
+          dbId: r['id'] as String?,
+          madrasa: madrasaNameById[r['madrasa_id'] as String?] ?? '',
+          name: (r['event_name'] as String?) ?? '',
+          type: (r['event_type'] as String?) ?? 'event',
+          date: (r['event_date'] as String?) ?? kToday,
+          startTime: r['start_time'] as String?,
+          endTime: r['end_time'] as String?,
+          batch: r['batch'] as String?,
+          description: (r['description'] as String?) ?? '',
+          createdByName: nameByUser[r['created_by'] as String?],
+          cancelled: r['cancelled_at'] != null,
+          cancelReason: r['cancel_reason'] as String?,
+        ),
+    ]);
+  } catch (_) {}
+}
+
+Future<String?> addEventRemote(String madrasa, String name, String type, String date, {String? startTime, String? endTime, String? batch, String description = ''}) async {
+  final n = name.trim();
+  if (n.isEmpty) return 'Enter an Event/Holiday name';
+  final madrasaId = _madrasaDbId(madrasa);
+  if (madrasaId == null) return 'This Maktab is not saved to the database yet.';
+  try {
+    final row = await sb.from('maktab_events').insert({
+      'madrasa_id': madrasaId,
+      'event_name': n,
+      'event_type': type,
+      'event_date': date,
+      'start_time': startTime,
+      'end_time': endTime,
+      'batch': batch,
+      'description': description.trim(),
+      'created_by': sb.auth.currentUser?.id,
+    }).select().single();
+    st.addEventLocal(MaktabEvent(
+      dbId: row['id'] as String?,
+      madrasa: madrasa,
+      name: n,
+      type: type,
+      date: date,
+      startTime: startTime,
+      endTime: endTime,
+      batch: batch,
+      description: description.trim(),
+      createdByName: st.user?.name,
+    ));
+    return null;
+  } on PostgrestException catch (e) {
+    // The unique index on (madrasa, date, batch) surfaces here as a plain
+    // Postgres duplicate-key message, which is exact and honest enough to
+    // show as-is rather than needing a separate pre-check query first.
+    return 'Could not save: ${e.message}';
+  } catch (_) {
+    return 'Could not save. Check your internet connection and try again.';
+  }
+}
+
+Future<String?> cancelEventRemote(MaktabEvent e, String reason) async {
+  if (e.dbId == null) return 'This Event/Holiday was not saved to the database yet.';
+  try {
+    await sb.from('maktab_events').update({
+      'cancelled_at': DateTime.now().toIso8601String(),
+      'cancelled_by': sb.auth.currentUser?.id,
+      'cancel_reason': reason,
+    }).eq('id', e.dbId as Object);
+    st.cancelEventLocal(e, reason);
+    return null;
+  } on PostgrestException catch (ex) {
+    return 'Could not save: ${ex.message}';
+  } catch (_) {
+    return 'Could not save. Check your internet connection and try again.';
+  }
+}
+
+// On-demand, month-scoped query for the Parent attendance report (not
+// loaded into the global model at login like loadAttendance's "today +
+// absent history only" - a full month's Present AND Absent rows for one
+// student, fetched only when that report screen is actually opened).
+Future<MonthAttendanceSummary?> loadMonthAttendance(Student s, int year, int month) async {
+  if (s.dbId == null) return null;
+  final firstOfMonth = DateTime(year, month, 1);
+  final lastOfMonth = DateTime(year, month + 1, 0);
+  try {
+    final rows = await sb
+        .from('student_attendance')
+        .select('attendance_date, status')
+        .eq('student_id', s.dbId as Object)
+        .eq('is_draft', false)
+        .gte('attendance_date', fd(firstOfMonth))
+        .lte('attendance_date', fd(lastOfMonth));
+    final attendanceByDate = <String, String>{
+      for (final r in (rows as List)) (r['attendance_date'] as String): (r['status'] as String? ?? ''),
+    };
+    final eventRows = await sb
+        .from('maktab_events')
+        .select('event_date, event_name, event_type, batch, cancelled_at')
+        .eq('madrasa_id', _madrasaDbId(s.madrasa) as Object)
+        .gte('event_date', fd(firstOfMonth))
+        .lte('event_date', fd(lastOfMonth));
+    final events = [
+      for (final r in (eventRows as List))
+        MaktabEvent(
+          madrasa: s.madrasa,
+          name: (r['event_name'] as String?) ?? '',
+          type: (r['event_type'] as String?) ?? 'event',
+          date: (r['event_date'] as String?) ?? '',
+          batch: r['batch'] as String?,
+          cancelled: r['cancelled_at'] != null,
+        ),
+    ];
+    return computeMonthAttendance(studentStart: s.start, year: year, month: month, attendanceByDate: attendanceByDate, events: events, batch: s.batch);
+  } catch (_) {
+    return null;
+  }
 }
 
 // ---------------- Teacher self-attendance (public.teacher_attendance) ----------------
@@ -2594,7 +2728,7 @@ List<AppTab> tabsFor(Account u) {
         AppTab('My Day', Icons.today, () => const MyDayView()),
         AppTab('My Attendance & Leave', Icons.how_to_reg, () => const TeacherSelf()),
         AppTab('Student Attendance', Icons.event_available, () => const StudentAttendanceMark()),
-        AppTab('Syllabus', Icons.menu_book, () => const TeacherSyllabus()),
+        AppTab('Syllabus Progress', Icons.menu_book, () => const TeacherSyllabus()),
         // Requirement 3: Teachers (not just Super Admin) can create/edit
         // classes from Class 4 onward and manage Books - reuses the same
         // MasterDataView screen Super Admin uses, which hides the
@@ -2843,6 +2977,148 @@ Prog progFor(Student s) {
   return cd.pageBased ? st.pageProg(s) : st.chapterProg(s);
 }
 
+// Date-wise Present/Absent/Event/Holiday/Weekend/Not-Recorded attendance
+// history with month navigation and a monthly summary - shared by the
+// Parent's attendance screen and the Teacher/Admin's StudentDetail
+// Attendance tab, so there is one real implementation instead of two
+// (one of which used to be a fabricated "Attendance Sep: X%" stat with no
+// real month behind it).
+class AttendanceMonthReport extends StatefulWidget {
+  final Student s;
+  const AttendanceMonthReport({super.key, required this.s});
+  @override
+  State<AttendanceMonthReport> createState() => _AttendanceMonthReportState();
+}
+
+class _AttendanceMonthReportState extends State<AttendanceMonthReport> {
+  late int year;
+  late int month;
+  MonthAttendanceSummary? summary;
+  bool loading = true;
+  String filter = 'All';
+
+  @override
+  void initState() {
+    super.initState();
+    final now = DateTime.now();
+    year = now.year;
+    month = now.month;
+    _load();
+  }
+
+  Future<void> _load() async {
+    setState(() => loading = true);
+    final r = await loadMonthAttendance(widget.s, year, month);
+    if (!mounted) return;
+    setState(() {
+      summary = r;
+      loading = false;
+      filter = 'All';
+    });
+  }
+
+  bool get _isCurrentMonth {
+    final now = DateTime.now();
+    return year == now.year && month == now.month;
+  }
+
+  void _shiftMonth(int delta) {
+    var m = month + delta;
+    var y = year;
+    if (m < 1) {
+      m = 12;
+      y--;
+    } else if (m > 12) {
+      m = 1;
+      y++;
+    }
+    // Never navigate into a future month - nothing is scheduled yet there.
+    final now = DateTime.now();
+    if (y > now.year || (y == now.year && m > now.month)) return;
+    setState(() {
+      year = y;
+      month = m;
+    });
+    _load();
+  }
+
+  Color _statusColor(String status) {
+    switch (status) {
+      case 'Present':
+        return const Color(0xFF2E7D32);
+      case 'Absent':
+        return const Color(0xFFC62828);
+      case 'Event':
+        return const Color(0xFFB8860B);
+      case 'Holiday':
+        return const Color(0xFF6A1B9A);
+      case 'Weekend':
+        return Colors.black45;
+      default:
+        return Colors.black38;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final s = widget.s;
+    const monthNames = [
+      'January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December' //
+    ];
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Row(children: [
+        IconButton(icon: const Icon(Icons.chevron_left), onPressed: loading ? null : () => _shiftMonth(-1)),
+        Expanded(
+          child: Text('${monthNames[month - 1]} $year', textAlign: TextAlign.center, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+        ),
+        IconButton(icon: const Icon(Icons.chevron_right), onPressed: (loading || _isCurrentMonth) ? null : () => _shiftMonth(1)),
+      ]),
+      if (loading) const Padding(padding: EdgeInsets.all(20), child: Center(child: CircularProgressIndicator())),
+      if (!loading && summary == null) const Padding(padding: EdgeInsets.all(12), child: Text('Could not load attendance. Check your connection and try again.')),
+      if (!loading && summary != null) ...() {
+        final sm = summary!;
+        return <Widget>[
+          Card(
+            color: const Color(0xFFF3F7FF),
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text('${s.name} - ${nice(fd(DateTime(sm.year, sm.month, 1)))} to ${nice(fd(DateTime(sm.year, sm.month + 1, 0)))}', style: const TextStyle(fontSize: 12, color: Colors.black54)),
+                const SizedBox(height: 6),
+                Wrap(spacing: 10, runSpacing: 6, children: [
+                  Text('Present: ${sm.present}', style: TextStyle(color: _statusColor('Present'), fontWeight: FontWeight.bold)),
+                  Text('Absent: ${sm.absent}', style: TextStyle(color: _statusColor('Absent'), fontWeight: FontWeight.bold)),
+                  Text('Events: ${sm.eventDays}', style: TextStyle(color: _statusColor('Event'), fontWeight: FontWeight.bold)),
+                  Text('Holidays: ${sm.holidayDays}', style: TextStyle(color: _statusColor('Holiday'), fontWeight: FontWeight.bold)),
+                  Text('Weekends: ${sm.weekendDays}', style: TextStyle(color: _statusColor('Weekend'), fontWeight: FontWeight.bold)),
+                  Text('Not Recorded: ${sm.notRecorded}', style: TextStyle(color: _statusColor('Not Recorded'), fontWeight: FontWeight.bold)),
+                ]),
+                const SizedBox(height: 8),
+                Text('Attendance: ${sm.pct}% of ${sm.eligibleScheduledDays} eligible scheduled day(s) (day-based - events, holidays, weekends and not-recorded days excluded)',
+                    style: const TextStyle(fontWeight: FontWeight.bold)),
+              ]),
+            ),
+          ),
+          const SizedBox(height: 10),
+          Wrap(spacing: 6, runSpacing: 6, children: [
+            for (final f in const ['All', 'Present', 'Absent', 'Event', 'Holiday', 'Weekend', 'Not Recorded'])
+              ChoiceChip(label: Text(f), selected: filter == f, onSelected: (_) => setState(() => filter = f)),
+          ]),
+          const SizedBox(height: 8),
+          ...sm.days.where((d) => filter == 'All' || d.status == filter).toList().reversed.map((d) => Card(
+                child: ListTile(
+                  dense: true,
+                  leading: Icon(Icons.circle, size: 12, color: _statusColor(d.status)),
+                  title: Text(nice(d.date)),
+                  trailing: Text(d.status + (d.eventName != null ? ': ${d.eventName}' : ''), style: TextStyle(color: _statusColor(d.status), fontWeight: FontWeight.w600), overflow: TextOverflow.ellipsis),
+                ),
+              )),
+        ];
+      }(),
+    ]);
+  }
+}
+
 class KidHome extends StatelessWidget {
   const KidHome({super.key});
   @override
@@ -2904,11 +3180,11 @@ class KidAttendance extends StatelessWidget {
     if (k == null) return page([const Text('No child is linked to this number.')]);
     return page([
       KidPicker(),
-      h('Attendance - ${k.name}', icon: Icons.event_available),
-      grid([tile('Attendance Sep', '${st.attPct(k)}%'), tile('Absent days', '${k.absent.length}')]),
-      h('Absent days'),
-      if (k.absent.isEmpty) const Text('None'),
-      ...k.absent.map((d) => Card(child: ListTile(leading: const Icon(Icons.cancel, color: Colors.red), title: Text(nice(d))))),
+      h('Attendance - ${k.name} - ${st.className(k.cls)}, ${k.madrasa}', icon: Icons.event_available),
+      // Keyed on the student so switching between siblings (KidPicker)
+      // reloads a fresh report instead of reusing the previous child's
+      // already-loaded month.
+      AttendanceMonthReport(key: ValueKey(k.id), s: k),
     ]);
   }
 }
@@ -4107,55 +4383,229 @@ class StudentAttendanceMark extends StatelessWidget {
         style: TextStyle(color: Colors.black54, fontSize: 12.5),
       ),
       const SizedBox(height: 8),
+      Row(children: [
+        Expanded(
+          child: OutlinedButton.icon(
+            icon: const Icon(Icons.event_busy),
+            label: const Text('Record Event / Holiday for today'),
+            onPressed: () => addEventDialog(context, st.teacherMadrasa, kToday),
+          ),
+        ),
+        const SizedBox(width: 8),
+        OutlinedButton.icon(
+          icon: const Icon(Icons.history),
+          label: const Text('History'),
+          onPressed: () => pushPage(context, 'Event / Holiday history', const EventHistoryView()),
+        ),
+      ]),
+      const SizedBox(height: 8),
       for (final b in kBatches)
         if (groups[b]!.isNotEmpty) ...[
           h('$b batch (${groups[b]!.length})'),
-          ...groups[b]!.map(studentTile),
-          const SizedBox(height: 4),
-          Align(
-            alignment: Alignment.centerLeft,
-            child: ElevatedButton(
-              onPressed: () async {
-                final n = await submitAttRemote(groups[b]!);
-                if (context.mounted) {
-                  toast(context, '$b batch Final Submitted. $n absence WhatsApp alert(s) sent to parents.');
-                }
-              },
-              child: Text('Final Submit - $b batch'),
-            ),
-          ),
+          () {
+            final blocking = st.blockingEventFor(st.teacherMadrasa, kToday, b);
+            if (blocking != null) {
+              return Card(
+                color: blocking.type == 'holiday' ? const Color(0xFFFFE3E0) : const Color(0xFFFFF3CF),
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    Text('${blocking.type == 'holiday' ? 'Holiday' : 'Event'}: ${blocking.name}', style: const TextStyle(fontWeight: FontWeight.bold)),
+                    if (blocking.startTime != null || blocking.endTime != null) Text('${blocking.startTime ?? ''} - ${blocking.endTime ?? ''}'),
+                    if (blocking.description.isNotEmpty) Text(blocking.description),
+                    const SizedBox(height: 6),
+                    const Text(
+                      'Normal Present/Absent attendance cannot be submitted for this batch today. Students are left as Not Recorded, not marked Absent.',
+                      style: TextStyle(fontSize: 12, color: Colors.black54),
+                    ),
+                  ]),
+                ),
+              );
+            }
+            return Column(children: [
+              ...groups[b]!.map(studentTile),
+              const SizedBox(height: 4),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: ElevatedButton(
+                  onPressed: () async {
+                    final n = await submitAttRemote(groups[b]!);
+                    if (context.mounted) {
+                      toast(context, '$b batch Final Submitted. $n absence WhatsApp alert(s) sent to parents.');
+                    }
+                  },
+                  child: Text('Final Submit - $b batch'),
+                ),
+              ),
+            ]);
+          }(),
           const SizedBox(height: 16),
         ],
     ]);
   }
 }
 
+// Create an Event/Holiday for a Maktab+date, optionally scoped to one
+// batch (leave unset for "whole day", which blocks every session).
+Future<void> addEventDialog(BuildContext c, String madrasa, String initialDate) async {
+  final nameCtrl = TextEditingController();
+  final descCtrl = TextEditingController();
+  final startCtrl = TextEditingController();
+  final endCtrl = TextEditingController();
+  String type = 'holiday';
+  String? batch; // null = whole day
+  String date = initialDate;
+  await showDialog<void>(
+    context: c,
+    builder: (ctx) => StatefulBuilder(
+      builder: (ctx, setD) => AlertDialog(
+        title: const Text('Record Event / Holiday'),
+        content: SingleChildScrollView(
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            TextField(controller: nameCtrl, decoration: const InputDecoration(labelText: 'Event name')),
+            const SizedBox(height: 8),
+            DropdownButtonFormField<String>(
+              value: type,
+              decoration: const InputDecoration(labelText: 'Type'),
+              items: const [
+                DropdownMenuItem(value: 'holiday', child: Text('Holiday')),
+                DropdownMenuItem(value: 'event', child: Text('Event')),
+                DropdownMenuItem(value: 'other', child: Text('Other')),
+              ],
+              onChanged: (v) => setD(() => type = v ?? type),
+            ),
+            const SizedBox(height: 8),
+            GestureDetector(
+              onTap: () async {
+                final picked = await showDatePicker(context: ctx, initialDate: pd(date), firstDate: DateTime(2020, 1, 1), lastDate: DateTime(2035, 12, 31));
+                if (picked != null) setD(() => date = fd(picked));
+              },
+              child: AbsorbPointer(child: TextField(controller: TextEditingController(text: nice(date)), decoration: const InputDecoration(labelText: 'Date (tap to pick)'))),
+            ),
+            const SizedBox(height: 8),
+            DropdownButtonFormField<String?>(
+              value: batch,
+              decoration: const InputDecoration(labelText: 'Affected session (blank = whole day)'),
+              items: [const DropdownMenuItem<String?>(value: null, child: Text('Whole day (all batches)')), for (final b in kBatches) DropdownMenuItem<String?>(value: b, child: Text(b))],
+              onChanged: (v) => setD(() => batch = v),
+            ),
+            const SizedBox(height: 8),
+            Row(children: [
+              Expanded(child: TextField(controller: startCtrl, decoration: const InputDecoration(labelText: 'Start time (optional, HH:mm)'))),
+              const SizedBox(width: 8),
+              Expanded(child: TextField(controller: endCtrl, decoration: const InputDecoration(labelText: 'End time (optional, HH:mm)'))),
+            ]),
+            const SizedBox(height: 8),
+            TextField(controller: descCtrl, maxLines: 2, decoration: const InputDecoration(labelText: 'Description (optional)')),
+          ]),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+          ElevatedButton(
+            onPressed: () async {
+              final e = await addEventRemote(
+                madrasa,
+                nameCtrl.text,
+                type,
+                date,
+                startTime: startCtrl.text.trim().isEmpty ? null : startCtrl.text.trim(),
+                endTime: endCtrl.text.trim().isEmpty ? null : endCtrl.text.trim(),
+                batch: batch,
+                description: descCtrl.text,
+              );
+              if (ctx.mounted) Navigator.pop(ctx);
+              if (e != null && c.mounted) toast(c, e);
+              if (e == null && c.mounted) toast(c, 'Saved.');
+            },
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    ),
+  );
+}
+
+class EventHistoryView extends StatelessWidget {
+  const EventHistoryView({super.key});
+  @override
+  Widget build(BuildContext context) => AnimatedBuilder(animation: st, builder: (context, _) => _body(context));
+
+  Widget _body(BuildContext context) {
+    final u = st.user!;
+    final madrasa = u.role == 'teacher' ? st.teacherMadrasa : null;
+    final list = madrasa != null ? st.eventsFor(madrasa) : [for (final m in st.activeMadrasaNames) ...st.eventsFor(m)]..sort((a, b) => b.date.compareTo(a.date));
+    final canCancel = u.role == 'teacher' || u.role == 'admin' || u.role == 'super';
+    return page([
+      h('Event / Holiday history', icon: Icons.history),
+      if (list.isEmpty) const Text('No Events or Holidays recorded yet.'),
+      ...list.map((e) => Card(
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Row(children: [
+                  Expanded(
+                    child: Text('${nice(e.date)} - ${e.name}',
+                        style: TextStyle(fontWeight: FontWeight.bold, decoration: e.cancelled ? TextDecoration.lineThrough : null), overflow: TextOverflow.ellipsis),
+                  ),
+                  Chip(label: Text(e.type == 'holiday' ? 'Holiday' : (e.type == 'event' ? 'Event' : 'Other')), backgroundColor: e.type == 'holiday' ? const Color(0xFFFFE3E0) : const Color(0xFFFFF3CF)),
+                ]),
+                Text('${e.madrasa} - ${e.batch ?? 'Whole day'}${e.createdByName != null && e.createdByName!.isNotEmpty ? ' - by ${e.createdByName}' : ''}', style: const TextStyle(fontSize: 12.5, color: Colors.black54)),
+                if (e.description.isNotEmpty) Text(e.description, style: const TextStyle(fontSize: 12.5)),
+                if (e.cancelled) Text('Cancelled${e.cancelReason != null && e.cancelReason!.isNotEmpty ? ': ${e.cancelReason}' : ''}', style: const TextStyle(color: Colors.red, fontSize: 12.5)),
+                if (!e.cancelled && canCancel)
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: TextButton(
+                      onPressed: () async {
+                        final reason = await askText(context, 'Reason for cancelling (optional)');
+                        if (reason == null) return;
+                        final err = await cancelEventRemote(e, reason);
+                        if (context.mounted && err != null) toast(context, err);
+                      },
+                      child: const Text('Cancel this Event/Holiday'),
+                    ),
+                  ),
+              ]),
+            ),
+          )),
+    ]);
+  }
+}
+
+// Teacher's "Syllabus Progress" screen (requirement 1): the roster of
+// students in the Teacher's own Maktab, each with their admission/
+// identifier key, class, and overall syllabus completion - tapping one
+// opens the same StudentDetail used from Students & Promotion, landing
+// directly on its Syllabus tab (which already covers books/Para/chapters
+// via the shared SyllabusBody, plus a separate Add-on Courses tab) rather
+// than a second, disconnected progress view.
 class TeacherSyllabus extends StatelessWidget {
   const TeacherSyllabus({super.key});
   @override
-  Widget build(BuildContext context) {
-    final list = st.myStudents();
+  Widget build(BuildContext context) => AnimatedBuilder(animation: st, builder: (context, _) => _body(context));
+
+  Widget _body(BuildContext context) {
+    // Deactivated students are left out - there is nothing to progress or
+    // approve for a student no longer attending, same scope as every
+    // other student-facing screen in the app.
+    final list = st.myStudents().where((s) => s.status == 'Active').toList();
     return page([
-      h('Choose a student - ${st.teacherMadrasa}'),
+      h('Syllabus Progress - ${st.teacherMadrasa}', icon: Icons.menu_book),
+      if (list.isEmpty) const Text('No students in your Maktab yet.'),
       ...list.map((s) {
         final p = progFor(s);
         final cd = st.classDefs[s.cls]!;
         return Card(
           child: ListTile(
-            title: Text(s.name),
+            title: Text(s.name, overflow: TextOverflow.ellipsis),
             subtitle: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text('${cd.name} - start ${nice(s.start)} - ${p.label ?? '${p.n}/${p.total}'}'),
+              Text('ID ${s.key} - ${cd.name}', overflow: TextOverflow.ellipsis),
+              Text(p.label ?? '${p.n} of ${p.total}', overflow: TextOverflow.ellipsis),
+              const SizedBox(height: 2),
               LinearProgressIndicator(value: p.pct / 100),
+              Text('${p.pct}% complete', style: const TextStyle(fontSize: 11.5, color: Colors.black54)),
             ]),
-            onTap: () => Navigator.push(
-              context,
-              MaterialPageRoute<void>(
-                builder: (_) => Scaffold(
-                  appBar: AppBar(title: Text(s.name), backgroundColor: kGreen, foregroundColor: Colors.white),
-                  body: AnimatedBuilder(animation: st, builder: (c, _) => SyllabusBody(s: s, edit: true)),
-                ),
-              ),
-            ),
+            onTap: () => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => StudentDetail(s: s, initialTab: 2))),
           ),
         );
       }),
@@ -5266,13 +5716,18 @@ class _BranchStudentsState extends State<BranchStudents> {
 
 class StudentDetail extends StatelessWidget {
   final Student s;
-  const StudentDetail({super.key, required this.s});
+  // Which tab to land on (0 Status, 1 Class history, 2 Syllabus, 3
+  // Attendance, 4 Results, 5 Add-on Courses) - Syllabus Progress opens
+  // straight to Syllabus (2) instead of making the Teacher tap again.
+  final int initialTab;
+  const StudentDetail({super.key, required this.s, this.initialTab = 0});
   @override
   Widget build(BuildContext context) {
     final cd = st.classDefs[s.cls]!;
     final p = progFor(s);
     return DefaultTabController(
       length: 6,
+      initialIndex: initialTab,
       child: Scaffold(
         appBar: AppBar(
           title: Text(s.name),
@@ -5308,33 +5763,13 @@ class StudentDetail extends StatelessWidget {
             ...s.history.map((x) => Card(child: ListTile(title: Text(x)))),
             Card(child: ListTile(title: Text('${cd.name}: started ${nice(s.start)} (${s.status == 'Active' ? 'Ongoing' : s.status})'))),
           ]),
-          page([
-            if (cd.pageBased)
-              ...List.generate(cd.totalPages, (i) {
-                final pageNo = i + 1;
-                final status = st.pageStatus(s, pageNo);
-                return Card(
-                  child: ListTile(
-                    title: Text('Page $pageNo'),
-                    subtitle: Text(status == 'Completed' ? 'Completed ${nice(s.pageDate[pageNo]!)} - ${s.pageGrade[pageNo] ?? ''}' : status),
-                  ),
-                );
-              })
-            else
-              ...List.generate(st.chapterPlan(s).length, (i) {
-                final c = st.chapterPlan(s)[i];
-                return Card(child: ListTile(title: Text('${i + 1}. ${c.title}'), subtitle: Text(c.done != null ? 'Completed ${nice(c.done!)} - ${c.grade}' : 'Not completed. Plan ${nice(c.plan)}')));
-              }),
-          ]),
-          page([
-            // Only this app-tracked month has a real number behind it; the
-            // other months and the "Monthly Test" card below were
-            // fabricated sample figures with no data model backing them -
-            // replaced with an honest "not recorded" note rather than
-            // invented statistics (see the dashboard-stats fix for the
-            // same issue elsewhere).
-            Card(child: ListTile(title: Text('This month: ${st.attPct(s)}%'), subtitle: const Text('Attendance - prior months not tracked yet'))),
-          ]),
+          // Requirement 1: was a separate, simpler re-implementation that
+          // ignored Para teaching order and Book Management entirely - now
+          // the same SyllabusBody every other syllabus screen (student,
+          // parent) uses, so a fix there reaches here too and this view
+          // never drifts out of sync again.
+          SyllabusBody(s: s, edit: true),
+          page([AttendanceMonthReport(key: ValueKey(s.id), s: s)]),
           page([
             const Card(child: ListTile(title: Text('Exam results'), subtitle: Text('Not recorded yet - no exam/marks feature exists in the app yet'))),
             const Text('Fees, teachers, phone numbers, address, Aadhaar and complaints are never shown to committee members.'),
@@ -5600,6 +6035,12 @@ class _MasterDataViewState extends State<MasterDataView> {
                 if (e == null) madrasaName.clear();
               },
         child: busy ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2)) : const Text('Add Maktab'),
+      ),
+      const SizedBox(height: 8),
+      OutlinedButton.icon(
+        icon: const Icon(Icons.history),
+        label: const Text('Event / Holiday history (all Makatib)'),
+        onPressed: () => pushPage(context, 'Event / Holiday history', const EventHistoryView()),
       ),
       ], // end canManageOrg (Maktab)
       h('Classes', icon: Icons.menu_book),

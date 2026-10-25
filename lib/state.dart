@@ -204,6 +204,161 @@ class Prog {
   int get pct => total == 0 ? 0 : (n * 100 / total).round();
 }
 
+// A Maktab Event/Holiday recorded against an attendance date - public.
+// maktab_events. `batch` null means it covers every session that day;
+// otherwise it only affects that one batch (Morning/Afternoon/Evening),
+// so a partial-day event doesn't block unrelated sessions on the same
+// date (see AppState.blockingEventFor).
+class MaktabEvent {
+  final String? dbId;
+  final String madrasa;
+  String name;
+  String type; // 'event' | 'holiday' | 'other'
+  String date; // yyyy-MM-dd
+  String? startTime; // 'HH:mm'
+  String? endTime;
+  String? batch;
+  String description;
+  String? createdByName;
+  bool cancelled;
+  String? cancelReason;
+  MaktabEvent({
+    this.dbId,
+    required this.madrasa,
+    required this.name,
+    required this.type,
+    required this.date,
+    this.startTime,
+    this.endTime,
+    this.batch,
+    this.description = '',
+    this.createdByName,
+    this.cancelled = false,
+    this.cancelReason,
+  });
+}
+
+// One calendar day's classification for a student's attendance history -
+// used by the Parent attendance report. Exactly one of these per date
+// (never double-counted across categories - see computeMonthAttendance).
+class DayAttendance {
+  final String date;
+  final String status; // Present | Absent | Event | Holiday | Weekend | Not Recorded
+  final String? eventName;
+  const DayAttendance(this.date, this.status, {this.eventName});
+}
+
+class MonthAttendanceSummary {
+  final int year;
+  final int month;
+  final int totalCalendarDays;
+  final int present;
+  final int absent;
+  final int eventDays;
+  final int holidayDays;
+  final int weekendDays;
+  final int notRecorded;
+  final List<DayAttendance> days;
+  MonthAttendanceSummary({
+    required this.year,
+    required this.month,
+    required this.totalCalendarDays,
+    required this.present,
+    required this.absent,
+    required this.eventDays,
+    required this.holidayDays,
+    required this.weekendDays,
+    required this.notRecorded,
+    required this.days,
+  });
+  // "Present / Eligible Scheduled Sessions x 100" - eligible is only days
+  // attendance was actually recorded (present+absent). Events, holidays,
+  // weekends and never-recorded days are excluded from the denominator
+  // entirely, per spec, rather than counted against the student.
+  int get eligibleScheduledDays => present + absent;
+  int get pct => eligibleScheduledDays == 0 ? 0 : (present * 100 / eligibleScheduledDays).round();
+}
+
+// Classifies every calendar day of (year, month) - from the student's
+// admission date (s.start) up to today for the current month, or the
+// whole month for a past one - into exactly one category. Friday is the
+// Maktab's weekly off day (the same convention the Islamic Calendar tool
+// already highlights). `attendanceByDate` only holds FINAL-submitted
+// (is_draft=false) rows: a date with no entry there is "Not Recorded",
+// never assumed Absent.
+MonthAttendanceSummary computeMonthAttendance({
+  required String studentStart,
+  required int year,
+  required int month,
+  required Map<String, String> attendanceByDate, // date -> 'present'/'absent'
+  required List<MaktabEvent> events, // already filtered to this student's madrasa, not cancelled
+  required String batch,
+}) {
+  final firstOfMonth = DateTime(year, month, 1);
+  final lastOfMonth = DateTime(year, month + 1, 0);
+  final today = DateTime.now();
+  final rangeEnd = (year == today.year && month == today.month) ? DateTime(today.year, today.month, today.day) : lastOfMonth;
+  final admission = pd(validDate(studentStart) ? studentStart : fd(firstOfMonth));
+
+  final eventsByDate = <String, MaktabEvent>{};
+  for (final e in events) {
+    if (e.cancelled) continue;
+    if (e.batch != null && e.batch != batch) continue;
+    // Holiday takes precedence over a plain Event/Other if both were
+    // somehow recorded for the same date (shouldn't happen given the
+    // unique index, but stay deterministic either way).
+    final existing = eventsByDate[e.date];
+    if (existing == null || (existing.type != 'holiday' && e.type == 'holiday')) eventsByDate[e.date] = e;
+  }
+
+  var present = 0, absent = 0, eventDays = 0, holidayDays = 0, weekendDays = 0, notRecorded = 0;
+  final days = <DayAttendance>[];
+  for (var d = firstOfMonth; !d.isAfter(rangeEnd); d = d.add(const Duration(days: 1))) {
+    if (d.isBefore(DateTime(admission.year, admission.month, admission.day))) continue; // not yet admitted
+    final ds = fd(d);
+    if (d.weekday == DateTime.friday) {
+      weekendDays++;
+      days.add(DayAttendance(ds, 'Weekend'));
+      continue;
+    }
+    final ev = eventsByDate[ds];
+    if (ev != null) {
+      if (ev.type == 'holiday') {
+        holidayDays++;
+        days.add(DayAttendance(ds, 'Holiday', eventName: ev.name));
+      } else {
+        eventDays++;
+        days.add(DayAttendance(ds, 'Event', eventName: ev.name));
+      }
+      continue;
+    }
+    final att = attendanceByDate[ds];
+    if (att == 'present') {
+      present++;
+      days.add(DayAttendance(ds, 'Present'));
+    } else if (att == 'absent') {
+      absent++;
+      days.add(DayAttendance(ds, 'Absent'));
+    } else {
+      notRecorded++;
+      days.add(DayAttendance(ds, 'Not Recorded'));
+    }
+  }
+
+  return MonthAttendanceSummary(
+    year: year,
+    month: month,
+    totalCalendarDays: lastOfMonth.day,
+    present: present,
+    absent: absent,
+    eventDays: eventDays,
+    holidayDays: holidayDays,
+    weekendDays: weekendDays,
+    notRecorded: notRecorded,
+    days: days,
+  );
+}
+
 // A single (Maktab, class) pair a teacher is actually assigned to -
 // loaded from public.teacher_class_assignments, not invented locally.
 class ClassAssignment {
@@ -1236,6 +1391,40 @@ class AppState extends ChangeNotifier {
   void setTeacherAttFromDb(String teacherName, String status) {
     teacherAtt[teacherName] = status;
     notifyListeners();
+  }
+
+  // ---------- Maktab Events / Holidays ----------
+  final List<MaktabEvent> events = [];
+
+  void setEventsFromDb(List<MaktabEvent> list) {
+    events
+      ..clear()
+      ..addAll(list);
+    notifyListeners();
+  }
+
+  void addEventLocal(MaktabEvent e) {
+    events.add(e);
+    notifyListeners();
+  }
+
+  void cancelEventLocal(MaktabEvent e, String reason) {
+    e.cancelled = true;
+    e.cancelReason = reason;
+    notifyListeners();
+  }
+
+  List<MaktabEvent> eventsFor(String madrasa, {bool includeCancelled = true}) =>
+      events.where((e) => e.madrasa == madrasa && (includeCancelled || !e.cancelled)).toList()..sort((a, b) => b.date.compareTo(a.date));
+
+  // The active Event/Holiday (if any) blocking normal attendance for this
+  // Maktab/date/batch - null means attendance can be submitted normally.
+  MaktabEvent? blockingEventFor(String madrasa, String date, String batch) {
+    for (final e in events) {
+      if (e.cancelled || e.madrasa != madrasa || e.date != date) continue;
+      if (e.batch == null || e.batch == batch) return e;
+    }
+    return null;
   }
 
   int submitAtt(List<Student> list) {
