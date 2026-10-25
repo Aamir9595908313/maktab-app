@@ -395,14 +395,23 @@ Future<void> loadAttendanceSessions() async {
   } catch (_) {}
 }
 
+// sentNow: this call did the claiming, caller should send the alert now.
+// alreadySent: some earlier call (individual submission, or an earlier
+// final submit) already claimed and sent it - correctly deduplicated, not
+// a failure, nothing to retry.
+// failed: the claim attempt itself errored (e.g. offline) - a real
+// candidate for "Retry failed notifications".
+enum NotifyOutcome { sentNow, alreadySent, failed }
+
 // Claims the one-time right to send the absence alert for one student on
 // one date by flipping student_attendance.absence_notified_at from null to
 // now() - the update only matches (and only one caller ever gets a
 // non-empty result back) the first time this is attempted for that exact
-// student+date, so a retried submission or a second device can never send
-// the same alert twice. Returns true only if this call did the claiming.
-Future<bool> _claimAbsenceNotification(Student s, String date) async {
-  if (s.dbId == null) return false;
+// student+date, so a retried submission, a second device, or the later
+// final batch submission re-covering a student already individually
+// submitted can never send the same alert twice.
+Future<NotifyOutcome> _claimAbsenceNotification(Student s, String date) async {
+  if (s.dbId == null) return NotifyOutcome.failed;
   try {
     final claimed = await sb
         .from('student_attendance')
@@ -411,10 +420,46 @@ Future<bool> _claimAbsenceNotification(Student s, String date) async {
         .eq('attendance_date', date)
         .isFilter('absence_notified_at', null)
         .select();
-    return claimed is List && claimed.isNotEmpty;
+    if (claimed is List && claimed.isNotEmpty) return NotifyOutcome.sentNow;
+    final row = await sb.from('student_attendance').select('absence_notified_at').eq('student_id', s.dbId as Object).eq('attendance_date', date).maybeSingle();
+    if (row != null && row['absence_notified_at'] != null) return NotifyOutcome.alreadySent;
+    return NotifyOutcome.failed;
   } catch (_) {
-    return false;
+    return NotifyOutcome.failed;
   }
+}
+
+// Individual per-student attendance submission (the Submit button next to
+// one student, independent of the rest of the class/batch): saves that
+// student's Present/Absent as a draft row right away - the same row the
+// later final submit_attendance_session call will lock - and, only for
+// Absent, claims and sends the parent notification immediately rather than
+// waiting for the final batch submission. Safe to call again for the same
+// student+date: the upsert simply re-saves the same row, and the
+// notification claim only succeeds once.
+Future<String?> submitOneAttendanceRemote(Student s, String status, {required String madrasa, required int cls}) async {
+  if (s.dbId == null) return 'This student is not saved to the database yet.';
+  try {
+    await sb.from('student_attendance').upsert({
+      'student_id': s.dbId,
+      'madrasa_id': _madrasaDbId(madrasa),
+      'class_id': _classDbId(cls),
+      'attendance_date': kToday,
+      'status': status == 'A' ? 'absent' : 'present',
+      'is_draft': true,
+    }, onConflict: 'student_id,attendance_date');
+  } on PostgrestException catch (e) {
+    return e.message;
+  } catch (_) {
+    return 'Could not save. Check your internet connection and try again.';
+  }
+  st.setAtt(s.id, status);
+  if (status == 'A' && s.status == 'Active') {
+    if (await _claimAbsenceNotification(s, kToday) == NotifyOutcome.sentNow) {
+      st.sendAbsenceNotification(s, madrasa, kToday);
+    }
+  }
+  return null;
 }
 
 // Result of a Verify and Submit Attendance attempt: a null error means the
@@ -488,22 +533,20 @@ Future<AttendanceSubmitResult> submitAttendanceSessionRemote({
     ),
   );
 
-  // Parent absence notifications: only for students marked Absent, only
-  // after this successful final submission, each one claimed in the
-  // database first so a retry or another device never double-sends.
+  // Parent absence notifications: only for students marked Absent. Most
+  // will already have been notified during their own individual Submit -
+  // that's the normal case now and is never treated as a failure or
+  // offered a retry; only an actual claim error counts as something to
+  // retry.
   var notified = 0;
   final retryNeeded = <Student>[];
   for (final s in absent) {
-    if (s.status != 'Active') continue;
-    final claimedHere = await _claimAbsenceNotification(s, date);
-    if (claimedHere) {
+    if (s.status != 'Active' || s.dbId == null) continue;
+    final outcome = await _claimAbsenceNotification(s, date);
+    if (outcome == NotifyOutcome.sentNow) {
       st.sendAbsenceNotification(s, madrasa, date);
       notified++;
-    } else if (s.dbId != null) {
-      // Either already notified earlier (not a failure - correctly
-      // deduplicated) or the claim call itself errored. Either way, it's
-      // safe to offer a retry: the same claim-first logic means a retry
-      // on an already-sent one is a harmless no-op, never a duplicate.
+    } else if (outcome == NotifyOutcome.failed) {
       retryNeeded.add(s);
     }
   }
@@ -517,7 +560,7 @@ Future<AttendanceSubmitResult> submitAttendanceSessionRemote({
 Future<int> retryAbsenceNotificationsRemote(List<Student> list, String madrasa, String date) async {
   var n = 0;
   for (final s in list) {
-    if (await _claimAbsenceNotification(s, date)) {
+    if (await _claimAbsenceNotification(s, date) == NotifyOutcome.sentNow) {
       st.sendAbsenceNotification(s, madrasa, date);
       n++;
     }
@@ -4588,8 +4631,8 @@ class _BulkImportStudentsState extends State<BulkImportStudents> {
   }
 }
 
-const String kAttendanceIncompleteMessage =
-    'Attendance cannot be submitted. Please verify the complete student list. Some students have not been marked Present or Absent.';
+const String kBatchIncompleteMessage =
+    'Batch submission cannot be completed. Please submit attendance for all remaining students before leaving the class.';
 
 class StudentAttendanceMark extends StatefulWidget {
   const StudentAttendanceMark({super.key});
@@ -4604,6 +4647,13 @@ class _StudentAttendanceMarkState extends State<StudentAttendanceMark> {
   // yet doesn't open already covered in red.
   final Set<String> _verifyAttempted = {};
   final Set<String> _busySessions = {};
+  // Local-only Present/Absent choice a Teacher has tapped for a student but
+  // not yet submitted - selecting never saves anything by itself (per the
+  // workflow: select, optionally record syllabus progress, then press that
+  // student's own Submit). Cleared for a student once it actually submits
+  // (st.todayAtt then becomes the source of truth for them).
+  final Map<int, String> _selected = {};
+  final Set<int> _submittingIds = {};
 
   @override
   Widget build(BuildContext context) => AnimatedBuilder(animation: st, builder: (context, _) => _body(context));
@@ -4676,36 +4726,69 @@ class _StudentAttendanceMarkState extends State<StudentAttendanceMark> {
             ]);
     }
 
-    Widget studentTile(String sessionKey, Student s) {
-      final v = st.todayAtt[s.id]; // null = Pending - never defaulted to Present.
-      final isPending = v == null;
+    Widget studentTile(String sessionKey, Student s, String batch, int cls, {required bool sessionFinalized}) {
+      final submitted = st.todayAtt[s.id]; // 'P'/'A' only once actually Submitted; null until then.
+      final isSubmitted = submitted != null;
+      final selected = _selected[s.id]; // local choice, before Submit
+      final isPending = !isSubmitted;
       final highlight = isPending && _verifyAttempted.contains(sessionKey);
+      final submitting = _submittingIds.contains(s.id);
+
+      Future<void> submitOne(String status) async {
+        setState(() => _submittingIds.add(s.id));
+        final err = await submitOneAttendanceRemote(s, status, madrasa: st.teacherMadrasa, cls: cls);
+        if (!mounted) return;
+        setState(() {
+          _submittingIds.remove(s.id);
+          if (err == null) _selected.remove(s.id);
+        });
+        if (err != null && context.mounted) toast(context, err);
+      }
+
+      Widget statusLine() {
+        if (isSubmitted) {
+          return Text('Submitted - ${submitted == 'P' ? 'Present' : 'Absent'}', style: TextStyle(fontWeight: FontWeight.bold, color: submitted == 'P' ? Colors.green : Colors.red));
+        }
+        return Text('Pending / Not Yet Marked', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.orange.shade800));
+      }
+
+      Widget controls() {
+        if (sessionFinalized || isSubmitted) return const SizedBox.shrink();
+        return Row(mainAxisSize: MainAxisSize.min, children: [
+          OutlinedButton(
+            style: OutlinedButton.styleFrom(backgroundColor: selected == 'P' ? Colors.green : null, foregroundColor: selected == 'P' ? Colors.white : Colors.green),
+            onPressed: submitting ? null : () => setState(() => _selected[s.id] = 'P'),
+            child: const Text('Present'),
+          ),
+          const SizedBox(width: 6),
+          OutlinedButton(
+            style: OutlinedButton.styleFrom(backgroundColor: selected == 'A' ? Colors.red : null, foregroundColor: selected == 'A' ? Colors.white : Colors.red),
+            onPressed: submitting ? null : () => setState(() => _selected[s.id] = 'A'),
+            child: const Text('Absent'),
+          ),
+          const SizedBox(width: 6),
+          ElevatedButton(
+            onPressed: (selected == null || submitting) ? null : () => submitOne(selected),
+            child: submitting ? const SizedBox(height: 16, width: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white)) : const Text('Submit'),
+          ),
+        ]);
+      }
+
       return Card(
         color: highlight ? const Color(0xFFFFE3E0) : null,
         shape: highlight ? RoundedRectangleBorder(borderRadius: BorderRadius.circular(8), side: const BorderSide(color: Colors.red, width: 1.4)) : null,
-        child: ListTile(
-          title: Row(children: [
-            Expanded(child: Text(s.name)),
-            if (highlight) const Icon(Icons.error, color: Colors.red, size: 18),
-          ]),
-          subtitle: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text(st.className(s.cls)),
-            Text(isPending ? 'Pending / Not Yet Marked' : (v == 'P' ? 'Present' : 'Absent'),
-                style: TextStyle(fontWeight: FontWeight.bold, color: isPending ? Colors.orange.shade800 : (v == 'P' ? Colors.green : Colors.red))),
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Row(children: [
+              Expanded(child: Text(s.name, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15))),
+              if (highlight) const Icon(Icons.error, color: Colors.red, size: 18),
+            ]),
+            Text(st.className(s.cls), style: const TextStyle(fontSize: 12.5, color: Colors.black54)),
+            statusLine(),
             progressRowFor(context, s),
-          ]),
-          trailing: Row(mainAxisSize: MainAxisSize.min, children: [
-            OutlinedButton(
-              style: OutlinedButton.styleFrom(backgroundColor: v == 'P' ? Colors.green : null, foregroundColor: v == 'P' ? Colors.white : Colors.green),
-              onPressed: () => setAttRemote(s, 'P'),
-              child: const Text('Present'),
-            ),
-            const SizedBox(width: 6),
-            OutlinedButton(
-              style: OutlinedButton.styleFrom(backgroundColor: v == 'A' ? Colors.red : null, foregroundColor: v == 'A' ? Colors.white : Colors.red),
-              onPressed: () => setAttRemote(s, 'A'),
-              child: const Text('Absent'),
-            ),
+            const SizedBox(height: 6),
+            controls(),
           ]),
         ),
       );
@@ -4715,9 +4798,12 @@ class _StudentAttendanceMarkState extends State<StudentAttendanceMark> {
       final sessionKey = '$batch||$cls';
       final present = students.where((s) => st.todayAtt[s.id] == 'P').toList();
       final absent = students.where((s) => st.todayAtt[s.id] == 'A').toList();
+      // A student counts as Pending until THEY have been individually
+      // Submitted - merely tapping Present/Absent (an unsaved local
+      // selection) does not remove them from this count.
       final pending = students.where((s) => st.todayAtt[s.id] == null).toList();
       final existing = st.sessionFor(st.teacherMadrasa, cls, batch, kToday);
-      final isCorrection = existing != null;
+      final finalized = existing != null;
 
       Future<void> markRemainingAbsent() async {
         if (pending.isEmpty) {
@@ -4730,7 +4816,7 @@ class _StudentAttendanceMarkState extends State<StudentAttendanceMark> {
             title: const Text('Mark Remaining Students Absent'),
             content: SingleChildScrollView(
               child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
-                const Text('These students are still Pending. Confirm to mark them Absent - students already marked Present are never changed.'),
+                const Text('These students are still Pending. Confirm to individually submit them as Absent (each one\'s parent is notified right away) - students already Submitted as Present are never changed.'),
                 const SizedBox(height: 8),
                 for (final s in pending) Text('- ${s.name}'),
               ]),
@@ -4744,65 +4830,46 @@ class _StudentAttendanceMarkState extends State<StudentAttendanceMark> {
         if (confirmed != true) return;
         // Re-read Pending right before applying, in case something changed
         // while the confirm dialog was open - never overwrites a student
-        // who was marked Present in the meantime.
+        // who was already Submitted in the meantime.
+        var n = 0;
         for (final s in pending) {
-          if (st.todayAtt[s.id] == null) await setAttRemote(s, 'A');
+          if (st.todayAtt[s.id] == null) {
+            final err = await submitOneAttendanceRemote(s, 'A', madrasa: st.teacherMadrasa, cls: cls);
+            if (err == null) n++;
+          }
         }
-        if (context.mounted) toast(context, '${pending.length} student(s) marked Absent.');
+        if (context.mounted) toast(context, '$n student(s) submitted as Absent.');
       }
 
       Future<void> verifyAndSubmit() async {
         if (pending.isNotEmpty) {
           setState(() => _verifyAttempted.add(sessionKey));
-          toast(context, kAttendanceIncompleteMessage);
+          toast(context, kBatchIncompleteMessage);
           return;
         }
-        String? reason;
-        if (isCorrection) {
-          final meta = existing!;
-          final ctrl = TextEditingController();
-          final ok = await showDialog<bool>(
-            context: context,
-            builder: (ctx) => AlertDialog(
-              title: const Text('Submit Correction'),
-              content: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text('This session was already submitted${meta.submittedByName != null ? ' by ${meta.submittedByName}' : ''}${meta.submittedAt != null ? ' on ${nice(fd(meta.submittedAt!))}' : ''}. Re-submitting now will be recorded as an authorized correction with an audit trail.'),
-                const SizedBox(height: 8),
-                TextField(controller: ctrl, decoration: const InputDecoration(labelText: 'Reason for correction (required)')),
-              ]),
-              actions: [
-                TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
-                ElevatedButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Submit Correction')),
-              ],
-            ),
-          );
-          if (ok != true) return;
-          if (ctrl.text.trim().isEmpty) {
-            if (context.mounted) toast(context, 'Enter a reason for this correction.');
-            return;
-          }
-          reason = ctrl.text.trim();
-        } else {
-          final confirmed = await showDialog<bool>(
-            context: context,
-            builder: (ctx) => AlertDialog(
-              title: const Text('Confirm Final Submission'),
-              content: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text('Total Expected Students: ${students.length}'),
-                Text('Present: ${present.length}'),
-                Text('Absent: ${absent.length}'),
-                const Text('Pending: 0'),
-                const SizedBox(height: 8),
-                const Text('Once submitted, this session is locked. Later changes require the authorized correction process.', style: TextStyle(fontSize: 12, color: Colors.black54)),
-              ]),
-              actions: [
-                TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
-                ElevatedButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Confirm Submission')),
-              ],
-            ),
-          );
-          if (confirmed != true) return;
+        if (finalized) {
+          toast(context, 'This batch has already been finalized.');
+          return;
         }
+        final confirmed = await showDialog<bool>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Text('Confirm Final Submission'),
+            content: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text('Total Expected Students: ${students.length}'),
+              Text('Submitted Present: ${present.length}'),
+              Text('Submitted Absent: ${absent.length}'),
+              const Text('Pending: 0'),
+              const SizedBox(height: 8),
+              const Text('This confirms every student has already been individually submitted and finalizes the batch. It will not resend any notifications already sent.', style: TextStyle(fontSize: 12, color: Colors.black54)),
+            ]),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+              ElevatedButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Confirm Submission')),
+            ],
+          ),
+        );
+        if (confirmed != true) return;
 
         setState(() => _busySessions.add(sessionKey));
         final res = await submitAttendanceSessionRemote(
@@ -4812,7 +4879,6 @@ class _StudentAttendanceMarkState extends State<StudentAttendanceMark> {
           date: kToday,
           present: present,
           absent: absent,
-          reason: reason,
         );
         if (!mounted) return;
         setState(() {
@@ -4823,7 +4889,8 @@ class _StudentAttendanceMarkState extends State<StudentAttendanceMark> {
           toast(context, res.error!);
           return;
         }
-        var msg = '${isCorrection ? 'Correction' : 'Attendance'} submitted for $batch batch - ${st.className(cls)}. ${res.notifiedCount} absence alert(s) sent.';
+        var msg = 'Batch finalized for $batch - ${st.className(cls)}.';
+        if (res.notifiedCount > 0) msg += ' ${res.notifiedCount} absence alert(s) sent.';
         if (res.retryNeeded.isNotEmpty) msg += ' ${res.retryNeeded.length} notification(s) need a retry.';
         toast(context, msg);
         if (res.retryNeeded.isNotEmpty) {
@@ -4859,26 +4926,38 @@ class _StudentAttendanceMarkState extends State<StudentAttendanceMark> {
               color: const Color(0xFFFFE3E0),
               child: Padding(
                 padding: const EdgeInsets.all(12),
-                child: Text(kAttendanceIncompleteMessage, style: const TextStyle(color: Colors.red, fontWeight: FontWeight.bold)),
+                child: Text(kBatchIncompleteMessage, style: const TextStyle(color: Colors.red, fontWeight: FontWeight.bold)),
               ),
             ),
-          Text('Present ${present.length} - Absent ${absent.length} - Pending ${pending.length} - Total ${students.length}', style: const TextStyle(color: Colors.black54, fontSize: 12.5)),
+          if (finalized)
+            Card(
+              color: const Color(0xFFEEF4E8),
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: Text(
+                  'Finalized${existing!.submittedByName != null ? ' by ${existing!.submittedByName}' : ''}${existing!.submittedAt != null ? ' on ${nice(fd(existing!.submittedAt!))}' : ''}. This batch is locked.',
+                  style: const TextStyle(color: kGreen, fontWeight: FontWeight.bold),
+                ),
+              ),
+            ),
+          Text('Submitted Present ${present.length} - Submitted Absent ${absent.length} - Pending ${pending.length} - Total ${students.length}', style: const TextStyle(color: Colors.black54, fontSize: 12.5)),
           const SizedBox(height: 6),
-          ...students.map((s) => studentTile(sessionKey, s)),
+          ...students.map((s) => studentTile(sessionKey, s, batch, cls, sessionFinalized: finalized)),
           const SizedBox(height: 4),
-          Wrap(spacing: 8, runSpacing: 8, children: [
-            OutlinedButton.icon(
-              icon: const Icon(Icons.playlist_remove),
-              label: const Text('Mark Remaining Students Absent'),
-              onPressed: busy ? null : markRemainingAbsent,
-            ),
-            ElevatedButton(
-              onPressed: busy ? null : verifyAndSubmit,
-              child: busy
-                  ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                  : Text(isCorrection ? 'Verify and Submit Correction' : 'Verify and Submit Attendance'),
-            ),
-          ]),
+          if (!finalized)
+            Wrap(spacing: 8, runSpacing: 8, children: [
+              OutlinedButton.icon(
+                icon: const Icon(Icons.playlist_remove),
+                label: const Text('Mark Remaining Students Absent'),
+                onPressed: busy ? null : markRemainingAbsent,
+              ),
+              ElevatedButton(
+                onPressed: busy ? null : verifyAndSubmit,
+                child: busy
+                    ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                    : const Text('Verify and Submit'),
+              ),
+            ]),
         ]),
       );
     }
@@ -4886,7 +4965,7 @@ class _StudentAttendanceMarkState extends State<StudentAttendanceMark> {
     return page([
       h('Mark attendance - ${st.teacherMadrasa} - ${nice(kToday)}', icon: Icons.event_available),
       const Text(
-        'Mark each student Present as they finish their performance, or leave them Pending until then. Attendance stays a draft until Verify and Submit - every student must be Present or Absent before that class/batch session can be submitted. Absent students\' parents get a WhatsApp alert only after a successful final submission.',
+        'Select Present or Absent for a student, then press that student\'s own Submit to save it - an absent student\'s parent is notified right away. A student stays Pending until Submitted. Once every expected student is Submitted, use Verify and Submit to finalize the batch.',
         style: TextStyle(color: Colors.black54, fontSize: 12.5),
       ),
       const SizedBox(height: 8),
