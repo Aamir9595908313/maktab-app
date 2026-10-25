@@ -9,7 +9,9 @@ import 'package:geolocator/geolocator.dart';
 import 'package:flutter_compass/flutter_compass.dart';
 import 'package:http/http.dart' as http;
 import 'package:printing/printing.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'prayer_notifications.dart';
+import 'state.dart' show AboutUsContent, AboutUsSection;
 
 const Color _kGreen = Color(0xFF054D00);
 const Color _kGold = Color(0xFFD4A72C);
@@ -751,35 +753,138 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
   }
 }
 
-// ---------------- Surah Yaseen (bundled, pre-rendered PDF) ----------------
-// Rendered ahead of time from the Uthmani-script source text into a
-// paginated A4 PDF using the Amiri Quran font (which correctly joins
-// Arabic letters and stacks the harakat/diacritics), then bundled as an
-// app asset. Shown here with the `printing` package's PdfPreview, which
-// displays/prints/shares the already-verified PDF as-is rather than
-// re-rendering the Arabic text through Flutter's own (non-shaping) text
-// layout - so the sacred text is guaranteed to look exactly as checked.
-class SurahYaseenScreen extends StatelessWidget {
+// ---------------- Surah Yaseen (bundled PDF, shown page by page) ----------------
+// The bundled assets/surah_yaseen.pdf is the source of truth; this screen
+// never extracts, re-shapes, or regenerates its Arabic text. Each page is
+// rasterized from the PDF itself (Printing.raster, from the `printing`
+// package) into an image and shown as-is, so what's on screen is a pixel-
+// for-pixel copy of the original page - fonts, line breaks, word
+// positions, verse-end symbols and page numbering included - with no
+// Flutter text layout involved at all. Previous/Next buttons, a page
+// number selector, and pinch-to-zoom (via InteractiveViewer) are added
+// purely as viewer chrome around that image; the content itself is
+// read-only.
+class SurahYaseenScreen extends StatefulWidget {
   const SurahYaseenScreen({super.key});
+  @override
+  State<SurahYaseenScreen> createState() => _SurahYaseenScreenState();
+}
 
-  Future<Uint8List> _loadPdf(BuildContext context) async {
-    final bytes = await rootBundle.load('assets/surah_yaseen.pdf');
-    return bytes.buffer.asUint8List();
+class _SurahYaseenScreenState extends State<SurahYaseenScreen> {
+  List<Uint8List>? _pages;
+  String? _error;
+  int _page = 0;
+  final _pageCtl = PageController();
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    try {
+      final bytes = await rootBundle.load('assets/surah_yaseen.pdf');
+      final pdfBytes = bytes.buffer.asUint8List();
+      final imgs = <Uint8List>[];
+      await for (final raster in Printing.raster(pdfBytes, dpi: 200)) {
+        imgs.add(await raster.toPng());
+      }
+      if (!mounted) return;
+      setState(() => _pages = imgs);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _error = 'Could not load Surah Yaseen: $e');
+    }
+  }
+
+  void _goTo(int i) {
+    final pages = _pages;
+    if (pages == null || i < 0 || i >= pages.length) return;
+    _pageCtl.animateToPage(i, duration: const Duration(milliseconds: 220), curve: Curves.easeOut);
+  }
+
+  Future<void> _pickPage() async {
+    final pages = _pages;
+    if (pages == null) return;
+    final n = await showDialog<int>(
+      context: context,
+      builder: (c) => SimpleDialog(
+        title: const Text('Go to page'),
+        children: [
+          SizedBox(
+            height: 260,
+            width: 220,
+            child: GridView.count(
+              crossAxisCount: 5,
+              children: [
+                for (var i = 0; i < pages.length; i++)
+                  InkWell(
+                    onTap: () => Navigator.pop(c, i),
+                    child: Container(
+                      margin: const EdgeInsets.all(3),
+                      alignment: Alignment.center,
+                      decoration: BoxDecoration(
+                        color: i == _page ? _kGreen : const Color(0xFFEFEFEF),
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: Text('${i + 1}', style: TextStyle(color: i == _page ? Colors.white : Colors.black87)),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+    if (n != null) _goTo(n);
+  }
+
+  @override
+  void dispose() {
+    _pageCtl.dispose();
+    super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
+    final pages = _pages;
     return Scaffold(
       appBar: guestAppBar(context, 'Surah Yaseen'),
-      body: PdfPreview(
-        build: (format) => _loadPdf(context),
-        canChangeOrientation: false,
-        canChangePageFormat: false,
-        canDebug: false,
-        useActions: true,
-        pdfFileName: 'Surah_Yaseen.pdf',
-        loadingWidget: const Center(child: CircularProgressIndicator(color: _kGreen)),
-      ),
+      body: _error != null
+          ? Center(child: Padding(padding: const EdgeInsets.all(20), child: Text(_error!, textAlign: TextAlign.center)))
+          : pages == null
+              ? const Center(child: CircularProgressIndicator(color: _kGreen))
+              : Column(
+                  children: [
+                    Expanded(
+                      child: PageView.builder(
+                        controller: _pageCtl,
+                        itemCount: pages.length,
+                        onPageChanged: (i) => setState(() => _page = i),
+                        itemBuilder: (c, i) => InteractiveViewer(
+                          minScale: 1,
+                          maxScale: 4,
+                          child: Center(child: Image.memory(pages[i], fit: BoxFit.contain)),
+                        ),
+                      ),
+                    ),
+                    SafeArea(
+                      top: false,
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            IconButton(icon: const Icon(Icons.chevron_left), tooltip: 'Previous page', onPressed: _page > 0 ? () => _goTo(_page - 1) : null),
+                            TextButton(onPressed: _pickPage, child: Text('Page ${_page + 1} of ${pages.length}')),
+                            IconButton(icon: const Icon(Icons.chevron_right), tooltip: 'Next page', onPressed: _page < pages.length - 1 ? () => _goTo(_page + 1) : null),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
     );
   }
 }
@@ -857,62 +962,111 @@ const List<_AboutSection> _aboutSections = [
   ),
 ];
 
-class AboutUsScreen extends StatelessWidget {
+// Shared renderer used both by this public/no-login screen and by the
+// Super Admin's "About Us Management" Preview (in main.dart), so there is
+// exactly one place that turns an AboutUsContent into widgets - editing
+// never has to guess how the published page will actually look.
+List<Widget> aboutUsBodyWidgets(AboutUsContent c) {
+  return [
+    Text(c.heading, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: _kGreen), textAlign: TextAlign.center),
+    if (c.subheading.isNotEmpty) ...[
+      const SizedBox(height: 4),
+      Text(c.subheading, style: const TextStyle(fontSize: 12, color: Colors.black54, fontStyle: FontStyle.italic), textAlign: TextAlign.center),
+    ],
+    const SizedBox(height: 18),
+    for (final s in c.sections)
+      Card(
+        child: Padding(
+          padding: const EdgeInsets.all(14),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(s.title, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15.5, color: _kGreen)),
+            const SizedBox(height: 8),
+            for (final p in s.paras) Padding(padding: const EdgeInsets.only(bottom: 8), child: Text(p, style: const TextStyle(fontSize: 13.5, height: 1.5))),
+            for (final b in s.bullets)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 5),
+                child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  const Text('•  ', style: TextStyle(color: _kGreen, fontWeight: FontWeight.bold)),
+                  Expanded(child: Text(b, style: const TextStyle(fontSize: 13.5, height: 1.4))),
+                ]),
+              ),
+          ]),
+        ),
+      ),
+    if (c.contactLines.isNotEmpty)
+      Card(
+        color: const Color(0xFFEEF4E8),
+        child: Padding(
+          padding: const EdgeInsets.all(14),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [for (final l in c.contactLines) Text(l, style: const TextStyle(fontWeight: FontWeight.bold))],
+          ),
+        ),
+      ),
+  ];
+}
+
+// Falls back to this bundled copy (the exact wording that used to be
+// hardcoded here) only if the database can't be reached - a guest on a
+// weak connection still sees the organization's information instead of a
+// blank page, and it is updated live from public.about_us the moment a
+// Super Admin edits it from Master Data > Super Admin Tools.
+AboutUsContent _aboutUsFallback() => AboutUsContent(
+      heading: 'फैज़े रज़ा ग्रुप की कारकर्दगी',
+      subheading: 'जहाँ में आम पैग़ामे शहे अहमद रज़ा करदे, पलट कर पीछे देखे फिर से तज्दीदे वफ़ा करदे',
+      sections: [for (final s in _aboutSections) AboutUsSection(title: s.title, paras: s.paras, bullets: s.bullets)],
+      contactLines: const [
+        'हमारा मरकज़ - बरेली शरीफ़',
+        'हमारी तंज़ीम - जमाअत रज़ाए मुस्तफा',
+        'हमारे क़ाइद - अल्लामा असजद रज़ा',
+        'मिनजानिब: फैज़े रज़ा ग्रुप मेहकर, ज़िला बुलढाणा, महाराष्ट्र',
+        '9595908313  /  7350827414  /  9975500521',
+      ],
+    );
+
+class AboutUsScreen extends StatefulWidget {
   const AboutUsScreen({super.key});
+  @override
+  State<AboutUsScreen> createState() => _AboutUsScreenState();
+}
+
+class _AboutUsScreenState extends State<AboutUsScreen> {
+  AboutUsContent? _remote;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  // Fetches directly from Supabase rather than through the app's main
+  // AppState, because this screen is reachable before login (the login
+  // screen's "No login needed for these tools" row) where that state
+  // hasn't been populated yet - the anon key can still read about_us
+  // since its RLS policy allows anon + authenticated select.
+  Future<void> _load() async {
+    try {
+      final row = await Supabase.instance.client.from('about_us').select().eq('id', 1).maybeSingle();
+      if (row == null || !mounted) return;
+      setState(() {
+        _remote = AboutUsContent(
+          heading: (row['heading'] as String?) ?? '',
+          subheading: (row['subheading'] as String?) ?? '',
+          sections: ((row['sections'] as List?) ?? const []).map((e) => AboutUsSection.fromJson(e as Map<String, dynamic>)).toList(),
+          contactLines: ((row['contact_lines'] as List?) ?? const []).map((e) => e.toString()).toList(),
+        );
+      });
+    } catch (_) {
+      // Offline or not reachable - the fallback below is shown instead.
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: guestAppBar(context, 'About Us'),
-      body: ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
-          const Text('फैज़े रज़ा ग्रुप की कारकर्दगी', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: _kGreen), textAlign: TextAlign.center),
-          const SizedBox(height: 4),
-          const Text('जहाँ में आम पैग़ामे शहे अहमद रज़ा करदे, पलट कर पीछे देखे फिर से तज्दीदे वफ़ा करदे', style: TextStyle(fontSize: 12, color: Colors.black54, fontStyle: FontStyle.italic), textAlign: TextAlign.center),
-          const SizedBox(height: 18),
-          for (final s in _aboutSections)
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(14),
-                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  Text(s.title, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15.5, color: _kGreen)),
-                  const SizedBox(height: 8),
-                  for (final p in s.paras) Padding(padding: const EdgeInsets.only(bottom: 8), child: Text(p, style: const TextStyle(fontSize: 13.5, height: 1.5))),
-                  for (final b in s.bullets)
-                    Padding(
-                      padding: const EdgeInsets.only(bottom: 5),
-                      child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                        const Text('•  ', style: TextStyle(color: _kGreen, fontWeight: FontWeight.bold)),
-                        Expanded(child: Text(b, style: const TextStyle(fontSize: 13.5, height: 1.4))),
-                      ]),
-                    ),
-                ]),
-              ),
-            ),
-          Card(
-            color: const Color(0xFFEEF4E8),
-            child: Padding(
-              padding: const EdgeInsets.all(14),
-              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: const [
-                Text('हमारा मरकज़ - बरेली शरीफ़', style: TextStyle(fontWeight: FontWeight.bold)),
-                Text('हमारी तंज़ीम - जमाअत रज़ाए मुस्तफा', style: TextStyle(fontWeight: FontWeight.bold)),
-                Text('हमारे क़ाइद - अल्लामा असजद रज़ा', style: TextStyle(fontWeight: FontWeight.bold)),
-              ]),
-            ),
-          ),
-          const SizedBox(height: 10),
-          const Card(
-            child: Padding(
-              padding: EdgeInsets.all(14),
-              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text('मिनजानिब: फैज़े रज़ा ग्रुप मेहकर, ज़िला बुलढाणा, महाराष्ट्र', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13.5)),
-                SizedBox(height: 4),
-                Text('9595908313  /  7350827414  /  9975500521', style: TextStyle(fontSize: 13.5, color: Colors.black54)),
-              ]),
-            ),
-          ),
-        ],
-      ),
+      body: ListView(padding: const EdgeInsets.all(16), children: aboutUsBodyWidgets(_remote ?? _aboutUsFallback())),
     );
   }
 }

@@ -447,6 +447,109 @@ class Note {
   Note(this.phone, this.text);
 }
 
+// ---------------- Notification Templates ----------------
+// Mirrors public.notification_templates: Super-Admin-editable message
+// formats for every notification channel actually used in the app
+// (Student Absent, Monthly Fee Reminder, Sadqa Peti Collection, Course
+// Completion, Event/Holiday). `variables` lists the {placeholder} names
+// this template supports; renderTemplate() below fills them in.
+class NotifTemplate {
+  String? dbId;
+  String key; // template_key, e.g. 'student_absent'
+  String name;
+  String notifType;
+  String channel; // whatsapp | sms | in_app
+  String body;
+  List<String> variables;
+  bool active;
+  String? updatedByName;
+  DateTime? updatedAt;
+  NotifTemplate({
+    this.dbId,
+    required this.key,
+    required this.name,
+    required this.notifType,
+    required this.channel,
+    required this.body,
+    required this.variables,
+    this.active = true,
+    this.updatedByName,
+    this.updatedAt,
+  });
+}
+
+// One saved-history snapshot of a template, shown in "Version history".
+class NotifTemplateVersion {
+  final String body;
+  final List<String> variables;
+  final bool active;
+  final String? changedByName;
+  final DateTime changedAt;
+  const NotifTemplateVersion({
+    required this.body,
+    required this.variables,
+    required this.active,
+    required this.changedByName,
+    required this.changedAt,
+  });
+}
+
+// Fills {placeholder} tokens in [body] from [vars]. Any placeholder the
+// template references but [vars] doesn't supply is left as-is and
+// reported in `missing`, so a Preview screen can warn about it instead
+// of silently sending a half-filled message.
+class RenderedTemplate {
+  final String text;
+  final List<String> missing;
+  const RenderedTemplate(this.text, this.missing);
+}
+
+RenderedTemplate renderTemplate(String body, Map<String, String> vars) {
+  final missing = <String>[];
+  final text = body.replaceAllMapped(RegExp(r'\{([a-zA-Z0-9_]+)\}'), (m) {
+    final key = m.group(1)!;
+    if (vars.containsKey(key) && vars[key]!.isNotEmpty) return vars[key]!;
+    missing.add(key);
+    return '{$key}';
+  });
+  return RenderedTemplate(text, missing);
+}
+
+// ---------------- About Us ----------------
+// Mirrors public.about_us: a single editable row replacing what used to
+// be hardcoded Hindi text directly in guest_tools.dart. Kept as titled
+// sections (each with optional paragraphs and/or bullet points) rather
+// than flat name/mission/vision fields, because that is the actual shape
+// of the organization's existing content and flattening it would lose
+// structure the Super Admin still needs to edit paragraph-by-paragraph.
+class AboutUsSection {
+  String title;
+  List<String> paras;
+  List<String> bullets;
+  AboutUsSection({required this.title, this.paras = const [], this.bullets = const []});
+  factory AboutUsSection.fromJson(Map<String, dynamic> j) => AboutUsSection(
+        title: (j['title'] as String?) ?? '',
+        paras: ((j['paras'] as List?) ?? const []).map((e) => e.toString()).toList(),
+        bullets: ((j['bullets'] as List?) ?? const []).map((e) => e.toString()).toList(),
+      );
+  Map<String, dynamic> toJson() => {'title': title, 'paras': paras, 'bullets': bullets};
+}
+
+class AboutUsContent {
+  String heading;
+  String subheading;
+  List<AboutUsSection> sections;
+  List<String> contactLines;
+  DateTime? updatedAt;
+  AboutUsContent({
+    required this.heading,
+    required this.subheading,
+    required this.sections,
+    required this.contactLines,
+    this.updatedAt,
+  });
+}
+
 class Pending {
   String name;
   String gender;
@@ -719,7 +822,14 @@ class AppState extends ChangeNotifier {
       e.completedOn = kToday;
       e.approvedBy = user?.name;
       final c = courseById(e.courseId);
-      notes.add(Note(s.parentPhone, '${c?.name ?? 'Add-on Course'} marked Completed for ${s.name} on ${nice(kToday)}.'));
+      final tpl = templateFor('course_completion');
+      final body = tpl?.body ?? '{course_name} marked Completed for {student_name} on {completion_date}.';
+      final r = renderTemplate(body, {
+        'course_name': c?.name ?? 'Add-on Course',
+        'student_name': s.name,
+        'completion_date': nice(kToday),
+      });
+      notes.add(Note(s.parentPhone, r.text));
     } else {
       e.status = 'in_progress';
       e.rejectReason = reason;
@@ -925,9 +1035,15 @@ class AppState extends ChangeNotifier {
     final key = '${s.id}|$date';
     if (_absenceSentKeys.contains(key)) return; // duplicate-prevention
     _absenceSentKeys.add(key);
-    whatsappLog.add(
-      '[${nice(date)}] To ${s.parentPhone}: "Dear Parent/Guardian, your child ${s.name} was marked absent at $madrasa on ${nice(date)}. Please contact the Maktab if you need any clarification. Thank you."',
-    );
+    final tpl = templateFor('student_absent');
+    final body = tpl?.body ??
+        'Dear Parent/Guardian, your child {student_name} was marked absent at {maktab_name} on {attendance_date}. Please contact the Maktab if you need any clarification. Thank you.';
+    final r = renderTemplate(body, {
+      'student_name': s.name,
+      'maktab_name': madrasa,
+      'attendance_date': nice(date),
+    });
+    whatsappLog.add('[${nice(date)}] To ${s.parentPhone}: "${r.text}"');
   }
 
   String? feeQrPath; // demo: display name/path only, no real file storage yet
@@ -952,9 +1068,16 @@ class AppState extends ChangeNotifier {
       final key = '${s.id}|$kToday';
       if (_feeReminderSentKeys.contains(key)) continue;
       _feeReminderSentKeys.add(key);
-      feeReminderLog.add(
-        '[${nice(kToday)}] To ${s.parentPhone}: "Dear Parent/Guardian, fee of Rs. 200 for ${due.join(', ')} is due for ${s.name}. QR code: ${feeQrPath ?? 'not uploaded yet'}."',
-      );
+      final tpl = templateFor('fee_reminder');
+      final body = tpl?.body ??
+          'Dear Parent/Guardian, fee of Rs. {fee_amount} for {due_months} is due for {student_name}. QR code: {qr_info}.';
+      final r = renderTemplate(body, {
+        'student_name': s.name,
+        'fee_amount': '200',
+        'due_months': due.join(', '),
+        'qr_info': feeQrPath ?? 'not uploaded yet',
+      });
+      feeReminderLog.add('[${nice(kToday)}] To ${s.parentPhone}: "${r.text}"');
       n++;
     }
     notifyListeners();
@@ -1425,6 +1548,45 @@ class AppState extends ChangeNotifier {
       if (e.batch == null || e.batch == batch) return e;
     }
     return null;
+  }
+
+  // ---------- Notification Templates ----------
+  // Loaded from public.notification_templates after login. Every real or
+  // simulated notification send site (absence, fee reminder, Sadqa Peti,
+  // course completion, event/holiday) looks up the active template for
+  // its key here instead of using a hardcoded string, falling back to the
+  // original hardcoded wording only if the row is somehow missing.
+  final List<NotifTemplate> notifTemplates = [];
+
+  void setNotifTemplatesFromDb(List<NotifTemplate> list) {
+    notifTemplates
+      ..clear()
+      ..addAll(list);
+    notifyListeners();
+  }
+
+  NotifTemplate? templateFor(String key) {
+    for (final t in notifTemplates) {
+      if (t.key == key && t.active) return t;
+    }
+    return null;
+  }
+
+  void updateNotifTemplateLocal(NotifTemplate t, {String? body, List<String>? variables, bool? active}) {
+    if (body != null) t.body = body;
+    if (variables != null) t.variables = variables;
+    if (active != null) t.active = active;
+    notifyListeners();
+  }
+
+  // ---------- About Us ----------
+  // Loaded from public.about_us - replaces the hardcoded _aboutSections
+  // list that used to live directly in guest_tools.dart.
+  AboutUsContent? aboutUs;
+
+  void setAboutUsFromDb(AboutUsContent c) {
+    aboutUs = c;
+    notifyListeners();
   }
 
   int submitAtt(List<Student> list) {

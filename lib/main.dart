@@ -200,6 +200,8 @@ Future<void> loadMasterData() async {
     await loadClassCourseAssignments();
     await loadAttendance();
     await loadEvents();
+    await loadNotifTemplates();
+    await loadAboutUsData();
     await loadSyllabusProgress();
     await loadBookProgress();
     await loadCourseEnrollments();
@@ -260,6 +262,8 @@ void subscribeRealtime() {
     'class_books',
     'book_progress',
     'maktab_events',
+    'notification_templates',
+    'about_us',
     'students',
     'teacher_class_assignments',
     'user_profiles',
@@ -442,6 +446,27 @@ Future<String?> addEventRemote(String madrasa, String name, String type, String 
       description: description.trim(),
       createdByName: st.user?.name,
     ));
+    // In-app notice to every active student's parent in this Maktab,
+    // rendered from the Super-Admin-configured 'event_holiday' template
+    // (requirement: use the configured template when an event/holiday is
+    // recorded). Deduplicated by phone so a household with two children
+    // here doesn't get the same note twice.
+    final tpl = st.templateFor('event_holiday');
+    final tplBody = tpl?.body ?? '{maktab_name}: {event_type} "{event_name}" recorded for {event_date}.';
+    final r = renderTemplate(tplBody, {
+      'maktab_name': madrasa,
+      'event_type': type[0].toUpperCase() + type.substring(1),
+      'event_name': n,
+      'event_date': nice(date),
+    });
+    final phones = <String>{
+      for (final s in st.students)
+        if (s.madrasa == madrasa && s.status == 'Active' && s.parentPhone.isNotEmpty) s.parentPhone,
+    };
+    for (final p in phones) {
+      st.notes.add(Note(p, r.text));
+    }
+    if (phones.isNotEmpty) st.notifyListeners();
     return null;
   } on PostgrestException catch (e) {
     // The unique index on (madrasa, date, batch) surfaces here as a plain
@@ -465,6 +490,127 @@ Future<String?> cancelEventRemote(MaktabEvent e, String reason) async {
     return null;
   } on PostgrestException catch (ex) {
     return 'Could not save: ${ex.message}';
+  } catch (_) {
+    return 'Could not save. Check your internet connection and try again.';
+  }
+}
+
+// ---------------- Notification Template Management (public.notification_templates) ----------------
+Future<void> loadNotifTemplates() async {
+  try {
+    final rows = await sb.from('notification_templates').select().order('notif_type');
+    final userIds = <String>{for (final r in (rows as List)) if (r['updated_by'] != null) r['updated_by'] as String};
+    final nameByUser = <String, String>{};
+    if (userIds.isNotEmpty) {
+      final profRows = await sb.from('user_profiles').select('id, name').inFilter('id', userIds.toList());
+      for (final r in (profRows as List)) {
+        nameByUser[r['id'] as String] = (r['name'] as String?) ?? '';
+      }
+    }
+    st.setNotifTemplatesFromDb([
+      for (final r in rows)
+        NotifTemplate(
+          dbId: r['id'] as String?,
+          key: (r['template_key'] as String?) ?? '',
+          name: (r['name'] as String?) ?? '',
+          notifType: (r['notif_type'] as String?) ?? '',
+          channel: (r['channel'] as String?) ?? 'in_app',
+          body: (r['body'] as String?) ?? '',
+          variables: ((r['variables'] as List?) ?? const []).map((e) => e.toString()).toList(),
+          active: (r['is_active'] as bool?) ?? true,
+          updatedByName: nameByUser[r['updated_by'] as String?],
+          updatedAt: DateTime.tryParse((r['updated_at'] as String?) ?? ''),
+        ),
+    ]);
+  } catch (_) {}
+}
+
+// Only a Super Admin can succeed here - enforced again by the
+// fn_notification_template_audit trigger (backend, not just this screen
+// being hidden from other roles), which also snapshots the previous body
+// into notification_template_history automatically.
+Future<String?> updateNotifTemplateRemote(NotifTemplate t, {String? body, List<String>? variables, bool? active}) async {
+  if (t.dbId == null) return 'This template is not saved to the database yet.';
+  final patch = <String, dynamic>{};
+  if (body != null) patch['body'] = body;
+  if (variables != null) patch['variables'] = variables;
+  if (active != null) patch['is_active'] = active;
+  if (patch.isEmpty) return null;
+  try {
+    await sb.from('notification_templates').update(patch).eq('id', t.dbId as Object);
+    st.updateNotifTemplateLocal(t, body: body, variables: variables, active: active);
+    return null;
+  } on PostgrestException catch (e) {
+    return 'Could not save: ${e.message}';
+  } catch (_) {
+    return 'Could not save. Check your internet connection and try again.';
+  }
+}
+
+Future<List<NotifTemplateVersion>> loadTemplateHistory(NotifTemplate t) async {
+  if (t.dbId == null) return const [];
+  try {
+    final rows = await sb
+        .from('notification_template_history')
+        .select()
+        .eq('template_id', t.dbId as Object)
+        .order('changed_at', ascending: false);
+    final userIds = <String>{for (final r in (rows as List)) if (r['changed_by'] != null) r['changed_by'] as String};
+    final nameByUser = <String, String>{};
+    if (userIds.isNotEmpty) {
+      final profRows = await sb.from('user_profiles').select('id, name').inFilter('id', userIds.toList());
+      for (final r in (profRows as List)) {
+        nameByUser[r['id'] as String] = (r['name'] as String?) ?? '';
+      }
+    }
+    return [
+      for (final r in rows)
+        NotifTemplateVersion(
+          body: (r['body'] as String?) ?? '',
+          variables: ((r['variables'] as List?) ?? const []).map((e) => e.toString()).toList(),
+          active: (r['is_active'] as bool?) ?? true,
+          changedByName: nameByUser[r['changed_by'] as String?],
+          changedAt: DateTime.tryParse((r['changed_at'] as String?) ?? '') ?? DateTime.now(),
+        ),
+    ];
+  } catch (_) {
+    return const [];
+  }
+}
+
+// ---------------- About Us (public.about_us) ----------------
+Future<void> loadAboutUsData() async {
+  try {
+    final row = await sb.from('about_us').select().eq('id', 1).maybeSingle();
+    if (row == null) return;
+    st.setAboutUsFromDb(AboutUsContent(
+      heading: (row['heading'] as String?) ?? '',
+      subheading: (row['subheading'] as String?) ?? '',
+      sections: ((row['sections'] as List?) ?? const [])
+          .map((e) => AboutUsSection.fromJson(e as Map<String, dynamic>))
+          .toList(),
+      contactLines: ((row['contact_lines'] as List?) ?? const []).map((e) => e.toString()).toList(),
+      updatedAt: DateTime.tryParse((row['updated_at'] as String?) ?? ''),
+    ));
+  } catch (_) {}
+}
+
+// Only a Super Admin can succeed - enforced again by the about_us_super_write
+// RLS policy at the database level, not just by hiding the edit screen.
+Future<String?> updateAboutUsRemote(AboutUsContent c) async {
+  try {
+    await sb.from('about_us').update({
+      'heading': c.heading,
+      'subheading': c.subheading,
+      'sections': [for (final s in c.sections) s.toJson()],
+      'contact_lines': c.contactLines,
+      'updated_by': sb.auth.currentUser?.id,
+      'updated_at': DateTime.now().toIso8601String(),
+    }).eq('id', 1);
+    st.setAboutUsFromDb(c);
+    return null;
+  } on PostgrestException catch (e) {
+    return 'Could not save: ${e.message}';
   } catch (_) {
     return 'Could not save. Check your internet connection and try again.';
   }
@@ -4572,6 +4718,365 @@ class EventHistoryView extends StatelessWidget {
   }
 }
 
+// ---------------- About Us Management (Super Admin) ----------------
+// Edits the same public.about_us row the public/no-login "About Us"
+// screen (guest_tools.dart) reads, as structured sections (title +
+// paragraphs and/or bullets) rather than flat fields, matching the shape
+// of the organization's actual existing content instead of flattening it.
+class _EditSection {
+  final TextEditingController title;
+  final TextEditingController paras; // one paragraph per blank-line-separated block
+  final TextEditingController bullets; // one bullet per line
+  _EditSection({String title = '', String paras = '', String bullets = ''})
+      : title = TextEditingController(text: title),
+        paras = TextEditingController(text: paras),
+        bullets = TextEditingController(text: bullets);
+  AboutUsSection toSection() => AboutUsSection(
+        title: title.text.trim(),
+        paras: paras.text.split('\n\n').map((p) => p.trim()).where((p) => p.isNotEmpty).toList(),
+        bullets: bullets.text.split('\n').map((b) => b.trim()).where((b) => b.isNotEmpty).toList(),
+      );
+}
+
+class AboutUsManagementView extends StatefulWidget {
+  const AboutUsManagementView({super.key});
+  @override
+  State<AboutUsManagementView> createState() => _AboutUsManagementViewState();
+}
+
+class _AboutUsManagementViewState extends State<AboutUsManagementView> {
+  final heading = TextEditingController();
+  final subheading = TextEditingController();
+  final contact = TextEditingController();
+  final List<_EditSection> sections = [];
+  bool _initialized = false;
+  bool busy = false;
+  String err = '';
+
+  void _loadFrom(AboutUsContent c) {
+    heading.text = c.heading;
+    subheading.text = c.subheading;
+    contact.text = c.contactLines.join('\n');
+    sections
+      ..clear()
+      ..addAll([for (final s in c.sections) _EditSection(title: s.title, paras: s.paras.join('\n\n'), bullets: s.bullets.join('\n'))]);
+  }
+
+  AboutUsContent _current() => AboutUsContent(
+        heading: heading.text.trim(),
+        subheading: subheading.text.trim(),
+        sections: [for (final s in sections) s.toSection()],
+        contactLines: contact.text.split('\n').map((l) => l.trim()).where((l) => l.isNotEmpty).toList(),
+      );
+
+  @override
+  void initState() {
+    super.initState();
+    if (st.aboutUs == null) {
+      loadAboutUsData().then((_) {
+        if (mounted) setState(() {});
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!_initialized && st.aboutUs != null) {
+      _loadFrom(st.aboutUs!);
+      _initialized = true;
+    }
+    if (st.aboutUs == null) {
+      return page([h('About Us Management', icon: Icons.info_outline), const Center(child: Padding(padding: EdgeInsets.all(24), child: CircularProgressIndicator()))]);
+    }
+    return page([
+      h('About Us Management', icon: Icons.info_outline),
+      const Text('Shown on the no-login "About Us" screen and in the app drawer. Only a Super Admin can edit this.', style: TextStyle(color: Colors.black54, fontSize: 12.5)),
+      field(heading, 'Heading'),
+      field(subheading, 'Subheading (optional)'),
+      const SizedBox(height: 8),
+      ...sections.asMap().entries.map((entry) {
+        final i = entry.key;
+        final s = entry.value;
+        return Card(
+          child: Padding(
+            padding: const EdgeInsets.all(10),
+            child: Column(children: [
+              Row(children: [
+                Expanded(child: Text('Section ${i + 1}', style: const TextStyle(fontWeight: FontWeight.bold))),
+                IconButton(icon: const Icon(Icons.delete_outline, color: Colors.red), onPressed: () => setState(() => sections.removeAt(i))),
+              ]),
+              field(s.title, 'Section title'),
+              field(s.paras, 'Paragraphs (separate paragraphs with a blank line)', lines: 4),
+              field(s.bullets, 'Bullet points (one per line, optional)', lines: 3),
+            ]),
+          ),
+        );
+      }),
+      OutlinedButton.icon(
+        icon: const Icon(Icons.add),
+        label: const Text('Add section'),
+        onPressed: () => setState(() => sections.add(_EditSection())),
+      ),
+      const SizedBox(height: 10),
+      field(contact, 'Contact / footer lines (one per line)', lines: 4),
+      if (err.isNotEmpty) msgBox(err),
+      const SizedBox(height: 10),
+      Row(children: [
+        Expanded(
+          child: OutlinedButton(
+            onPressed: () => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => Scaffold(
+                  appBar: AppBar(title: const Text('Preview')),
+                  body: ListView(padding: const EdgeInsets.all(16), children: aboutUsBodyWidgets(_current())),
+                ))),
+            child: const Text('Preview'),
+          ),
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: OutlinedButton(
+            onPressed: () {
+              if (st.aboutUs != null) _loadFrom(st.aboutUs!);
+              setState(() => err = '');
+            },
+            child: const Text('Cancel'),
+          ),
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: ElevatedButton(
+            onPressed: busy
+                ? null
+                : () async {
+                    if (heading.text.trim().isEmpty) {
+                      setState(() => err = 'Heading is required.');
+                      return;
+                    }
+                    setState(() {
+                      busy = true;
+                      err = '';
+                    });
+                    final e = await updateAboutUsRemote(_current());
+                    if (!mounted) return;
+                    setState(() => busy = false);
+                    if (e != null) {
+                      setState(() => err = e);
+                    } else {
+                      toast(context, 'About Us updated.');
+                    }
+                  },
+            child: busy ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2)) : const Text('Save'),
+          ),
+        ),
+      ]),
+    ]);
+  }
+}
+
+// ---------------- Notification Template Management (Super Admin) ----------------
+class NotifTemplateListView extends StatelessWidget {
+  const NotifTemplateListView({super.key});
+  @override
+  Widget build(BuildContext context) => AnimatedBuilder(animation: st, builder: (context, _) => _body(context));
+
+  Widget _body(BuildContext context) {
+    final list = [...st.notifTemplates]..sort((a, b) => a.notifType.compareTo(b.notifType));
+    return page([
+      h('Notification Templates', icon: Icons.campaign),
+      const Text(
+        'Review, correct, and preview the message format for every notification the app sends, before it reaches parents, students, or teachers. Only a Super Admin can edit these.',
+        style: TextStyle(color: Colors.black54, fontSize: 12.5),
+      ),
+      if (list.isEmpty) const Text('No templates found yet.'),
+      ...list.map((t) => Card(
+            child: ListTile(
+              title: Text(t.name),
+              subtitle: Text(
+                '${t.notifType} - ${t.channel.toUpperCase()} - ${t.active ? 'Active' : 'Inactive'}'
+                '${t.updatedAt != null ? ' - updated ${nice(fd(t.updatedAt!))}' : ''}'
+                '${t.updatedByName != null && t.updatedByName!.isNotEmpty ? ' by ${t.updatedByName}' : ''}',
+                style: const TextStyle(fontSize: 12),
+              ),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => pushPage(context, t.name, NotifTemplateEditView(dbId: t.dbId!)),
+            ),
+          )),
+    ]);
+  }
+}
+
+class NotifTemplateEditView extends StatefulWidget {
+  final String dbId;
+  const NotifTemplateEditView({super.key, required this.dbId});
+  @override
+  State<NotifTemplateEditView> createState() => _NotifTemplateEditViewState();
+}
+
+class _NotifTemplateEditViewState extends State<NotifTemplateEditView> {
+  final body = TextEditingController();
+  bool _initialized = false;
+  bool busy = false;
+  String err = '';
+  Map<String, String> sampleValues = {};
+
+  NotifTemplate? get t {
+    for (final x in st.notifTemplates) {
+      if (x.dbId == widget.dbId) return x;
+    }
+    return null;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final tpl = t;
+    if (tpl == null) return page([const Text('Template not found.')]);
+    if (!_initialized) {
+      body.text = tpl.body;
+      sampleValues = {for (final v in tpl.variables) v: ''};
+      _initialized = true;
+    }
+    final preview = renderTemplate(body.text, sampleValues);
+    return page([
+      h(tpl.name, icon: Icons.campaign),
+      Text('${tpl.notifType} - ${tpl.channel.toUpperCase()}', style: const TextStyle(color: Colors.black54, fontSize: 12.5)),
+      const SizedBox(height: 8),
+      field(body, 'Message text', lines: 8),
+      const SizedBox(height: 4),
+      const Text('Supported variables - tap to insert at the end of the message:', style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold)),
+      Wrap(
+        spacing: 6,
+        runSpacing: 6,
+        children: [
+          for (final v in tpl.variables)
+            ActionChip(
+              label: Text('{$v}'),
+              onPressed: () => setState(() {
+                body.text = '${body.text}{$v}';
+              }),
+            ),
+        ],
+      ),
+      const SizedBox(height: 14),
+      SwitchListTile(
+        title: const Text('Active'),
+        subtitle: Text(tpl.active ? 'This template is currently used when the notification is sent.' : 'Inactive - the app falls back to its built-in default wording.'),
+        value: tpl.active,
+        onChanged: (v) async {
+          final e = await updateNotifTemplateRemote(tpl, active: v);
+          if (context.mounted && e != null) toast(context, e);
+        },
+      ),
+      const Divider(),
+      h('Preview', icon: Icons.visibility),
+      const Text('Enter sample values to see exactly what will be sent:', style: TextStyle(fontSize: 12.5, color: Colors.black54)),
+      for (final v in tpl.variables)
+        Padding(
+          padding: const EdgeInsets.symmetric(vertical: 4),
+          child: TextField(
+            decoration: InputDecoration(labelText: v, isDense: true),
+            onChanged: (val) => setState(() => sampleValues[v] = val),
+          ),
+        ),
+      Card(
+        color: const Color(0xFFEEF4E8),
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            const Text('Rendered message', style: TextStyle(fontWeight: FontWeight.bold)),
+            const SizedBox(height: 6),
+            Text(preview.text),
+            if (preview.missing.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              Text('Missing value for: ${preview.missing.join(', ')}', style: const TextStyle(color: Colors.red, fontSize: 12.5)),
+            ],
+          ]),
+        ),
+      ),
+      const SizedBox(height: 4),
+      const Text(
+        'This is a preview only - nothing is sent from here. Saving a template never sends a real notification by itself; it only changes the wording used the next time that workflow actually runs.',
+        style: TextStyle(fontSize: 11.5, color: Colors.black45, fontStyle: FontStyle.italic),
+      ),
+      const SizedBox(height: 14),
+      if (err.isNotEmpty) msgBox(err),
+      Row(children: [
+        Expanded(
+          child: OutlinedButton(
+            onPressed: () => setState(() {
+              body.text = tpl.body;
+              err = '';
+            }),
+            child: const Text('Cancel'),
+          ),
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: OutlinedButton(
+            onPressed: () async {
+              final hist = await loadTemplateHistory(tpl);
+              if (!context.mounted) return;
+              if (hist.isEmpty) {
+                toast(context, 'No earlier versions saved yet.');
+                return;
+              }
+              showDialog<void>(
+                context: context,
+                builder: (c) => AlertDialog(
+                  title: const Text('Version history'),
+                  content: SizedBox(
+                    width: 360,
+                    child: ListView(
+                      shrinkWrap: true,
+                      children: [
+                        for (final v in hist)
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 10),
+                            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                              Text('${fmtDateTime(v.changedAt.toIso8601String())}${v.changedByName != null && v.changedByName!.isNotEmpty ? ' - ${v.changedByName}' : ''}',
+                                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12.5)),
+                              Text(v.body, style: const TextStyle(fontSize: 12.5)),
+                            ]),
+                          ),
+                      ],
+                    ),
+                  ),
+                  actions: [TextButton(onPressed: () => Navigator.pop(c), child: const Text('Close'))],
+                ),
+              );
+            },
+            child: const Text('History'),
+          ),
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: ElevatedButton(
+            onPressed: busy
+                ? null
+                : () async {
+                    if (body.text.trim().isEmpty) {
+                      setState(() => err = 'Message text cannot be empty.');
+                      return;
+                    }
+                    setState(() {
+                      busy = true;
+                      err = '';
+                    });
+                    final e = await updateNotifTemplateRemote(tpl, body: body.text);
+                    if (!mounted) return;
+                    setState(() => busy = false);
+                    if (e != null) {
+                      setState(() => err = e);
+                    } else {
+                      toast(context, 'Template saved.');
+                    }
+                  },
+            child: busy ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2)) : const Text('Save'),
+          ),
+        ),
+      ]),
+    ]);
+  }
+}
+
 // Teacher's "Syllabus Progress" screen (requirement 1): the roster of
 // students in the Teacher's own Maktab, each with their admission/
 // identifier key, class, and overall syllabus completion - tapping one
@@ -5994,6 +6499,7 @@ class _MasterDataViewState extends State<MasterDataView> {
     // admin/super only, same access they've always had.
     final u = st.user;
     final canManageOrg = u?.role == 'admin' || u?.role == 'super';
+    final isSuper = u?.role == 'super';
     return AnimatedBuilder(
       animation: st,
       builder: (context, _) => page([
@@ -6043,6 +6549,20 @@ class _MasterDataViewState extends State<MasterDataView> {
         onPressed: () => pushPage(context, 'Event / Holiday history', const EventHistoryView()),
       ),
       ], // end canManageOrg (Maktab)
+      if (isSuper) ...[
+        h('Super Admin Tools', icon: Icons.admin_panel_settings),
+        OutlinedButton.icon(
+          icon: const Icon(Icons.info_outline),
+          label: const Text('About Us Management'),
+          onPressed: () => pushPage(context, 'About Us Management', const AboutUsManagementView()),
+        ),
+        const SizedBox(height: 8),
+        OutlinedButton.icon(
+          icon: const Icon(Icons.campaign),
+          label: const Text('Notification Template Management'),
+          onPressed: () => pushPage(context, 'Notification Templates', const NotifTemplateListView()),
+        ),
+      ], // end isSuper (Super Admin Tools)
       h('Classes', icon: Icons.menu_book),
       const Text(
         'Classes 1-3 (Noorani Qaeda, Muallimul Qur\'an Qaeda, Hafeezi Qur\'an) are fixed: they cannot be renamed, deleted, or have their book/Para details changed. Class creation and editing is only open from Class 4 onward.',
