@@ -2748,7 +2748,7 @@ Widget msgBox(String text, {MsgKind kind = MsgKind.error}) {
 // image assets to bundle or keep in sync. Tiles whose icon isn't in this
 // (deliberately covering every icon actually passed to tile() in this
 // codebase) map fall back to the plain Material icon further down.
-const Map<IconData, String> _kTileEmoji = {
+final Map<IconData, String> _kTileEmoji = {
   Icons.search: '🔍',
   Icons.storage: '🗄️',
   Icons.account_tree: '🌳',
