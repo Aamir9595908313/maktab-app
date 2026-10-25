@@ -1824,6 +1824,77 @@ Future<String?> setTeacherActiveRemote(Account a, bool v) async {
   }
 }
 
+// Edits an already-real teacher's name, phone number and Maktab assignment.
+// Master Data previously could only toggle a teacher Active/Inactive once
+// created - this is the missing "update the detail" path, Super Admin only
+// (the 'update-teacher' Edge Function itself also enforces that, so this
+// client-side check is just a faster failure, not the real gate). Changing
+// the phone number updates the actual sign-in identity (not just the
+// profile row), which is why this has to go through a service-role Edge
+// Function rather than a plain table update, the same reason
+// addTeacherInviteRemote/create-teacher does.
+Future<String?> updateTeacherRemote(Account a, {required String name, required String phone, required List<String> madrasaNames}) async {
+  if (st.user?.role != 'super') return 'Only a Super Admin can edit a teacher\'s details.';
+  if (a.dbId == null) return "This teacher hasn't logged in yet - edit the pending invite instead.";
+  final n = name.trim();
+  if (n.isEmpty) return 'Enter the name';
+  final p = digits(phone);
+  if (p.length != 10) return 'Enter a 10-digit mobile number';
+  if (madrasaNames.isEmpty) return 'Choose at least one Maktab';
+  try {
+    final res = await sb.functions.invoke('update-teacher', body: {
+      'teacherId': a.dbId,
+      'name': n,
+      'phone': p,
+      'madrasaNames': madrasaNames,
+    });
+    final data = res.data;
+    if (data is Map && data['ok'] == true) {
+      await loadTeachers();
+      return null;
+    }
+    return (data is Map ? data['error'] as String? : null) ?? 'Could not save the teacher.';
+  } on FunctionException catch (e) {
+    final details = e.details;
+    final msg = (details is Map ? details['error'] as String? : null);
+    return msg ?? 'Could not save: ${e.reasonPhrase ?? e.toString()}';
+  } catch (_) {
+    return 'Could not save. Check your internet connection and try again.';
+  }
+}
+
+// Edits a teacher who has only been invited, not yet logged in
+// (public.pending_role_invites, keyed by phone). If the phone number is
+// changing, the row has to move to the new key - delete-then-upsert so a
+// failed insert never leaves the invite silently deleted.
+Future<String?> updatePendingTeacherInviteRemote(Account a, {required String name, required String phone, required List<String> madrasaNames}) async {
+  final n = name.trim();
+  if (n.isEmpty) return 'Enter the name';
+  final p = digits(phone);
+  if (p.length != 10) return 'Enter a 10-digit mobile number';
+  if (madrasaNames.isEmpty) return 'Choose at least one Maktab';
+  final oldPhoneStored = '91${digits(a.phone)}';
+  final newPhoneStored = '91$p';
+  try {
+    await sb.from('pending_role_invites').upsert({
+      'phone': newPhoneStored,
+      'base_role': 'teacher',
+      'full_name': n,
+      'madrasa_names': madrasaNames,
+    });
+    if (newPhoneStored != oldPhoneStored) {
+      await sb.from('pending_role_invites').delete().eq('phone', oldPhoneStored);
+    }
+    await loadTeachers();
+    return null;
+  } on PostgrestException catch (e) {
+    if (e.code == '42501') return 'Only a Super Admin can edit an invite.';
+    return 'Could not save: ${e.message}';
+  } catch (_) {
+    return 'Could not save. Check your internet connection and try again.';
+  }
+}
+
 // Inserts a new row into public.students and, on success, adds it to the
 // local list with its real database id attached. Same validation as the
 // old local-only addStudent(), plus it needs the chosen Madrasa and Class
@@ -2819,6 +2890,55 @@ Future<void> editStudentDialog(BuildContext context, Student s) async {
   if (context.mounted) toast(context, e ?? 'Student updated.');
 }
 
+// Lets a Super Admin change a teacher's name, phone number and which
+// Makatib they teach at from Master Data > Teachers - previously this
+// screen could only toggle a teacher Active/Inactive once created, with no
+// way to fix a typo'd name/number or hand them a different Maktab. Works
+// for both a real account (a.dbId != null, saved via the update-teacher
+// Edge Function) and a still-pending invite (saved directly to
+// pending_role_invites) - same dialog either way, just a different save
+// call underneath.
+Future<void> editTeacherDialog(BuildContext context, Account a) async {
+  final name = TextEditingController(text: a.name);
+  final phone = TextEditingController(text: digits(a.phone));
+  final selected = <String>{...a.teachMadrasas};
+  final result = await showDialog<bool>(
+    context: context,
+    builder: (ctx) => StatefulBuilder(
+      builder: (ctx, setD) => AlertDialog(
+        title: const Text('Edit teacher'),
+        content: SingleChildScrollView(
+          child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+            TextField(controller: name, decoration: const InputDecoration(labelText: 'Name')),
+            const SizedBox(height: 8),
+            TextField(controller: phone, decoration: const InputDecoration(labelText: 'Mobile number (10 digits)'), keyboardType: TextInputType.phone),
+            const SizedBox(height: 10),
+            const Text('Makatib this teacher will teach in:', style: TextStyle(color: Colors.black54, fontSize: 12.5)),
+            const SizedBox(height: 4),
+            Wrap(spacing: 4, children: [
+              for (final m in <String>{...st.activeMadrasaNames, ...a.teachMadrasas})
+                FilterChip(
+                  label: Text(st.activeMadrasaNames.contains(m) ? m : '$m (inactive)'),
+                  selected: selected.contains(m),
+                  onSelected: (v) => setD(() => v ? selected.add(m) : selected.remove(m)),
+                ),
+            ]),
+          ]),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          ElevatedButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Save')),
+        ],
+      ),
+    ),
+  );
+  if (result != true) return;
+  final e = a.dbId == null
+      ? await updatePendingTeacherInviteRemote(a, name: name.text, phone: phone.text, madrasaNames: selected.toList())
+      : await updateTeacherRemote(a, name: name.text, phone: phone.text, madrasaNames: selected.toList());
+  if (context.mounted) toast(context, e ?? 'Teacher updated.');
+}
+
 Widget field(TextEditingController c, String label, {bool number = false, int lines = 1, bool autofocus = false}) => Padding(
       padding: const EdgeInsets.only(bottom: 8),
       child: TextField(
@@ -3155,7 +3275,7 @@ List<AppTab> tabsFor(Account u) {
     case 'admin':
       return [
         AppTab('Home', Icons.home, () => const StaffHome()),
-        AppTab('Master Data', Icons.storage, () => const MasterDataView()),
+        AppTab('Master Data', Icons.storage, () => const MasterDataDashboard()),
         AppTab('Approvals', Icons.how_to_reg, () => const ApprovalsView()),
         AppTab('Teachers & Leave', Icons.groups, () => const TeachersView()),
         AppTab('Fees', Icons.payments, () => const FeesAdmin()),
@@ -3167,7 +3287,7 @@ List<AppTab> tabsFor(Account u) {
     case 'super':
       return [
         AppTab('Home', Icons.home, () => const StaffHome()),
-        AppTab('Master Data', Icons.storage, () => const MasterDataView()),
+        AppTab('Master Data', Icons.storage, () => const MasterDataDashboard()),
         AppTab('Classes & Syllabus', Icons.menu_book, () => const SuperSyllabus()),
         AppTab('All Students', Icons.school, () => const StudentsView()),
         AppTab('Teachers & Leave', Icons.groups, () => const TeachersView()),
@@ -4229,7 +4349,7 @@ class _StaffHomeState extends State<StaffHome> {
         banner(),
         grid([
           tile('Search', 'Phone, name, Maktab', icon: Icons.search, onTap: () => pushPage(context, 'Search', const GlobalSearchView())),
-          tile('Manage Maktab', '${st.madrasas.length}', icon: Icons.account_balance, onTap: () => pushPage(context, 'Manage Maktab', const MasterDataView())),
+          tile('Master Data', '${st.madrasas.length} Makatib', icon: Icons.storage, onTap: () => pushPage(context, 'Master Data', const MasterDataDashboard())),
           // Browse by Maktab, with each student's live attendance/syllabus
           // status (StudentDetail's Status/Syllabus/Attendance tabs) -
           // distinct from the plain "Students" tile below, which is the
@@ -4288,6 +4408,7 @@ class _StaffHomeState extends State<StaffHome> {
         banner(),
         grid([
           tile('Search', 'Phone, name, Maktab', icon: Icons.search, onTap: () => pushPage(context, 'Search', const GlobalSearchView())),
+          tile('Master Data', '${st.madrasas.length} Makatib', icon: Icons.storage, onTap: () => pushPage(context, 'Master Data', const MasterDataDashboard())),
           tile('Students', '${myStudentsActive.length}', icon: Icons.groups, onTap: () => pushPage(context, 'Students', const StudentsView())),
           tile('Teachers today', '$present present, $onLeave on leave', icon: Icons.co_present, onTap: () => pushPage(context, 'Teachers & Leave', const TeachersView())),
           tile('Pending registrations', '${st.pending.length}', icon: Icons.how_to_reg, onTap: () => pushPage(context, 'Pending Registrations', const ApprovalsView())),
@@ -7194,13 +7315,22 @@ class CoursesTabBody extends StatelessWidget {
 }
 
 // ---------------- Master Data Management (Super Admin / Admin) ----------------
+// Each independently-selectable section of Master Data - drives both which
+// tile MasterDataDashboard shows and which part of this same screen that
+// tile opens. `null` on MasterDataView.sections (the Teacher "Classes &
+// Books" tab's case) means "show everything this role is allowed to see",
+// same as before this screen was split into a sub-dashboard.
+enum MasterDataSection { maktab, superTools, classes, teachers, maktabAdmins, committee, usersRoles, addonCourses }
+
 class MasterDataView extends StatefulWidget {
-  const MasterDataView({super.key});
+  const MasterDataView({super.key, this.sections});
+  final Set<MasterDataSection>? sections;
   @override
   State<MasterDataView> createState() => _MasterDataViewState();
 }
 
 class _MasterDataViewState extends State<MasterDataView> {
+  bool _show(MasterDataSection s) => widget.sections == null || widget.sections!.contains(s);
   final madrasaName = TextEditingController();
   String? newMadrasaCategory;
   final courseName = TextEditingController();
@@ -7250,7 +7380,7 @@ class _MasterDataViewState extends State<MasterDataView> {
     return AnimatedBuilder(
       animation: st,
       builder: (context, _) => page([
-      if (canManageOrg) ...[
+      if (canManageOrg && _show(MasterDataSection.maktab)) ...[
       h('Maktab', icon: Icons.account_balance),
       ...st.madrasas.map((m) => Card(
             child: SwitchListTile(
@@ -7331,7 +7461,7 @@ class _MasterDataViewState extends State<MasterDataView> {
         onPressed: () => pushPage(context, 'Event / Holiday history', const EventHistoryView()),
       ),
       ], // end canManageOrg (Maktab)
-      if (isSuper) ...[
+      if (isSuper && _show(MasterDataSection.superTools)) ...[
         h('Super Admin Tools', icon: Icons.admin_panel_settings),
         OutlinedButton.icon(
           icon: const Icon(Icons.info_outline),
@@ -7345,6 +7475,7 @@ class _MasterDataViewState extends State<MasterDataView> {
           onPressed: () => pushPage(context, 'Notification Templates', const NotifTemplateListView()),
         ),
       ], // end isSuper (Super Admin Tools)
+      if (_show(MasterDataSection.classes)) ...[
       h('Classes', icon: Icons.menu_book),
       const Text(
         'Classes 1-3 (Noorani Qaeda, Muallimul Qur\'an Qaeda, Hafeezi Qur\'an) are fixed: they cannot be renamed, deleted, or have their book/Para details changed. Class creation and editing is only open from Class 4 onward.',
@@ -7400,7 +7531,13 @@ class _MasterDataViewState extends State<MasterDataView> {
                   if (e != null) toast(context, e);
                 },
               ),
-              if (cd.pageBased) _paraSection(cd),
+              // Para (Juz) only ever applies to Class 3 - Hafeezi Qur'an.
+              // Every other class (1, 2, or anything created from Class 4
+              // onward, page-based or not) never shows the Para controls -
+              // backed server-side by fn_restrict_para_to_hafizi, this is
+              // just keeping the UI from offering what the database would
+              // reject anyway.
+              if (cd.id == 3) _paraSection(cd),
               if (!cd.isCore) _bookSection(cd),
               // Course-class assignment stays admin/super only for now
               // (same RLS as before this change) - a teacher reaching this
@@ -7440,7 +7577,8 @@ class _MasterDataViewState extends State<MasterDataView> {
               },
         child: busy ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2)) : const Text('Add Class'),
       ),
-      if (canManageOrg) ...[
+      ], // end _show(classes)
+      if (canManageOrg && _show(MasterDataSection.teachers)) ...[
       h('Teachers', icon: Icons.groups),
       if (st.teacherAccounts.isEmpty) const Text('No teachers yet.', style: TextStyle(color: Colors.black54)),
       ...st.teacherAccounts.map((t) => Card(
@@ -7448,10 +7586,24 @@ class _MasterDataViewState extends State<MasterDataView> {
                 ? ListTile(
                     title: Text(t.name),
                     subtitle: Text('${t.phone} - ${t.teachMadrasas.join(', ')} - Invited, waiting for first login'),
-                    trailing: const Icon(Icons.hourglass_empty, color: Colors.black38),
+                    // Requirement: Super Admin can update a teacher's detail
+                    // (name/phone/Makatib), which Master Data previously had
+                    // no way to do once a teacher was added - only edit this
+                    // directly (not via the real account path), so a
+                    // still-pending invite is editable too.
+                    trailing: isSuper
+                        ? InkWell(onTap: () => editTeacherDialog(context, t), child: const Padding(padding: EdgeInsets.all(4), child: Icon(Icons.edit, size: 18, color: Colors.black45)))
+                        : const Icon(Icons.hourglass_empty, color: Colors.black38),
                   )
                 : SwitchListTile(
-                    title: Text(t.name),
+                    title: Row(children: [
+                      Expanded(child: Text(t.name)),
+                      if (isSuper)
+                        InkWell(
+                          onTap: () => editTeacherDialog(context, t),
+                          child: const Padding(padding: EdgeInsets.all(4), child: Icon(Icons.edit, size: 16, color: Colors.black45)),
+                        ),
+                    ]),
                     subtitle: Text('${t.phone} - ${t.teachMadrasas.join(', ')}'),
                     value: t.active,
                     onChanged: (v) async {
@@ -7490,6 +7642,8 @@ class _MasterDataViewState extends State<MasterDataView> {
               },
         child: busy ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2)) : const Text('Invite Teacher'),
       ),
+      ], // end canManageOrg && _show(teachers)
+      if (canManageOrg && _show(MasterDataSection.maktabAdmins)) ...[
       h('Maktab Admins', icon: Icons.admin_panel_settings),
       const Text('Invites a Maktab Admin for one Maktab. This list only shows who you invite this session - open Roles & Permissions below to see everyone with access.', style: TextStyle(color: Colors.black54, fontSize: 12.5)),
       field(adminName, 'New Maktab Admin name'),
@@ -7521,6 +7675,8 @@ class _MasterDataViewState extends State<MasterDataView> {
               },
         child: busy ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2)) : const Text('Invite Maktab Admin'),
       ),
+      ], // end canManageOrg && _show(maktabAdmins)
+      if (canManageOrg && _show(MasterDataSection.committee)) ...[
       h('Committee Members', icon: Icons.diversity_3),
       field(committeeName, 'New Committee Member name'),
       field(committeePhone, 'Mobile number (10 digits)', number: true),
@@ -7551,12 +7707,16 @@ class _MasterDataViewState extends State<MasterDataView> {
               },
         child: busy ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2)) : const Text('Invite Committee Member'),
       ),
+      ], // end canManageOrg && _show(committee)
+      if (canManageOrg && _show(MasterDataSection.usersRoles)) ...[
       h('Users and Roles', icon: Icons.admin_panel_settings),
       ElevatedButton.icon(
         onPressed: () => pushPage(context, 'Roles & Permissions', const RolesView()),
         icon: const Icon(Icons.admin_panel_settings),
         label: const Text('Open Roles & Permissions'),
       ),
+      ], // end canManageOrg && _show(usersRoles)
+      if (canManageOrg && _show(MasterDataSection.addonCourses)) ...[
       h('Add-on Courses', icon: Icons.auto_stories),
       const Text('Status (Active/Inactive) controls whether a course can be newly assigned - deactivating one does not remove it from classes/students already assigned to it.',
           style: TextStyle(fontSize: 11.5, color: Colors.black54)),
@@ -7633,7 +7793,7 @@ class _MasterDataViewState extends State<MasterDataView> {
               },
         child: busy ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2)) : const Text('Add Add-on Course'),
       ),
-      ], // end canManageOrg (Teachers..Add-on Courses)
+      ], // end canManageOrg && _show(addonCourses)
       ]),
     );
   }
@@ -7840,6 +8000,45 @@ class _MasterDataViewState extends State<MasterDataView> {
         ),
       ]),
     );
+  }
+}
+
+// Master Data as an icon on the dashboard that opens a sub-dashboard of
+// selectable sections, instead of one long scrolling screen - each tile
+// opens MasterDataView scoped to just that section (MasterDataSection),
+// reusing all of that screen's existing logic/state rather than
+// duplicating it. Admin and Super Admin both reach this; Super Admin Tools
+// only shows for Super Admin, same gating MasterDataView itself always had.
+class MasterDataDashboard extends StatelessWidget {
+  const MasterDataDashboard({super.key});
+  @override
+  Widget build(BuildContext context) => AnimatedBuilder(animation: st, builder: (context, _) => _body(context));
+
+  Widget _body(BuildContext context) {
+    final u = st.user;
+    final canManageOrg = u?.role == 'admin' || u?.role == 'super';
+    final isSuper = u?.role == 'super';
+    Widget sectionTile(String label, IconData icon, String value, MasterDataSection section) => tile(
+          label,
+          value,
+          icon: icon,
+          onTap: () => pushPage(context, label, MasterDataView(sections: {section})),
+        );
+    return page([
+      h('Master Data', icon: Icons.storage),
+      const Text('Pick what to manage.', style: TextStyle(color: Colors.black54, fontSize: 12.5)),
+      const SizedBox(height: 8),
+      grid([
+        if (canManageOrg) sectionTile('Maktab', Icons.account_balance, '${st.madrasas.length}', MasterDataSection.maktab),
+        sectionTile('Classes & Books', Icons.menu_book, '${st.classDefs.length}', MasterDataSection.classes),
+        if (canManageOrg) sectionTile('Teachers', Icons.groups, '${st.teacherAccounts.where((t) => !t.pending).length}', MasterDataSection.teachers),
+        if (canManageOrg) sectionTile('Maktab Admins', Icons.admin_panel_settings, 'Invite', MasterDataSection.maktabAdmins),
+        if (canManageOrg) sectionTile('Committee Members', Icons.diversity_3, 'Invite', MasterDataSection.committee),
+        if (canManageOrg) sectionTile('Users and Roles', Icons.admin_panel_settings, 'Permissions', MasterDataSection.usersRoles),
+        if (canManageOrg) sectionTile('Add-on Courses', Icons.auto_stories, '${st.courses.length}', MasterDataSection.addonCourses),
+        if (isSuper) sectionTile('Super Admin Tools', Icons.settings_suggest, 'About Us, Notifications', MasterDataSection.superTools),
+      ]),
+    ]);
   }
 }
 
