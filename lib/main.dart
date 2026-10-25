@@ -2782,6 +2782,31 @@ Widget banner() {
   );
 }
 
+// Shared "are you sure?" dialog for a destructive/hard-to-undo action -
+// deactivating a Maktab/class/teacher/course/book, unassigning a mandatory
+// Add-on Course from a class, withdrawing a live announcement, etc. Every
+// call site below supplies its own specific wording for what the action
+// actually does and whether it's reversible, rather than a generic "Are
+// you sure?" that wouldn't tell anyone anything.
+Future<bool> confirmDialog(BuildContext c, String title, String message, {String confirmLabel = 'Confirm', bool danger = true}) async {
+  final ok = await showDialog<bool>(
+    context: c,
+    builder: (ctx) => AlertDialog(
+      title: Text(title),
+      content: Text(message),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+        ElevatedButton(
+          style: danger ? ElevatedButton.styleFrom(backgroundColor: Colors.red.shade600, foregroundColor: Colors.white) : null,
+          onPressed: () => Navigator.pop(ctx, true),
+          child: Text(confirmLabel),
+        ),
+      ],
+    ),
+  );
+  return ok == true;
+}
+
 Future<String?> askText(BuildContext c, String title, {String initial = ''}) {
   final ctl = TextEditingController(text: initial);
   return showDialog<String>(
@@ -4405,7 +4430,12 @@ class _StaffHomeState extends State<StaffHome> {
           child: const Text('Post announcement'),
         ),
         h('Active announcements'),
-        ...st.announcements.where((a) => a.active).map((a) => Card(child: ListTile(title: Text(a.title), subtitle: Text(a.msg), trailing: TextButton(onPressed: () => withdrawAnnouncementRemote(a), child: const Text('Withdraw'))))),
+        ...st.announcements.where((a) => a.active).map((a) => Card(child: ListTile(title: Text(a.title), subtitle: Text(a.msg), trailing: TextButton(onPressed: () async {
+                final ok = await confirmDialog(context, 'Withdraw this announcement?', 'It will stop showing on every dashboard. This cannot be undone - posting it again would be a new announcement.', confirmLabel: 'Withdraw');
+                if (!ok) return;
+                if (!context.mounted) return;
+                await withdrawAnnouncementRemote(a);
+              }, child: const Text('Withdraw'))))),
       ]);
     }
     if (u.role == 'admin') {
@@ -7438,6 +7468,11 @@ class _MasterDataViewState extends State<MasterDataView> {
               ]),
               value: m.active,
               onChanged: (v) async {
+                if (!v) {
+                  final ok = await confirmDialog(context, 'Deactivate ${m.name}?', 'It will be hidden from the registration dropdown and from being newly assigned - existing students/teachers already there are not removed. You can reactivate it later.', confirmLabel: 'Deactivate');
+                  if (!ok) return;
+                  if (!context.mounted) return;
+                }
                 final e = await setMadrasaActiveRemote(m, v);
                 if (!mounted) return;
                 if (e != null) toast(context, e);
@@ -7540,6 +7575,11 @@ class _MasterDataViewState extends State<MasterDataView> {
                     : 'Chapter-based${cd.active ? '' : ' - Deactivated'}'),
                 value: cd.active,
                 onChanged: (v) async {
+                  if (!v) {
+                    final ok = await confirmDialog(context, 'Deactivate ${cd.name}?', 'Students already in this class are not removed, but it can no longer be newly assigned to a student or teacher. You can reactivate it later.', confirmLabel: 'Deactivate');
+                    if (!ok) return;
+                    if (!context.mounted) return;
+                  }
                   final e = await setClassActiveRemote(cd, v);
                   if (!mounted) return;
                   if (e != null) toast(context, e);
@@ -7621,6 +7661,11 @@ class _MasterDataViewState extends State<MasterDataView> {
                     subtitle: Text('${t.phone} - ${t.teachMadrasas.join(', ')}'),
                     value: t.active,
                     onChanged: (v) async {
+                      if (!v) {
+                        final ok = await confirmDialog(context, 'Deactivate ${t.name}?', 'They will no longer be able to sign in. Their account and history are kept, and a Super Admin can reactivate them later.', confirmLabel: 'Deactivate');
+                        if (!ok) return;
+                        if (!context.mounted) return;
+                      }
                       final e = await setTeacherActiveRemote(t, v);
                       if (!mounted) return;
                       if (e != null) toast(context, e);
@@ -7759,6 +7804,11 @@ class _MasterDataViewState extends State<MasterDataView> {
                 subtitle: Text(c.description.isEmpty ? 'No description' : c.description),
                 value: c.active,
                 onChanged: (v) async {
+                  if (!v) {
+                    final ok = await confirmDialog(context, 'Deactivate ${c.name}?', 'It can no longer be newly assigned to a class - students/classes already assigned to it are not affected. You can reactivate it later.', confirmLabel: 'Deactivate');
+                    if (!ok) return;
+                    if (!context.mounted) return;
+                  }
                   final e = await setCourseActiveRemote(c, v);
                   if (!mounted) return;
                   if (e != null) toast(context, e);
@@ -7778,6 +7828,11 @@ class _MasterDataViewState extends State<MasterDataView> {
                         label: Text(cd.name),
                         selected: st.courseAssignedToClass(cd.id, c.id),
                         onSelected: (sel) async {
+                          if (!sel) {
+                            final ok = await confirmDialog(context, 'Unassign ${c.name} from ${cd.name}?', 'This Add-on Course will no longer be required for ${cd.name}\'s students. Students already tracking progress on it keep that history.', confirmLabel: 'Unassign');
+                            if (!ok) return;
+                            if (!context.mounted) return;
+                          }
                           final e = sel ? await assignCourseToClassRemote(cd, c) : await unassignCourseFromClassRemote(cd, c);
                           if (context.mounted && e != null) toast(context, e);
                         },
@@ -7835,6 +7890,9 @@ class _MasterDataViewState extends State<MasterDataView> {
                 InputChip(
                   label: Text(c.name),
                   onDeleted: () async {
+                    final ok = await confirmDialog(context, 'Unassign ${c.name} from ${cd.name}?', 'This Add-on Course will no longer be required for ${cd.name}\'s students. Students already tracking progress on it keep that history.', confirmLabel: 'Unassign');
+                    if (!ok) return;
+                    if (!context.mounted) return;
                     final e = await unassignCourseFromClassRemote(cd, c);
                     if (context.mounted && e != null) toast(context, e);
                   },
@@ -7977,6 +8035,11 @@ class _MasterDataViewState extends State<MasterDataView> {
                 trailing: Switch(
                   value: b.active,
                   onChanged: (v) async {
+                    if (!v) {
+                      final ok = await confirmDialog(context, 'Deactivate ${b.name}?', 'It can no longer be newly assigned to track a student\'s progress - students already on it keep their progress. You can reactivate it later.', confirmLabel: 'Deactivate');
+                      if (!ok) return;
+                      if (!context.mounted) return;
+                    }
                     final e = await setClassBookActiveRemote(b, v);
                     if (context.mounted && e != null) toast(context, e);
                   },
