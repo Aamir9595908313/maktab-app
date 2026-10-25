@@ -4795,11 +4795,11 @@ class _StudentAttendanceMarkState extends State<StudentAttendanceMark> {
                 const SizedBox(height: 8),
                 const Text('Once submitted, this session is locked. Later changes require the authorized correction process.', style: TextStyle(fontSize: 12, color: Colors.black54)),
               ]),
+              actions: [
+                TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+                ElevatedButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Confirm Submission')),
+              ],
             ),
-            actions: [
-              TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
-              ElevatedButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Confirm Submission')),
-            ],
           );
           if (confirmed != true) return;
         }
