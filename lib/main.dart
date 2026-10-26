@@ -83,6 +83,13 @@ Future<Account?> loadSupabaseProfile(String uid) async {
   final scopeRows = await sb.from('user_madrasa_scope').select('madrasas(name)').eq('user_id', uid);
   final branches = [for (final r in (scopeRows as List)) ((r['madrasas'] as Map?)?['name'] as String?) ?? ''].where((n) => n.isNotEmpty).toList();
 
+  // Extra screen permissions granted on top of this account's base role
+  // (public.user_extra_permissions) - additive, independent of base_role,
+  // so a Teacher/Admin/etc. can also be handed one more screen without
+  // their primary role ever being touched.
+  final extraPermRows = await sb.from('user_extra_permissions').select('screen_key').eq('user_id', uid);
+  final extraPerms = <String>{for (final r in (extraPermRows as List)) (r['screen_key'] as String?) ?? ''}..removeWhere((x) => x.isEmpty);
+
   // Ordered (this join table has no created_at to order by, so madrasa_id
   // is the next best stable key): without an explicit order, Postgres
   // doesn't guarantee row order, so which Maktab lands first in
@@ -120,7 +127,19 @@ Future<Account?> loadSupabaseProfile(String uid) async {
     myClasses: myClasses,
     active: (profile['is_active'] as bool?) ?? true,
     dbId: uid,
+    extraPerms: extraPerms,
   );
+}
+
+// True if `u` can use the given screen permission ('Students', 'Fees',
+// 'Reports', 'Leave', 'Sadqa Peti' or 'Monthly Members') - either because
+// their named custom role was ticked for it, or because a Super Admin
+// separately granted it to them on top of their own role (u.extraPerms).
+// Mirrors the database's has_screen_permission() so the UI shows the same
+// buttons/tabs that the backend will actually allow.
+bool userHasPerm(Account u, String key) {
+  if (u.role == 'custom' && (st.customRoles[u.roleName]?.contains(key) ?? false)) return true;
+  return u.extraPerms.contains(key);
 }
 
 // Loads Master Data (Madrasas and Courses) from Supabase and replaces the
@@ -1849,6 +1868,78 @@ Future<String?> setUserRoleRemote({
   }
 }
 
+// ---------------- Extra screen permissions (public.user_extra_permissions) ----------------
+// Unlike setUserRoleRemote above (which REPLACES a person's whole role,
+// wiping their old branches/teacher assignments), everything below only
+// ADDS: it never changes base_role, never deletes an existing
+// user_madrasa_scope row, and never touches teacher_class_assignments.
+// This is what "give this person one more screen" should always have
+// been - a Super Admin searches an existing account by mobile number,
+// sees what they already have, and only adds to it.
+
+class GrantLookupResult {
+  final String userId;
+  final String name;
+  final String dbRole;
+  final List<String> branches;
+  final Set<String> extraPerms;
+  GrantLookupResult({required this.userId, required this.name, required this.dbRole, required this.branches, required this.extraPerms});
+}
+
+Future<GrantLookupResult?> lookupAccountForGrantRemote(String phone) async {
+  final p = digits(phone);
+  if (p.length != 10) return null;
+  final fullPhone = '91$p';
+  try {
+    final row = await sb.from('user_profiles').select('id, full_name, base_role').eq('phone', fullPhone).maybeSingle();
+    if (row == null) return null;
+    final uid = row['id'] as String;
+    final scopeRows = await sb.from('user_madrasa_scope').select('madrasas(name)').eq('user_id', uid);
+    final branches = [for (final r in (scopeRows as List)) ((r['madrasas'] as Map?)?['name'] as String?) ?? ''].where((n) => n.isNotEmpty).toList();
+    final extraRows = await sb.from('user_extra_permissions').select('screen_key').eq('user_id', uid);
+    final extra = <String>{for (final r in (extraRows as List)) (r['screen_key'] as String?) ?? ''}..removeWhere((x) => x.isEmpty);
+    return GrantLookupResult(userId: uid, name: (row['full_name'] as String?) ?? '', dbRole: (row['base_role'] as String?) ?? '', branches: branches, extraPerms: extra);
+  } catch (_) {
+    return null;
+  }
+}
+
+// Adds `screenKey` to this person's extra permissions (no-op if they
+// already have it) and, if `newBranches` names any Maktab not already in
+// their scope, adds just those - existing scope rows are left untouched.
+Future<String?> grantExtraPermissionRemote(String userId, String screenKey, {List<String> newBranches = const []}) async {
+  try {
+    await sb.from('user_extra_permissions').upsert({'user_id': userId, 'screen_key': screenKey, 'granted_by': sb.auth.currentUser?.id});
+    if (newBranches.isNotEmpty) {
+      final existing = await sb.from('user_madrasa_scope').select('madrasa_id').eq('user_id', userId);
+      final existingIds = {for (final r in (existing as List)) r['madrasa_id'] as String};
+      final rows = <Map<String, Object?>>[];
+      for (final bname in newBranches) {
+        final mid = st.madrasas.firstWhere((m) => m.name == bname, orElse: () => st.madrasas.first).dbId;
+        if (mid != null && !existingIds.contains(mid)) rows.add({'user_id': userId, 'madrasa_id': mid});
+      }
+      if (rows.isNotEmpty) await sb.from('user_madrasa_scope').insert(rows);
+    }
+    return null;
+  } on PostgrestException catch (e) {
+    if (e.code == '42501') return 'Only a Super Admin can grant extra access.';
+    return 'Could not save: ${e.message}';
+  } catch (_) {
+    return 'Could not save. Check your internet connection and try again.';
+  }
+}
+
+// Removes just this one permission - everything else this person can do
+// (their role, branches, other extra permissions) is left exactly as-is.
+Future<String?> revokeExtraPermissionRemote(String userId, String screenKey) async {
+  try {
+    await sb.from('user_extra_permissions').delete().eq('user_id', userId).eq('screen_key', screenKey);
+    return null;
+  } catch (_) {
+    return 'Could not remove. Check your internet connection and try again.';
+  }
+}
+
 // Loads the real Teachers list: actual accounts (public.user_profiles
 // where base_role='teacher', once they've signed in at least once) plus
 // anyone invited but who hasn't joined yet (public.pending_role_invites).
@@ -3510,7 +3601,39 @@ class AppTab {
   AppTab(this.title, this.icon, this.build);
 }
 
-List<AppTab> tabsFor(Account u) {
+// Every extra-permission screen key, with the tab it opens if a role's
+// own built-in tab list doesn't already cover it. Shared by the 'default'
+// (pure custom-role) branch below and by _extraTabsFor(), which appends
+// these on top of ANY role's normal tabs for a permission a Super Admin
+// granted additively (see grantExtraPermissionRemote / RolesView).
+final Map<String, AppTab> _kPermTabs = {
+  'Students': AppTab('Students', Icons.school, () => const StudentsView()),
+  'Fees': AppTab('Fees', Icons.payments, () => const FeesAdmin()),
+  'Reports': AppTab('Reports', Icons.assessment, () => const ReportsView()),
+  'Leave': AppTab('Teacher Leave', Icons.groups, () => const TeachersView()),
+  'Sadqa Peti': AppTab('Sadqa Peti', Icons.inventory_2, () => const SadqaPetiDashboardView()),
+  'Monthly Members': AppTab('Monthly Members', Icons.groups_3, () => const MonthlyMembersDashboard()),
+};
+
+// Appends a tab for each extra permission `u` holds (u.extraPerms) that
+// isn't already represented in `base` (matched by label, since a role's
+// own built-in tab for the same screen may be titled differently, e.g.
+// admin's "Teachers & Leave" vs the generic "Teacher Leave"). Purely
+// additive - never removes or replaces anything already in `base`.
+List<AppTab> _withExtraTabs(Account u, List<AppTab> base) {
+  if (u.extraPerms.isEmpty) return base;
+  final have = base.map((t) => t.label).toSet();
+  final out = [...base];
+  for (final key in u.extraPerms) {
+    final tab = _kPermTabs[key];
+    if (tab != null && !have.contains(tab.label)) out.add(tab);
+  }
+  return out;
+}
+
+List<AppTab> tabsFor(Account u) => _withExtraTabs(u, _baseTabsFor(u));
+
+List<AppTab> _baseTabsFor(Account u) {
   final kidTabs = <AppTab>[
     AppTab('Home', Icons.home, () => const KidHome()),
     AppTab('Attendance', Icons.event_available, () => const KidAttendance()),
@@ -3583,7 +3706,7 @@ List<AppTab> tabsFor(Account u) {
       if (perms.contains('Leave')) list.add(AppTab('Teacher Leave', Icons.groups, () => const TeachersView()));
       if (perms.contains('Sadqa Peti')) list.add(AppTab('Sadqa Peti', Icons.inventory_2, () => const SadqaPetiDashboardView()));
       if (perms.contains('Monthly Members')) list.add(AppTab('Monthly Members', Icons.groups_3, () => const MonthlyMembersDashboard()));
-      if (list.isEmpty) list.add(AppTab('No screens', Icons.block, () => page([const Text('No screens have been given to this role.')])));
+      if (list.isEmpty && u.extraPerms.isEmpty) list.add(AppTab('No screens', Icons.block, () => page([const Text('No screens have been given to this role.')])));
       return list;
   }
 }
@@ -6257,10 +6380,10 @@ class _StudentsViewState extends State<StudentsView> {
     // students. Section 4.1/4.2: deactivate is admin/super only, reactivate
     // is super-admin only - two separate flags, not the old single
     // canDeactivate that incorrectly let teachers do both.
-    final canEdit = u.role == 'admin' || u.role == 'super' || u.role == 'teacher';
+    final canEdit = u.role == 'admin' || u.role == 'super' || u.role == 'teacher' || userHasPerm(u, 'Students');
     final canDeactivate = u.role == 'admin' || u.role == 'super';
     final canReactivate = u.role == 'super';
-    final canPickMadrasa = u.role == 'admin' || u.role == 'super';
+    final canPickMadrasa = u.role == 'admin' || u.role == 'super' || userHasPerm(u, 'Students');
     final list = st.myStudents();
     final ready = list.where((s) => st.eligible(s)).toList();
     // Super Admin picks from every active Maktab; a Maktab Admin only from
@@ -7266,6 +7389,14 @@ class _RolesViewState extends State<RolesView> {
   static const List<String> screens = ['Students', 'Fees', 'Reports', 'Leave', 'Sadqa Peti', 'Monthly Members'];
   static const List<String> builtInRoles = ['Super Admin', 'Maktab Admin', 'Teacher', 'Committee Member'];
 
+  // "Give extra screen access" - additive, see grantExtraPermissionRemote.
+  final gPhone = TextEditingController();
+  bool gLookupBusy = false;
+  GrantLookupResult? found;
+  String? foundError;
+  final Set<String> gNewBranches = {};
+  bool gBusy = false;
+
   @override
   Widget build(BuildContext context) {
     final names = st.customRoles.keys.toList();
@@ -7306,6 +7437,9 @@ class _RolesViewState extends State<RolesView> {
       const Padding(
         padding: EdgeInsets.only(bottom: 6),
         child: Text(
+          "This REPLACES this person's main role - use it to make someone a Teacher, a Maktab Admin, or switch them to one of your custom roles. "
+          "If they already have a role (say, Teacher) and you just want to also give them one more screen without touching anything else they can already do, "
+          "use \"Give extra screen access\" below instead - this box here will overwrite their current role.\n\n"
           "Works for anyone - a brand-new phone number, or someone who already has an account. If they're already in the system, their role changes right away. A Super Admin sees every Maktab, so no need to pick one for that role.",
           style: TextStyle(color: Colors.black54, fontSize: 12.5),
         ),
@@ -7389,6 +7523,85 @@ class _RolesViewState extends State<RolesView> {
               },
         child: busy ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2)) : const Text('Save role'),
       ),
+      h('Give extra screen access', icon: Icons.add_moderator),
+      const Padding(
+        padding: EdgeInsets.only(bottom: 6),
+        child: Text(
+          "For someone who already has an account and a role (Teacher, Maktab Admin, a custom role, anything) and just needs one more screen on top of it. "
+          "Search them by mobile number, then tick screens - this only ADDS access, it never changes their role or removes anything else they can already do.",
+          style: TextStyle(color: Colors.black54, fontSize: 12.5),
+        ),
+      ),
+      Row(children: [
+        Expanded(child: field(gPhone, 'Their mobile number', number: true)),
+        const SizedBox(width: 8),
+        ElevatedButton(
+          onPressed: gLookupBusy
+              ? null
+              : () async {
+                  setState(() {
+                    gLookupBusy = true;
+                    found = null;
+                    foundError = null;
+                    gNewBranches.clear();
+                  });
+                  final r = await lookupAccountForGrantRemote(gPhone.text);
+                  if (!mounted) return;
+                  setState(() {
+                    gLookupBusy = false;
+                    found = r;
+                    foundError = r == null ? "No account found for that number yet - they need to log in once first." : null;
+                  });
+                },
+          child: gLookupBusy ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2)) : const Text('Find'),
+        ),
+      ]),
+      if (foundError != null) Padding(padding: const EdgeInsets.only(top: 4), child: Text(foundError!, style: const TextStyle(color: Colors.red))),
+      if (found != null) ...[
+        const SizedBox(height: 6),
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text(found!.name.isEmpty ? '(no name on file)' : found!.name, style: const TextStyle(fontWeight: FontWeight.bold)),
+              Text('Current role: ${found!.dbRole} - current Makatib: ${found!.branches.isEmpty ? 'none' : found!.branches.join(', ')}', style: const TextStyle(fontSize: 12.5, color: Colors.black54)),
+              if (found!.extraPerms.isNotEmpty) Text('Already granted extra: ${found!.extraPerms.join(', ')}', style: const TextStyle(fontSize: 12.5, color: Colors.black54)),
+              const SizedBox(height: 8),
+              const Text('Tick to grant, untick to revoke just that one:'),
+              ...screens.map((s) => CheckboxListTile(
+                    title: Text(s == 'Students' ? 'Students and Add Student form' : s == 'Leave' ? 'Teacher leave' : s),
+                    value: found!.extraPerms.contains(s),
+                    onChanged: gBusy
+                        ? null
+                        : (v) async {
+                            final f = found!;
+                            setState(() => gBusy = true);
+                            final String? e;
+                            if (v == true) {
+                              e = await grantExtraPermissionRemote(f.userId, s, newBranches: gNewBranches.toList());
+                              if (e == null) f.extraPerms.add(s);
+                            } else {
+                              e = await revokeExtraPermissionRemote(f.userId, s);
+                              if (e == null) f.extraPerms.remove(s);
+                            }
+                            if (!mounted) return;
+                            setState(() => gBusy = false);
+                            if (e != null) toast(context, e);
+                          },
+                  )),
+              const Padding(padding: EdgeInsets.only(top: 4, bottom: 4), child: Text('Also give access to these Makatib (kept on top of their existing ones):', style: TextStyle(color: Colors.black54, fontSize: 12.5))),
+              Wrap(spacing: 4, children: [
+                for (final m in st.activeMadrasaNames.where((m) => !found!.branches.contains(m)))
+                  FilterChip(
+                    label: Text(m),
+                    selected: gNewBranches.contains(m),
+                    onSelected: (v) => setState(() => v ? gNewBranches.add(m) : gNewBranches.remove(m)),
+                  ),
+              ]),
+            ]),
+          ),
+        ),
+      ],
     ]);
   }
 }

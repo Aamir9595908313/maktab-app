@@ -414,11 +414,18 @@ class Account {
   // no real account to activate/deactivate.
   String? dbId;
   bool pending;
+  // Extra screen permissions granted on TOP of this account's base role
+  // (public.user_extra_permissions) - e.g. a Teacher additionally given
+  // "Fees" access. Always additive: granting or revoking one of these
+  // never touches `role`/`roleName`/`branches`, unlike assigning a whole
+  // new role which replaces them.
+  Set<String> extraPerms;
   Account(this.phone, this.name, this.role,
-      {this.roleName = '', List<String>? branches, List<String>? teachMadrasas, List<ClassAssignment>? myClasses, this.active = true, this.dbId, this.pending = false})
+      {this.roleName = '', List<String>? branches, List<String>? teachMadrasas, List<ClassAssignment>? myClasses, this.active = true, this.dbId, this.pending = false, Set<String>? extraPerms})
       : branches = branches ?? [],
         teachMadrasas = teachMadrasas ?? [],
-        myClasses = myClasses ?? [];
+        myClasses = myClasses ?? [],
+        extraPerms = extraPerms ?? {};
 }
 
 // ---------------- master data: madrasas / courses ----------------
