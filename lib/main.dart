@@ -3463,6 +3463,7 @@ class _GuestHomeState extends State<GuestHome> {
               _bottomIcon(context, Icons.schedule, 'Maktab Timing', () => openTool(context, const GuestMaktabTimingScreen())),
               _bottomIcon(context, Icons.access_time, 'Prayer Times', () => openTool(context, const PrayerTimesScreen())),
               _bottomIcon(context, Icons.menu_book, 'Surah Yaseen', () => openTool(context, const SurahYaseenScreen())),
+              _bottomIcon(context, Icons.menu_book, 'Durood e Taj', () => openTool(context, const DuroodTajScreen())),
               _bottomIcon(context, Icons.info_outline, 'About Us', () => openTool(context, const AboutUsScreen())),
             ]),
           ],
@@ -3746,6 +3747,7 @@ class _ShellState extends State<Shell> {
             ListTile(leading: const Icon(Icons.fingerprint), title: const Text('Tasbeeh Counter'), onTap: () { Navigator.pop(context); openTool(context, const TasbeehScreen()); }),
             ListTile(leading: const Icon(Icons.access_time), title: const Text('Prayer Times (Hanafi)'), onTap: () { Navigator.pop(context); openTool(context, const PrayerTimesScreen()); }),
             ListTile(leading: const Icon(Icons.menu_book), title: const Text('Surah Yaseen'), onTap: () { Navigator.pop(context); openTool(context, const SurahYaseenScreen()); }),
+            ListTile(leading: const Icon(Icons.menu_book), title: const Text('Durood e Taj'), onTap: () { Navigator.pop(context); openTool(context, const DuroodTajScreen()); }),
             ListTile(leading: const Icon(Icons.info_outline), title: const Text('About Us'), onTap: () { Navigator.pop(context); openTool(context, const AboutUsScreen()); }),
             const Divider(),
             ListTile(

@@ -30,6 +30,7 @@ flutter:
     - assets/logo.png
     - assets/icon/app_icon.png
     - assets/surah_yaseen.pdf
+    - assets/durood_e_taj.pdf
 
 # Generates the Android launcher icon (the "app icon" shown on the home
 # screen, app drawer and Play Store listing - distinct from assets/logo.png,

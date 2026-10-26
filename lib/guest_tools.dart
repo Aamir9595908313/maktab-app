@@ -916,6 +916,142 @@ class _SurahYaseenScreenState extends State<SurahYaseenScreen> {
   }
 }
 
+// ---------------- Durood e Taj (bundled PDF, shown page by page) ----------------
+// Same approach as Surah Yaseen above: the bundled assets/durood_e_taj.pdf
+// is the source of truth. Each page is rasterized from the PDF itself
+// (Printing.raster) into an image and shown as-is - a pixel-for-pixel copy
+// of the original, including the Urdu translation lines under each Arabic
+// line - rather than being retyped or re-laid-out by Flutter. Getting a
+// single diacritic wrong in a recitation text is not something to risk, so
+// nothing here reconstructs the text; it only displays the provided PDF.
+class DuroodTajScreen extends StatefulWidget {
+  const DuroodTajScreen({super.key});
+  @override
+  State<DuroodTajScreen> createState() => _DuroodTajScreenState();
+}
+
+class _DuroodTajScreenState extends State<DuroodTajScreen> {
+  List<Uint8List>? _pages;
+  String? _error;
+  int _page = 0;
+  final _pageCtl = PageController();
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    try {
+      final bytes = await rootBundle.load('assets/durood_e_taj.pdf');
+      final pdfBytes = bytes.buffer.asUint8List();
+      final imgs = <Uint8List>[];
+      // dpi 200 matches Surah Yaseen - this PDF's pages (403x640pt) render
+      // at a comparable pixel size to that one, so the same resolution
+      // keeps zoomed-in text equally sharp without an oversized download.
+      await for (final raster in Printing.raster(pdfBytes, dpi: 200)) {
+        imgs.add(await raster.toPng());
+      }
+      if (!mounted) return;
+      setState(() => _pages = imgs);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _error = 'Could not load Durood e Taj: $e');
+    }
+  }
+
+  void _goTo(int i) {
+    final pages = _pages;
+    if (pages == null || i < 0 || i >= pages.length) return;
+    _pageCtl.animateToPage(i, duration: const Duration(milliseconds: 220), curve: Curves.easeOut);
+  }
+
+  Future<void> _pickPage() async {
+    final pages = _pages;
+    if (pages == null) return;
+    final n = await showDialog<int>(
+      context: context,
+      builder: (c) => SimpleDialog(
+        title: const Text('Go to page'),
+        children: [
+          SizedBox(
+            height: 260,
+            width: 220,
+            child: GridView.count(
+              crossAxisCount: 5,
+              children: [
+                for (var i = 0; i < pages.length; i++)
+                  InkWell(
+                    onTap: () => Navigator.pop(c, i),
+                    child: Container(
+                      margin: const EdgeInsets.all(3),
+                      alignment: Alignment.center,
+                      decoration: BoxDecoration(
+                        color: i == _page ? _kGreen : const Color(0xFFEFEFEF),
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: Text('${i + 1}', style: TextStyle(color: i == _page ? Colors.white : Colors.black87)),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+    if (n != null) _goTo(n);
+  }
+
+  @override
+  void dispose() {
+    _pageCtl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final pages = _pages;
+    return Scaffold(
+      appBar: guestAppBar(context, 'Durood e Taj'),
+      body: _error != null
+          ? Center(child: Padding(padding: const EdgeInsets.all(20), child: Text(_error!, textAlign: TextAlign.center)))
+          : pages == null
+              ? const Center(child: CircularProgressIndicator(color: _kGreen))
+              : Column(
+                  children: [
+                    Expanded(
+                      child: PageView.builder(
+                        controller: _pageCtl,
+                        itemCount: pages.length,
+                        onPageChanged: (i) => setState(() => _page = i),
+                        itemBuilder: (c, i) => InteractiveViewer(
+                          minScale: 1,
+                          maxScale: 4,
+                          child: Center(child: Image.memory(pages[i], fit: BoxFit.contain)),
+                        ),
+                      ),
+                    ),
+                    SafeArea(
+                      top: false,
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            IconButton(icon: const Icon(Icons.chevron_left), tooltip: 'Previous page', onPressed: _page > 0 ? () => _goTo(_page - 1) : null),
+                            TextButton(onPressed: _pickPage, child: Text('Page ${_page + 1} of ${pages.length}')),
+                            IconButton(icon: const Icon(Icons.chevron_right), tooltip: 'Next page', onPressed: _page < pages.length - 1 ? () => _goTo(_page + 1) : null),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+    );
+  }
+}
+
 // ---------------- About Us ----------------
 // Content transcribed from the Faiz-e-Raza Group's own introduction
 // poster, in the same Hindi wording it was written in.
