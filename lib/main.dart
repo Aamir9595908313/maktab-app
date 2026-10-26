@@ -9132,7 +9132,12 @@ class _MonthlyAttendanceReportScreenState extends State<MonthlyAttendanceReportS
       resultSummary = null;
     });
     try {
-      final targetStudents = st.students.where((s) => madrasa == 'All' || s.madrasa == madrasa).toList();
+      final u = st.user!;
+      // "All" means all branches this user is permitted to see - every
+      // branch for Super Admin, only their own assigned branch(es)
+      // otherwise - never every branch in the system regardless of role.
+      final allowedMadrasas = u.role == 'super' ? st.madrasas.map((m) => m.name).toSet() : st.madrasas.map((m) => m.name).where(u.branches.contains).toSet();
+      final targetStudents = st.students.where((s) => allowedMadrasas.contains(s.madrasa) && (madrasa == 'All' || s.madrasa == madrasa)).toList();
       if (targetStudents.isEmpty) {
         setState(() => error = 'No students found for this Maktab.');
         return;
@@ -9159,6 +9164,12 @@ class _MonthlyAttendanceReportScreenState extends State<MonthlyAttendanceReportS
 
   @override
   Widget build(BuildContext context) {
+    final u = st.user!;
+    // Same branch-scoping used elsewhere (e.g. FeesAdmin): a Super Admin
+    // may pick any branch or "All"; every other role is restricted to the
+    // branch(es) they're actually assigned to, so they can't export
+    // attendance for a branch they don't manage.
+    final allowedMadrasas = u.role == 'super' ? st.madrasas.map((m) => m.name).toList() : st.madrasas.map((m) => m.name).where(u.branches.contains).toList();
     final years = [for (var y = DateTime.now().year; y >= 2020; y--) y];
     return Scaffold(
       appBar: AppBar(title: const Text('Monthly Student Attendance'), backgroundColor: kGreen, foregroundColor: Colors.white),
@@ -9191,8 +9202,8 @@ class _MonthlyAttendanceReportScreenState extends State<MonthlyAttendanceReportS
         DropdownButtonFormField<String>(
           value: madrasa,
           decoration: const InputDecoration(labelText: 'Maktab / Branch', border: OutlineInputBorder()),
-          items: ['All', for (final m in st.madrasas) m.name].map((m) => DropdownMenuItem(value: m, child: Text(m))).toList(),
-          onChanged: (v) => setState(() => madrasa = v ?? 'All'),
+          items: ['All', ...allowedMadrasas].map((m) => DropdownMenuItem(value: m, child: Text(m))).toList(),
+          onChanged: (v) => setState(() => madrasa = v ?? madrasa),
         ),
         const SizedBox(height: 12),
         ElevatedButton.icon(
@@ -9422,9 +9433,14 @@ class _StudentHistoryReportScreenState extends State<StudentHistoryReportScreen>
 
   @override
   Widget build(BuildContext context) {
+    final u = st.user!;
+    // Same branch-scoping as the Students screen / FeesAdmin / the Excel
+    // report above: Super Admin can search every student, every other
+    // role is restricted to their own assigned branch(es).
+    final scope = u.role == 'super' ? st.students : st.students.where((s) => u.branches.contains(s.madrasa)).toList();
     final results = q.trim().isEmpty
         ? const <Student>[]
-        : st.students.where((s) => s.name.toLowerCase().contains(q.toLowerCase()) || s.key.toLowerCase().contains(q.toLowerCase())).take(20).toList();
+        : scope.where((s) => s.name.toLowerCase().contains(q.toLowerCase()) || s.key.toLowerCase().contains(q.toLowerCase())).take(20).toList();
     return Scaffold(
       appBar: AppBar(title: const Text('Student Complete History'), backgroundColor: kGreen, foregroundColor: Colors.white),
       body: page([
@@ -9646,11 +9662,15 @@ Future<Uint8List> buildStudentHistoryPdf(Student s) async {
           style: const pw.TextStyle(fontSize: 7, color: PdfColors.grey600),
         ),
 
-        _pdfSectionHeading('F. Additional Work, Achievements and Activities'),
-        pw.Text(
-          "Not available: there is no additional-work/homework/achievements/teacher-remarks module in this application with persisted records to report from. (A local activity feed exists for in-session toasts only - it isn't saved to the database and isn't a real history source, so nothing from it is shown here.)",
-          style: const pw.TextStyle(fontSize: 8, color: PdfColors.grey700),
-        ),
+        // Section F ("Additional Work, Achievements and Activities") is
+        // intentionally left out of the PDF: there is no additional-work /
+        // homework / achievements / teacher-remarks module in this
+        // application with persisted records to report from (the only
+        // candidate, a local "Note" activity feed, is session-only and
+        // never saved to the backend, so it isn't a real history source).
+        // Per the spec's own instruction, the missing capability is
+        // disclosed in the implementation report instead of being shown
+        // here with invented or placeholder content.
 
         _pdfSectionHeading('G. Overall Student Summary'),
         _pdfKv('Current Maktab / Class', '${s.madrasa} - ${cd?.name ?? 'Class ${s.cls}'}'),
