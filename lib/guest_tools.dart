@@ -14,6 +14,11 @@ import 'prayer_notifications.dart';
 import 'state.dart' show AboutUsContent, AboutUsSection, kMadrasaCategories;
 
 const Color _kGreen = Color(0xFF054D00);
+// Sampled from the Durood e Taj PDF's own page background (the pale mint
+// green behind its decorative border), so the Surah Yaseen reader - whose
+// source PDF pages are plain white - uses the same tone around/behind the
+// page for a consistent look between the two Arabic reading screens.
+const Color _kArabicReaderBg = Color(0xFFCFE6D0);
 const Color _kGold = Color(0xFFD4A72C);
 
 const double _kaabaLat = 21.4225;
@@ -877,6 +882,7 @@ class _SurahYaseenScreenState extends State<SurahYaseenScreen> {
   Widget build(BuildContext context) {
     final pages = _pages;
     return Scaffold(
+      backgroundColor: _kArabicReaderBg,
       appBar: guestAppBar(context, 'Surah Yaseen'),
       body: _error != null
           ? Center(child: Padding(padding: const EdgeInsets.all(20), child: Text(_error!, textAlign: TextAlign.center)))
@@ -888,6 +894,13 @@ class _SurahYaseenScreenState extends State<SurahYaseenScreen> {
                       child: PageView.builder(
                         controller: _pageCtl,
                         itemCount: pages.length,
+                        // This is an Arabic book: a real swipe-right opens
+                        // the next page, not the previous one. `reverse`
+                        // flips PageView's gesture direction to match while
+                        // `_page`/`_goTo` still count 0..n-1 in true page
+                        // order, so the page-number label and picker grid
+                        // below are unaffected.
+                        reverse: true,
                         onPageChanged: (i) => setState(() => _page = i),
                         itemBuilder: (c, i) => InteractiveViewer(
                           minScale: 1,
@@ -903,9 +916,12 @@ class _SurahYaseenScreenState extends State<SurahYaseenScreen> {
                         child: Row(
                           mainAxisAlignment: MainAxisAlignment.spaceBetween,
                           children: [
-                            IconButton(icon: const Icon(Icons.chevron_left), tooltip: 'Previous page', onPressed: _page > 0 ? () => _goTo(_page - 1) : null),
+                            // Icons swapped to match RTL reading order: the
+                            // book moves right-to-left, so "Next" points
+                            // left and "Previous" points right.
+                            IconButton(icon: const Icon(Icons.chevron_right), tooltip: 'Previous page', onPressed: _page > 0 ? () => _goTo(_page - 1) : null),
                             TextButton(onPressed: _pickPage, child: Text('Page ${_page + 1} of ${pages.length}')),
-                            IconButton(icon: const Icon(Icons.chevron_right), tooltip: 'Next page', onPressed: _page < pages.length - 1 ? () => _goTo(_page + 1) : null),
+                            IconButton(icon: const Icon(Icons.chevron_left), tooltip: 'Next page', onPressed: _page < pages.length - 1 ? () => _goTo(_page + 1) : null),
                           ],
                         ),
                       ),
@@ -1013,6 +1029,7 @@ class _DuroodTajScreenState extends State<DuroodTajScreen> {
   Widget build(BuildContext context) {
     final pages = _pages;
     return Scaffold(
+      backgroundColor: _kArabicReaderBg,
       appBar: guestAppBar(context, 'Durood e Taj'),
       body: _error != null
           ? Center(child: Padding(padding: const EdgeInsets.all(20), child: Text(_error!, textAlign: TextAlign.center)))
@@ -1024,6 +1041,13 @@ class _DuroodTajScreenState extends State<DuroodTajScreen> {
                       child: PageView.builder(
                         controller: _pageCtl,
                         itemCount: pages.length,
+                        // This is an Arabic book: a real swipe-right opens
+                        // the next page, not the previous one. `reverse`
+                        // flips PageView's gesture direction to match while
+                        // `_page`/`_goTo` still count 0..n-1 in true page
+                        // order, so the page-number label and picker grid
+                        // below are unaffected.
+                        reverse: true,
                         onPageChanged: (i) => setState(() => _page = i),
                         itemBuilder: (c, i) => InteractiveViewer(
                           minScale: 1,
@@ -1039,9 +1063,12 @@ class _DuroodTajScreenState extends State<DuroodTajScreen> {
                         child: Row(
                           mainAxisAlignment: MainAxisAlignment.spaceBetween,
                           children: [
-                            IconButton(icon: const Icon(Icons.chevron_left), tooltip: 'Previous page', onPressed: _page > 0 ? () => _goTo(_page - 1) : null),
+                            // Icons swapped to match RTL reading order: the
+                            // book moves right-to-left, so "Next" points
+                            // left and "Previous" points right.
+                            IconButton(icon: const Icon(Icons.chevron_right), tooltip: 'Previous page', onPressed: _page > 0 ? () => _goTo(_page - 1) : null),
                             TextButton(onPressed: _pickPage, child: Text('Page ${_page + 1} of ${pages.length}')),
-                            IconButton(icon: const Icon(Icons.chevron_right), tooltip: 'Next page', onPressed: _page < pages.length - 1 ? () => _goTo(_page + 1) : null),
+                            IconButton(icon: const Icon(Icons.chevron_left), tooltip: 'Next page', onPressed: _page < pages.length - 1 ? () => _goTo(_page + 1) : null),
                           ],
                         ),
                       ),
