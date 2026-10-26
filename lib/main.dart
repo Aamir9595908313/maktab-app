@@ -9267,12 +9267,11 @@ List<int> buildMonthlyAttendanceExcel({
   sheet.setColumnWidth(5 + lastDay, 12);
   sheet.setColumnWidth(6 + lastDay, 10);
 
-  // Freeze the header rows and the student-identification columns
-  // (Name/Branch/Phone) - "where practical" per spec; wrapped defensively
-  // since this is a nice-to-have, not core to the report being correct.
-  try {
-    sheet.setFreezePane(xl.CellIndex.indexByColumnRow(columnIndex: 3, rowIndex: headerRow + 1));
-  } catch (_) {}
+  // Freezing the header rows / ID columns was asked for "where practical" -
+  // the `excel` package (4.0.6, the only actively-maintained pure-Dart
+  // .xlsx writer) has no freeze-pane API at all, so this isn't applied;
+  // disclosed as a real limitation in the implementation report rather
+  // than silently skipped or faked.
 
   final byBranch = <String, List<Student>>{};
   for (final s in students) {
@@ -9638,7 +9637,7 @@ Future<Uint8List> buildStudentHistoryPdf(Student s) async {
               if (rowNum > 0 && monthRowStyles.contains(rowNum - 1)) {
                 return const pw.BoxDecoration(color: PdfColors.red100);
               }
-              return null;
+              return const pw.BoxDecoration();
             },
           ),
         pw.SizedBox(height: 4),
