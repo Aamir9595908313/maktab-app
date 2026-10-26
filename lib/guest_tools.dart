@@ -1172,12 +1172,17 @@ List<Widget> aboutUsBodyWidgets(AboutUsContent c) {
             Text(s.title, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15.5, color: _kGreen)),
             const SizedBox(height: 8),
             for (final p in s.paras) Padding(padding: const EdgeInsets.only(bottom: 8), child: Text(p, style: const TextStyle(fontSize: 13.5, height: 1.5))),
+            // Each bullet is its own block, with the bullet glyph in a
+            // fixed-width column so a wrapped second line of text lines up
+            // under the first word (not under the dot), and real spacing
+            // between bullets so they read as clearly separate lines
+            // rather than running into each other.
             for (final b in s.bullets)
               Padding(
-                padding: const EdgeInsets.only(bottom: 5),
+                padding: const EdgeInsets.only(bottom: 10),
                 child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  const Text('•  ', style: TextStyle(color: _kGreen, fontWeight: FontWeight.bold)),
-                  Expanded(child: Text(b, style: const TextStyle(fontSize: 13.5, height: 1.4))),
+                  const SizedBox(width: 18, child: Text('•', style: TextStyle(color: _kGreen, fontWeight: FontWeight.bold, fontSize: 15))),
+                  Expanded(child: Text(b, style: const TextStyle(fontSize: 13.5, height: 1.45))),
                 ]),
               ),
           ]),
@@ -1256,7 +1261,19 @@ class _AboutUsScreenState extends State<AboutUsScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: guestAppBar(context, 'About Us'),
-      body: ListView(padding: const EdgeInsets.all(16), children: aboutUsBodyWidgets(_remote ?? _aboutUsFallback())),
+      // SafeArea + generous bottom padding: without it, the last card (the
+      // contact numbers) sat right at the very edge of the screen, under a
+      // phone's gesture bar on some devices - this leaves real breathing
+      // room below it instead.
+      body: SafeArea(
+        child: ListView(
+          padding: const EdgeInsets.fromLTRB(16, 16, 16, 40),
+          children: [
+            ...aboutUsBodyWidgets(_remote ?? _aboutUsFallback()),
+            const SizedBox(height: 24),
+          ],
+        ),
+      ),
     );
   }
 }
