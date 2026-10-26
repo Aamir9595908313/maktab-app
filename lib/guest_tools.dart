@@ -11,7 +11,7 @@ import 'package:http/http.dart' as http;
 import 'package:printing/printing.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'prayer_notifications.dart';
-import 'state.dart' show AboutUsContent, AboutUsSection;
+import 'state.dart' show AboutUsContent, AboutUsSection, kMadrasaCategories;
 
 const Color _kGreen = Color(0xFF054D00);
 const Color _kGold = Color(0xFFD4A72C);
@@ -1094,6 +1094,244 @@ class _AboutUsScreenState extends State<AboutUsScreen> {
     return Scaffold(
       appBar: guestAppBar(context, 'About Us'),
       body: ListView(padding: const EdgeInsets.all(16), children: aboutUsBodyWidgets(_remote ?? _aboutUsFallback())),
+    );
+  }
+}
+
+// ---------------- Maktab Timing (Guest Tools) ----------------
+// Read-only, no-login view of which Morning/Afternoon/Evening batch each
+// class actually runs in, per active Maktab branch. Reuses exactly the
+// existing Maktab/class/student data the authenticated "Working Committee >
+// Maktab Timings" screen already computes (lib/main.dart,
+// CommitteeMaktabTimings) - no separate timing table. Since a guest has no
+// session, this calls the public.guest_maktab_timings() RPC instead of
+// reading st.students directly: that function runs with elevated rights on
+// the server and only ever returns an aggregated (Maktab, class, most
+// common batch) triple - never an individual student row, phone number, or
+// teacher name - so nothing private reaches an unauthenticated device.
+
+IconData _categoryIcon(String? category) {
+  switch (category) {
+    case 'Boys':
+      return Icons.boy;
+    case 'Girls':
+      return Icons.girl;
+    case 'Children':
+      return Icons.child_care;
+    default:
+      return Icons.apartment;
+  }
+}
+
+class _GuestTimingClassRow {
+  final int classNo;
+  final String className;
+  final String? timing; // null => "Timing Not Set"
+  _GuestTimingClassRow({required this.classNo, required this.className, this.timing});
+}
+
+class _GuestTimingBranch {
+  final String maktabName;
+  final String? category;
+  final List<_GuestTimingClassRow> classes;
+  _GuestTimingBranch({required this.maktabName, this.category, required this.classes});
+}
+
+class GuestMaktabTimingScreen extends StatefulWidget {
+  const GuestMaktabTimingScreen({super.key});
+  @override
+  State<GuestMaktabTimingScreen> createState() => _GuestMaktabTimingScreenState();
+}
+
+class _GuestMaktabTimingScreenState extends State<GuestMaktabTimingScreen> {
+  bool _loading = true;
+  String? _error;
+  List<_GuestTimingBranch> _branches = [];
+  final TextEditingController _search = TextEditingController();
+  String? _category; // null = All
+
+  @override
+  void initState() {
+    super.initState();
+    _search.addListener(() => setState(() {}));
+    _load();
+  }
+
+  @override
+  void dispose() {
+    _search.dispose();
+    super.dispose();
+  }
+
+  Future<void> _load() async {
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    try {
+      final rows = await Supabase.instance.client.rpc('guest_maktab_timings') as List<dynamic>;
+      final byBranch = <String, _GuestTimingBranch>{};
+      for (final r in rows) {
+        final m = r as Map<String, dynamic>;
+        final name = (m['madrasa_name'] as String?) ?? '';
+        if (name.isEmpty) continue;
+        final category = m['category'] as String?;
+        final key = '$name|${category ?? ''}';
+        final classRow = _GuestTimingClassRow(
+          classNo: (m['class_no'] as num?)?.toInt() ?? 0,
+          className: (m['class_name'] as String?) ?? 'Class',
+          timing: m['timing'] as String?,
+        );
+        final existing = byBranch[key];
+        if (existing == null) {
+          byBranch[key] = _GuestTimingBranch(maktabName: name, category: category, classes: [classRow]);
+        } else {
+          existing.classes.add(classRow);
+        }
+      }
+      final list = byBranch.values.toList()..sort((a, b) => a.maktabName.compareTo(b.maktabName));
+      for (final b in list) {
+        b.classes.sort((a, c) => a.classNo.compareTo(c.classNo));
+      }
+      if (!mounted) return;
+      setState(() {
+        _branches = list;
+        _loading = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _error = 'Could not load Maktab Timing right now. Check your internet connection and try again.';
+        _loading = false;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final q = _search.text.trim().toLowerCase();
+    final filtered = _branches.where((b) {
+      if (_category != null && b.category != _category) return false;
+      if (q.isEmpty) return true;
+      return b.maktabName.toLowerCase().contains(q);
+    }).toList();
+
+    return Scaffold(
+      appBar: guestAppBar(context, 'Maktab Timing'),
+      body: _loading
+          ? const Center(child: CircularProgressIndicator())
+          : _error != null
+              ? Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(24),
+                    child: Column(mainAxisSize: MainAxisSize.min, children: [
+                      const Icon(Icons.wifi_off, size: 40, color: Colors.black38),
+                      const SizedBox(height: 12),
+                      Text(_error!, textAlign: TextAlign.center, style: const TextStyle(color: Colors.black54)),
+                      const SizedBox(height: 16),
+                      ElevatedButton.icon(onPressed: _load, icon: const Icon(Icons.refresh), label: const Text('Retry')),
+                    ]),
+                  ),
+                )
+              : RefreshIndicator(
+                  onRefresh: _load,
+                  child: ListView(padding: const EdgeInsets.all(16), children: [
+                    const Text(
+                      'Existing Morning / Afternoon / Evening class timing by Maktab branch - view only.',
+                      style: TextStyle(color: Colors.black54, fontSize: 12.5),
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: _search,
+                      decoration: const InputDecoration(
+                        labelText: 'Search Maktab or branch name',
+                        prefixIcon: Icon(Icons.search),
+                        border: OutlineInputBorder(),
+                        isDense: true,
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    Wrap(spacing: 8, runSpacing: 8, children: [
+                      ChoiceChip(label: const Text('All'), selected: _category == null, onSelected: (_) => setState(() => _category = null)),
+                      for (final c in kMadrasaCategories)
+                        ChoiceChip(label: Text(c), selected: _category == c, onSelected: (_) => setState(() => _category = c)),
+                    ]),
+                    const SizedBox(height: 14),
+                    if (filtered.isEmpty)
+                      Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 32),
+                        child: Column(children: [
+                          const Icon(Icons.search_off, size: 36, color: Colors.black26),
+                          const SizedBox(height: 10),
+                          Text(
+                            _branches.isEmpty ? 'No Maktab branches are available to show right now.' : 'No branch matches this search or filter.',
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(color: Colors.black54),
+                          ),
+                        ]),
+                      )
+                    else
+                      for (final b in filtered)
+                        Card(
+                          child: ListTile(
+                            leading: CircleAvatar(backgroundColor: const Color(0xFFEEF4E8), child: Icon(_categoryIcon(b.category), color: _kGreen)),
+                            title: Text(b.maktabName, style: const TextStyle(fontWeight: FontWeight.bold)),
+                            subtitle: Text('Category: ${b.category ?? 'Not set'} - ${b.classes.length} class(es)'),
+                            trailing: const Icon(Icons.chevron_right),
+                            onTap: () => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => GuestMaktabTimingDetail(branch: b))),
+                          ),
+                        ),
+                  ]),
+                ),
+    );
+  }
+}
+
+class GuestMaktabTimingDetail extends StatelessWidget {
+  final _GuestTimingBranch branch;
+  const GuestMaktabTimingDetail({super.key, required this.branch});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: guestAppBar(context, branch.maktabName),
+      body: ListView(padding: const EdgeInsets.all(16), children: [
+        Card(
+          color: const Color(0xFFEEF4E8),
+          child: Padding(
+            padding: const EdgeInsets.all(14),
+            child: Row(children: [
+              Icon(_categoryIcon(branch.category), color: _kGreen, size: 28),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Text(branch.maktabName, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                  Text('Category: ${branch.category ?? 'Not set'}', style: const TextStyle(fontSize: 12.5, color: Colors.black54)),
+                ]),
+              ),
+            ]),
+          ),
+        ),
+        const SizedBox(height: 14),
+        const Text('Class-wise timing', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+        const SizedBox(height: 6),
+        if (branch.classes.isEmpty) const Text('No classes are set up for this branch yet.', style: TextStyle(color: Colors.black54)),
+        for (final c in branch.classes)
+          Card(
+            child: ListTile(
+              dense: true,
+              title: Text(c.className, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13.5)),
+              trailing: Text(
+                c.timing ?? 'Timing Not Set',
+                style: TextStyle(
+                  fontWeight: FontWeight.bold,
+                  fontSize: 13,
+                  color: c.timing == null ? Colors.orange.shade800 : _kGreen,
+                ),
+              ),
+            ),
+          ),
+      ]),
     );
   }
 }
