@@ -638,14 +638,6 @@ class Announcement {
   Announcement(this.title, this.msg, this.priority, {this.dbId});
 }
 
-class ReportRow {
-  final String name;
-  final String period;
-  final String madrasa;
-  final String created;
-  const ReportRow(this.name, this.period, this.madrasa, this.created);
-}
-
 class DayEntry {
   final String time;
   final String madrasa;
@@ -1186,16 +1178,6 @@ class AppState extends ChangeNotifier {
   final List<Note> notes = [Note('9800000301', 'Noorani Qaeda page 12 completed for Ahmed on 1 Aug 2026')];
   final List<Announcement> announcements = [Announcement('Maktab closed on 02-Oct-2026', 'Friday holiday for all Makatib.', 'Important')];
   final List<String> viewLog = [];
-  final List<ReportRow> reports = const [
-    ReportRow('Daily Student Attendance', '19-09-2026', 'All', '19-09-2026 18:00'),
-    ReportRow('Teacher Attendance', '19-09-2026', 'All', '19-09-2026 18:00'),
-    ReportRow('Teacher Leave', 'Sep 2026', 'All', '19-09-2026 18:00'),
-    ReportRow('Monthly Fees', 'Sep 2026', 'Hanfi', '19-09-2026 18:00'),
-    ReportRow('Syllabus Progress', '19-09-2026', 'All', '19-09-2026 18:00'),
-    ReportRow('Results', 'Monthly Test Sep 2026', 'Hanfi', '19-09-2026 18:00'),
-    ReportRow('Complaints', 'Sep 2026', 'All', '19-09-2026 18:00'),
-    ReportRow('Admissions and Promotions', 'Sep 2026', 'All', '19-09-2026 18:00'),
-  ];
 
   // ---------- login ----------
   // Demo-data login (kept for reference / offline testing only - no longer

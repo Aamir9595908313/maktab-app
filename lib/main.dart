@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:math' show pi;
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
@@ -7,6 +8,11 @@ import 'package:flutter/services.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:csv/csv.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:share_plus/share_plus.dart';
+import 'package:pdf/pdf.dart';
+import 'package:pdf/widgets.dart' as pw;
+import 'package:printing/printing.dart';
 import 'state.dart';
 import 'guest_tools.dart';
 import 'supabase_config.dart';
@@ -6747,6 +6753,245 @@ class _SuperSyllabusState extends State<SuperSyllabus> {
   }
 }
 
+// ---------------- Reports centre (real backend data, from/to date range) ----------------
+//
+// Nothing here is demo/precomputed data - each report queries the real
+// Supabase tables for whatever date range (and optional Maktab filter) the
+// user picks when they tap "Generate", using the same query style the rest
+// of the app already uses for on-demand/month-scoped reports (see
+// loadMonthAttendance above). PDF and Excel (CSV) exports both come from
+// the exact same row data, built with the same pw.Document/
+// ListToCsvConverter + Printing.sharePdf/Share.shareXFiles pattern already
+// proven in sadqa_peti.dart and monthly_members.dart.
+//
+// "Results" is deliberately not offered as a report: there is no
+// exam/marks feature anywhere in this app to source real results from, and
+// fabricating one here would mean inventing data - the Reports centre says
+// so explicitly instead of quietly omitting it.
+enum ReportKind { studentAttendance, teacherAttendance, teacherLeave, monthlyFees, syllabusProgress, complaints, admissions }
+
+class ReportDef {
+  final ReportKind kind;
+  final String name;
+  final IconData icon;
+  final String description;
+  // Complaints have no madrasa_id column (a complaint is raised by phone
+  // number, not scoped to a branch) - so the Maktab filter below doesn't
+  // apply to that one report, and is hidden rather than silently ignored.
+  final bool hasMadrasaFilter;
+  const ReportDef(this.kind, this.name, this.icon, this.description, {this.hasMadrasaFilter = true});
+}
+
+const kReportDefs = [
+  ReportDef(ReportKind.studentAttendance, 'Daily Student Attendance', Icons.event_available, 'Per-student Present/Absent, one row per finalized attendance record in the range.'),
+  ReportDef(ReportKind.teacherAttendance, 'Teacher Attendance', Icons.co_present, 'Daily teacher attendance status in the range.'),
+  ReportDef(ReportKind.teacherLeave, 'Teacher Leave', Icons.event_busy, 'Leave requests whose dates overlap the selected range.'),
+  ReportDef(ReportKind.monthlyFees, 'Monthly Fees', Icons.payments, 'Fee due/paid/outstanding for every month the range touches.'),
+  ReportDef(ReportKind.syllabusProgress, 'Syllabus Progress', Icons.menu_book, 'Chapters and book pages marked completed within the range.'),
+  ReportDef(ReportKind.complaints, 'Complaints', Icons.report_problem, 'Complaints raised in the range.', hasMadrasaFilter: false),
+  ReportDef(ReportKind.admissions, 'Admissions', Icons.school, "Students admitted in the range. Promotions aren't tracked as a dated history anywhere in the app yet, so this covers admissions only."),
+];
+
+typedef ReportData = (List<String> headers, List<List<String>> rows);
+
+String _cap(String s) => s.isEmpty ? s : '${s[0].toUpperCase()}${s.substring(1)}';
+
+Future<ReportData> _fetchStudentAttendance(String from, String to, String? madrasaFilter) async {
+  final rows = await sb
+      .from('student_attendance')
+      .select('attendance_date, status, student_id, madrasas(name), classes(name)')
+      .eq('is_draft', false)
+      .gte('attendance_date', from)
+      .lte('attendance_date', to)
+      .order('attendance_date');
+  final studentNameById = {for (final s in st.students) if (s.dbId != null) s.dbId!: s.name};
+  final out = <List<String>>[];
+  for (final r in (rows as List)) {
+    final mName = (r['madrasas'] as Map?)?['name'] as String? ?? '-';
+    if (madrasaFilter != null && mName != madrasaFilter) continue;
+    out.add([
+      (r['attendance_date'] as String?) ?? '-',
+      studentNameById[r['student_id'] as String?] ?? '-',
+      mName,
+      (r['classes'] as Map?)?['name'] as String? ?? '-',
+      (r['status'] as String?) == 'absent' ? 'Absent' : 'Present',
+    ]);
+  }
+  return (['Date', 'Student', 'Maktab', 'Class', 'Status'], out);
+}
+
+Future<ReportData> _fetchTeacherAttendance(String from, String to, String? madrasaFilter) async {
+  final rows = await sb
+      .from('teacher_attendance')
+      .select('attendance_date, status, teacher_id, madrasas(name)')
+      .gte('attendance_date', from)
+      .lte('attendance_date', to)
+      .order('attendance_date');
+  final teacherNameById = {for (final t in st.teacherAccounts) if (t.dbId != null) t.dbId!: t.name};
+  final out = <List<String>>[];
+  for (final r in (rows as List)) {
+    final mName = (r['madrasas'] as Map?)?['name'] as String? ?? '-';
+    if (madrasaFilter != null && mName != madrasaFilter) continue;
+    out.add([
+      (r['attendance_date'] as String?) ?? '-',
+      teacherNameById[r['teacher_id'] as String?] ?? '-',
+      mName,
+      _cap((r['status'] as String?) ?? '-'),
+    ]);
+  }
+  return (['Date', 'Teacher', 'Maktab', 'Status'], out);
+}
+
+Future<ReportData> _fetchTeacherLeave(String from, String to, String? madrasaFilter) async {
+  // Overlap, not containment: a leave that starts before `from` or ends
+  // after `to` but still touches the range is included, same as how a
+  // calendar's "events this week" would behave.
+  final rows = await sb
+      .from('teacher_leaves')
+      .select('teacher_id, madrasas(name), leave_type, from_date, to_date, status, reason')
+      .lte('from_date', to)
+      .gte('to_date', from)
+      .order('from_date');
+  final teacherNameById = {for (final t in st.teacherAccounts) if (t.dbId != null) t.dbId!: t.name};
+  final out = <List<String>>[];
+  for (final r in (rows as List)) {
+    final mName = (r['madrasas'] as Map?)?['name'] as String? ?? '-';
+    if (madrasaFilter != null && mName != madrasaFilter) continue;
+    out.add([
+      teacherNameById[r['teacher_id'] as String?] ?? '-',
+      mName,
+      (r['leave_type'] as String?) ?? '-',
+      (r['from_date'] as String?) ?? '-',
+      (r['to_date'] as String?) ?? '-',
+      _cap((r['status'] as String?) ?? '-'),
+      (r['reason'] as String?) ?? '-',
+    ]);
+  }
+  return (['Teacher', 'Maktab', 'Type', 'From', 'To', 'Status', 'Reason'], out);
+}
+
+Future<ReportData> _fetchMonthlyFees(String from, String to, String? madrasaFilter) async {
+  final fromD = DateTime.parse(from);
+  final toD = DateTime.parse(to);
+  final fromYm = fromD.year * 12 + fromD.month;
+  final toYm = toD.year * 12 + toD.month;
+  const monthNames = ['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  final rows = await sb.from('fees_monthly').select('student_id, year, month, amount_due, amount_paid, status').order('year').order('month');
+  final studentById = {for (final s in st.students) if (s.dbId != null) s.dbId!: s};
+  final out = <List<String>>[];
+  for (final r in (rows as List)) {
+    final y = r['year'] as int?;
+    final m = r['month'] as int?;
+    if (y == null || m == null) continue;
+    final ym = y * 12 + m;
+    if (ym < fromYm || ym > toYm) continue;
+    final s = studentById[r['student_id'] as String?];
+    if (madrasaFilter != null && s?.madrasa != madrasaFilter) continue;
+    final due = (r['amount_due'] as num?)?.toDouble() ?? 0;
+    final paid = (r['amount_paid'] as num?)?.toDouble() ?? 0;
+    out.add([
+      s?.name ?? '-',
+      s?.madrasa ?? '-',
+      '${monthNames[m]} $y',
+      due.toStringAsFixed(0),
+      paid.toStringAsFixed(0),
+      (due - paid).toStringAsFixed(0),
+      _cap((r['status'] as String?) ?? '-'),
+    ]);
+  }
+  return (['Student', 'Maktab', 'Month', 'Due', 'Paid', 'Outstanding', 'Status'], out);
+}
+
+Future<ReportData> _fetchSyllabusProgress(String from, String to, String? madrasaFilter) async {
+  final studentById = {for (final s in st.students) if (s.dbId != null) s.dbId!: s};
+  final out = <List<String>>[];
+  final bp = await sb
+      .from('book_progress')
+      .select('student_id, page_no, status, completed_on')
+      .eq('status', 'completed')
+      .gte('completed_on', from)
+      .lte('completed_on', to);
+  for (final r in (bp as List)) {
+    final s = studentById[r['student_id'] as String?];
+    if (madrasaFilter != null && s?.madrasa != madrasaFilter) continue;
+    out.add([(r['completed_on'] as String?) ?? '-', s?.name ?? '-', s?.madrasa ?? '-', 'Book page ${r['page_no']}']);
+  }
+  final sp = await sb
+      .from('syllabus_progress')
+      .select('student_id, status, completed_on, chapters(title)')
+      .eq('status', 'completed')
+      .gte('completed_on', from)
+      .lte('completed_on', to);
+  for (final r in (sp as List)) {
+    final s = studentById[r['student_id'] as String?];
+    if (madrasaFilter != null && s?.madrasa != madrasaFilter) continue;
+    out.add([(r['completed_on'] as String?) ?? '-', s?.name ?? '-', s?.madrasa ?? '-', 'Chapter: ${(r['chapters'] as Map?)?['title'] ?? '-'}']);
+  }
+  out.sort((a, b) => a[0].compareTo(b[0]));
+  return (['Date completed', 'Student', 'Maktab', 'Item'], out);
+}
+
+Future<ReportData> _fetchComplaints(String from, String to, String? madrasaFilter) async {
+  final rows = await sb
+      .from('complaints')
+      .select('created_at, by_name, to_role, subject, status')
+      .gte('created_at', from)
+      .lte('created_at', '${to}T23:59:59')
+      .order('created_at');
+  final out = [
+    for (final r in (rows as List))
+      [
+        ((r['created_at'] as String?) ?? '').split('T').first,
+        (r['by_name'] as String?) ?? '-',
+        _cap((r['to_role'] as String?) ?? '-'),
+        (r['subject'] as String?) ?? '-',
+        _cap((r['status'] as String?) ?? '-'),
+      ],
+  ];
+  return (['Date', 'Raised by', 'To', 'Subject', 'Status'], out);
+}
+
+Future<ReportData> _fetchAdmissions(String from, String to, String? madrasaFilter) async {
+  final rows = await sb
+      .from('students')
+      .select('name, admission_date, is_active, madrasas(name), classes(name)')
+      .gte('admission_date', from)
+      .lte('admission_date', to)
+      .order('admission_date');
+  final out = <List<String>>[];
+  for (final r in (rows as List)) {
+    final mName = (r['madrasas'] as Map?)?['name'] as String? ?? '-';
+    if (madrasaFilter != null && mName != madrasaFilter) continue;
+    out.add([
+      (r['admission_date'] as String?) ?? '-',
+      (r['name'] as String?) ?? '-',
+      mName,
+      (r['classes'] as Map?)?['name'] as String? ?? '-',
+      (r['is_active'] as bool?) ?? true ? 'Active' : 'Inactive',
+    ]);
+  }
+  return (['Admission Date', 'Student', 'Maktab', 'Class', 'Status'], out);
+}
+
+Future<ReportData> _fetchReport(ReportKind k, String from, String to, String? madrasaFilter) {
+  switch (k) {
+    case ReportKind.studentAttendance:
+      return _fetchStudentAttendance(from, to, madrasaFilter);
+    case ReportKind.teacherAttendance:
+      return _fetchTeacherAttendance(from, to, madrasaFilter);
+    case ReportKind.teacherLeave:
+      return _fetchTeacherLeave(from, to, madrasaFilter);
+    case ReportKind.monthlyFees:
+      return _fetchMonthlyFees(from, to, madrasaFilter);
+    case ReportKind.syllabusProgress:
+      return _fetchSyllabusProgress(from, to, madrasaFilter);
+    case ReportKind.complaints:
+      return _fetchComplaints(from, to, madrasaFilter);
+    case ReportKind.admissions:
+      return _fetchAdmissions(from, to, madrasaFilter);
+  }
+}
+
 class ReportsView extends StatefulWidget {
   const ReportsView({super.key});
   @override
@@ -6757,31 +7002,182 @@ class _ReportsViewState extends State<ReportsView> {
   String q = '';
   @override
   Widget build(BuildContext context) {
-    final rows = st.reports.where((r) => r.name.toLowerCase().contains(q.toLowerCase())).toList();
+    final defs = kReportDefs.where((d) => d.name.toLowerCase().contains(q.toLowerCase())).toList();
     return page([
       h('Reports centre', icon: Icons.assessment),
       TextField(decoration: const InputDecoration(labelText: 'Search report name', border: OutlineInputBorder()), onChanged: (v) => setState(() => q = v)),
-      const SizedBox(height: 8),
-      SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
-        child: DataTable(
-          columns: const [DataColumn(label: Text('Report name')), DataColumn(label: Text('Date / period')), DataColumn(label: Text('Maktab')), DataColumn(label: Text('Created on')), DataColumn(label: Text('Download'))],
-          rows: [
-            for (final r in rows)
-              DataRow(cells: [
-                DataCell(Text(r.name)),
-                DataCell(Text(r.period)),
-                DataCell(Text(r.madrasa)),
-                DataCell(Text(r.created)),
-                DataCell(Row(children: [
-                  TextButton(onPressed: () => toast(context, 'Demo: ${r.name} PDF downloaded'), child: const Text('PDF')),
-                  TextButton(onPressed: () => toast(context, 'Demo: ${r.name} Excel downloaded'), child: const Text('Excel')),
-                ])),
-              ]),
-          ],
+      const SizedBox(height: 10),
+      for (final d in defs)
+        Card(
+          child: ListTile(
+            leading: Icon(d.icon, color: kGreen),
+            title: Text(d.name),
+            subtitle: Text(d.description, style: const TextStyle(fontSize: 12)),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => ReportGeneratorScreen(def: d))),
+          ),
+        ),
+      if (defs.isEmpty) const Padding(padding: EdgeInsets.all(16), child: Text('No report matches that search.')),
+      const Padding(
+        padding: EdgeInsets.fromLTRB(4, 12, 4, 4),
+        child: Text(
+          "Results isn't offered here: there's no Exams/Results feature anywhere in the app yet to pull real marks from.",
+          style: TextStyle(fontSize: 12, color: Colors.black54),
         ),
       ),
     ]);
+  }
+}
+
+class ReportGeneratorScreen extends StatefulWidget {
+  final ReportDef def;
+  const ReportGeneratorScreen({super.key, required this.def});
+  @override
+  State<ReportGeneratorScreen> createState() => _ReportGeneratorScreenState();
+}
+
+class _ReportGeneratorScreenState extends State<ReportGeneratorScreen> {
+  DateTime from = DateTime.now().subtract(const Duration(days: 6));
+  DateTime to = DateTime.now();
+  String madrasa = 'All';
+  bool loading = false;
+  String? error;
+  List<String>? headers;
+  List<List<String>>? rows;
+
+  String get _fromStr => fd(from);
+  String get _toStr => fd(to);
+
+  Future<void> _pickDate(bool isFrom) async {
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: isFrom ? from : to,
+      firstDate: DateTime(2015, 1, 1),
+      lastDate: DateTime.now().add(const Duration(days: 365)),
+    );
+    if (picked == null) return;
+    setState(() {
+      if (isFrom) {
+        from = picked;
+        if (from.isAfter(to)) to = from;
+      } else {
+        to = picked;
+        if (to.isBefore(from)) from = to;
+      }
+    });
+  }
+
+  Future<void> _generate() async {
+    setState(() {
+      loading = true;
+      error = null;
+      headers = null;
+      rows = null;
+    });
+    try {
+      final result = await _fetchReport(widget.def.kind, _fromStr, _toStr, (widget.def.hasMadrasaFilter && madrasa != 'All') ? madrasa : null);
+      setState(() {
+        headers = result.$1;
+        rows = result.$2;
+      });
+    } catch (_) {
+      setState(() => error = 'Could not load this report. Check your connection and try again.');
+    } finally {
+      if (mounted) setState(() => loading = false);
+    }
+  }
+
+  String get _safeName => widget.def.name.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]+'), '_');
+
+  Future<void> _exportCsv() async {
+    if (rows == null || headers == null) return;
+    final csv = const ListToCsvConverter().convert([headers!, ...rows!]);
+    try {
+      final dir = await getTemporaryDirectory();
+      final file = File('${dir.path}/${_safeName}_${_fromStr}_to_$_toStr.csv');
+      await file.writeAsString(csv);
+      await Share.shareXFiles([XFile(file.path)], text: '${widget.def.name} report ($_fromStr to $_toStr)');
+    } catch (_) {
+      if (mounted) toast(context, 'Could not export. Check storage/share permissions.');
+    }
+  }
+
+  Future<void> _exportPdf() async {
+    if (rows == null || headers == null) return;
+    try {
+      final doc = pw.Document();
+      doc.addPage(
+        pw.MultiPage(
+          pageFormat: PdfPageFormat.a4,
+          build: (ctx) => [
+            pw.Text(widget.def.name, style: pw.TextStyle(fontSize: 16, fontWeight: pw.FontWeight.bold)),
+            pw.Text('Faiz-E-Raza Group Mehkar - Maktab e Tajushshriah', style: const pw.TextStyle(fontSize: 10, color: PdfColors.grey700)),
+            pw.Text('$_fromStr to $_toStr${madrasa == 'All' ? '' : ' - $madrasa'}', style: const pw.TextStyle(fontSize: 10, color: PdfColors.grey700)),
+            pw.SizedBox(height: 10),
+            pw.Table.fromTextArray(
+              headers: headers,
+              data: rows,
+              cellStyle: const pw.TextStyle(fontSize: 8),
+              headerStyle: pw.TextStyle(fontSize: 8, fontWeight: pw.FontWeight.bold),
+            ),
+          ],
+        ),
+      );
+      await Printing.sharePdf(bytes: await doc.save(), filename: '${_safeName}_${_fromStr}_to_$_toStr.pdf');
+    } catch (_) {
+      if (mounted) toast(context, 'Could not export PDF.');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: Text(widget.def.name), backgroundColor: kGreen, foregroundColor: Colors.white),
+      body: page([
+        Text(widget.def.description, style: const TextStyle(color: Colors.black54)),
+        const SizedBox(height: 10),
+        Row(children: [
+          Expanded(child: OutlinedButton(onPressed: () => _pickDate(true), child: Text('From: $_fromStr'))),
+          const SizedBox(width: 8),
+          Expanded(child: OutlinedButton(onPressed: () => _pickDate(false), child: Text('To: $_toStr'))),
+        ]),
+        if (widget.def.hasMadrasaFilter) ...[
+          const SizedBox(height: 8),
+          DropdownButtonFormField<String>(
+            value: madrasa,
+            decoration: const InputDecoration(labelText: 'Maktab', border: OutlineInputBorder()),
+            items: ['All', for (final m in st.madrasas) m.name].map((m) => DropdownMenuItem(value: m, child: Text(m))).toList(),
+            onChanged: (v) => setState(() => madrasa = v ?? 'All'),
+          ),
+        ],
+        const SizedBox(height: 12),
+        ElevatedButton.icon(
+          onPressed: loading ? null : _generate,
+          icon: loading ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white)) : const Icon(Icons.play_arrow),
+          label: Text(loading ? 'Generating...' : 'Generate'),
+        ),
+        if (error != null) Padding(padding: const EdgeInsets.only(top: 8), child: Text(error!, style: const TextStyle(color: Colors.red))),
+        if (rows != null) ...[
+          const SizedBox(height: 16),
+          Row(children: [
+            Text('${rows!.length} row(s)', style: const TextStyle(fontWeight: FontWeight.bold)),
+            const Spacer(),
+            TextButton.icon(onPressed: rows!.isEmpty ? null : _exportPdf, icon: const Icon(Icons.picture_as_pdf), label: const Text('PDF')),
+            TextButton.icon(onPressed: rows!.isEmpty ? null : _exportCsv, icon: const Icon(Icons.grid_on), label: const Text('Excel')),
+          ]),
+          const SizedBox(height: 8),
+          if (rows!.isEmpty) const Text('No records found for this range.'),
+          if (rows!.isNotEmpty)
+            SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: DataTable(
+                columns: [for (final hd in headers!) DataColumn(label: Text(hd))],
+                rows: [for (final r in rows!) DataRow(cells: [for (final c in r) DataCell(Text(c))])],
+              ),
+            ),
+        ],
+      ]),
+    );
   }
 }
 
