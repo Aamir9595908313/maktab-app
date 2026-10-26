@@ -13,6 +13,7 @@ dependencies:
   flutter_compass: ^0.8.1
   file_picker: ^13.0.0
   csv: ^6.0.0
+  excel: ^4.0.6
   http: ^1.2.2
   printing: ^5.13.4
   pdf: ^3.11.1

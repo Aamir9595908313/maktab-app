@@ -8,6 +8,7 @@ import 'package:flutter/services.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:csv/csv.dart';
+import 'package:excel/excel.dart' as xl;
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:pdf/pdf.dart';
@@ -953,6 +954,75 @@ Future<MonthAttendanceSummary?> loadMonthAttendance(Student s, int year, int mon
   } catch (_) {
     return null;
   }
+}
+
+// Bulk version of loadMonthAttendance for reports that need every student's
+// month summary at once (the Monthly Student Attendance Excel report) - two
+// queries total (attendance + events, both scoped to just the given
+// students/madrasas and month) instead of 2-per-student, then the same
+// real computeMonthAttendance classification (Friday weekend, maktab_events
+// holiday/event exclusion, pre-admission days skipped, missing attendance
+// kept as "Not Recorded" rather than assumed Absent) is applied per student
+// from the shared in-memory data - identical rules, far fewer round trips.
+Future<Map<int, MonthAttendanceSummary>> loadMonthAttendanceBulk(List<Student> students, int year, int month) async {
+  final out = <int, MonthAttendanceSummary>{};
+  final withDb = students.where((s) => s.dbId != null).toList();
+  if (withDb.isEmpty) return out;
+  final firstOfMonth = DateTime(year, month, 1);
+  final lastOfMonth = DateTime(year, month + 1, 0);
+  final dbIds = [for (final s in withDb) s.dbId!];
+
+  final attByStudent = <String, Map<String, String>>{};
+  try {
+    final attRows = await sb
+        .from('student_attendance')
+        .select('student_id, attendance_date, status')
+        .eq('is_draft', false)
+        .gte('attendance_date', fd(firstOfMonth))
+        .lte('attendance_date', fd(lastOfMonth))
+        .inFilter('student_id', dbIds);
+    for (final r in (attRows as List)) {
+      final sid = r['student_id'] as String;
+      (attByStudent[sid] ??= {})[r['attendance_date'] as String] = (r['status'] as String?) ?? '';
+    }
+  } catch (_) {}
+
+  final madrasaIds = <String>{for (final s in withDb) if (_madrasaDbId(s.madrasa) != null) _madrasaDbId(s.madrasa)!};
+  final evByMadrasaId = <String, List<MaktabEvent>>{};
+  if (madrasaIds.isNotEmpty) {
+    try {
+      final evRows = await sb
+          .from('maktab_events')
+          .select('madrasa_id, event_date, event_name, event_type, batch, cancelled_at')
+          .gte('event_date', fd(firstOfMonth))
+          .lte('event_date', fd(lastOfMonth))
+          .inFilter('madrasa_id', madrasaIds.toList());
+      for (final r in (evRows as List)) {
+        final mid = r['madrasa_id'] as String;
+        (evByMadrasaId[mid] ??= []).add(MaktabEvent(
+          madrasa: '',
+          name: (r['event_name'] as String?) ?? '',
+          type: (r['event_type'] as String?) ?? 'event',
+          date: (r['event_date'] as String?) ?? '',
+          batch: r['batch'] as String?,
+          cancelled: r['cancelled_at'] != null,
+        ));
+      }
+    } catch (_) {}
+  }
+
+  for (final s in withDb) {
+    final mid = _madrasaDbId(s.madrasa);
+    out[s.id] = computeMonthAttendance(
+      studentStart: s.start,
+      year: year,
+      month: month,
+      attendanceByDate: attByStudent[s.dbId] ?? const {},
+      events: evByMadrasaId[mid] ?? const [],
+      batch: s.batch,
+    );
+  }
+  return out;
 }
 
 // ---------------- Teacher self-attendance (public.teacher_attendance) ----------------
@@ -6768,7 +6838,7 @@ class _SuperSyllabusState extends State<SuperSyllabus> {
 // exam/marks feature anywhere in this app to source real results from, and
 // fabricating one here would mean inventing data - the Reports centre says
 // so explicitly instead of quietly omitting it.
-enum ReportKind { studentAttendance, teacherAttendance, teacherLeave, monthlyFees, syllabusProgress, complaints, admissions }
+enum ReportKind { studentAttendance, teacherAttendance, teacherLeave, monthlyFees, syllabusProgress, complaints, admissions, studentHistory }
 
 class ReportDef {
   final ReportKind kind;
@@ -6783,7 +6853,10 @@ class ReportDef {
 }
 
 const kReportDefs = [
-  ReportDef(ReportKind.studentAttendance, 'Daily Student Attendance', Icons.event_available, 'Per-student Present/Absent, one row per finalized attendance record in the range.'),
+  ReportDef(ReportKind.studentAttendance, 'Monthly Student Attendance', Icons.event_available,
+      'Branch-wise daily Present/Absent for a selected month, with branch and grand totals, below-40% highlighting. Excel (.xlsx) only.'),
+  ReportDef(ReportKind.studentHistory, 'Student Complete History', Icons.person_search,
+      'Full history for one student: details, class, syllabus, course completion, month-wise attendance. PDF only.', hasMadrasaFilter: false),
   ReportDef(ReportKind.teacherAttendance, 'Teacher Attendance', Icons.co_present, 'Daily teacher attendance status in the range.'),
   ReportDef(ReportKind.teacherLeave, 'Teacher Leave', Icons.event_busy, 'Leave requests whose dates overlap the selected range.'),
   ReportDef(ReportKind.monthlyFees, 'Monthly Fees', Icons.payments, 'Fee due/paid/outstanding for every month the range touches.'),
@@ -6796,29 +6869,6 @@ typedef ReportData = (List<String> headers, List<List<String>> rows);
 
 String _cap(String s) => s.isEmpty ? s : '${s[0].toUpperCase()}${s.substring(1)}';
 
-Future<ReportData> _fetchStudentAttendance(String from, String to, String? madrasaFilter) async {
-  final rows = await sb
-      .from('student_attendance')
-      .select('attendance_date, status, student_id, madrasas(name), classes(name)')
-      .eq('is_draft', false)
-      .gte('attendance_date', from)
-      .lte('attendance_date', to)
-      .order('attendance_date');
-  final studentNameById = {for (final s in st.students) if (s.dbId != null) s.dbId!: s.name};
-  final out = <List<String>>[];
-  for (final r in (rows as List)) {
-    final mName = (r['madrasas'] as Map?)?['name'] as String? ?? '-';
-    if (madrasaFilter != null && mName != madrasaFilter) continue;
-    out.add([
-      (r['attendance_date'] as String?) ?? '-',
-      studentNameById[r['student_id'] as String?] ?? '-',
-      mName,
-      (r['classes'] as Map?)?['name'] as String? ?? '-',
-      (r['status'] as String?) == 'absent' ? 'Absent' : 'Present',
-    ]);
-  }
-  return (['Date', 'Student', 'Maktab', 'Class', 'Status'], out);
-}
 
 Future<ReportData> _fetchTeacherAttendance(String from, String to, String? madrasaFilter) async {
   final rows = await sb
@@ -6973,10 +7023,15 @@ Future<ReportData> _fetchAdmissions(String from, String to, String? madrasaFilte
   return (['Admission Date', 'Student', 'Maktab', 'Class', 'Status'], out);
 }
 
+// studentAttendance and studentHistory each have their own dedicated
+// screen (different parameters entirely: Month/Year/Branch + Excel-only
+// for the former, a student picker + PDF-only for the latter) and never
+// reach this generic From/To fetcher - see ReportsView's onTap below.
 Future<ReportData> _fetchReport(ReportKind k, String from, String to, String? madrasaFilter) {
   switch (k) {
     case ReportKind.studentAttendance:
-      return _fetchStudentAttendance(from, to, madrasaFilter);
+    case ReportKind.studentHistory:
+      throw StateError('${k.name} uses its own dedicated screen, not the generic fetcher.');
     case ReportKind.teacherAttendance:
       return _fetchTeacherAttendance(from, to, madrasaFilter);
     case ReportKind.teacherLeave:
@@ -7014,7 +7069,16 @@ class _ReportsViewState extends State<ReportsView> {
             title: Text(d.name),
             subtitle: Text(d.description, style: const TextStyle(fontSize: 12)),
             trailing: const Icon(Icons.chevron_right),
-            onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => ReportGeneratorScreen(def: d))),
+            onTap: () => Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (_) => switch (d.kind) {
+                  ReportKind.studentAttendance => const MonthlyAttendanceReportScreen(),
+                  ReportKind.studentHistory => const StudentHistoryReportScreen(),
+                  _ => ReportGeneratorScreen(def: d),
+                },
+              ),
+            ),
           ),
         ),
       if (defs.isEmpty) const Padding(padding: EdgeInsets.all(16), child: Text('No report matches that search.')),
@@ -9025,4 +9089,581 @@ class _AdminNotificationsScreenState extends State<AdminNotificationsScreen> {
       },
     );
   }
+}
+
+// ---------------- Monthly Student Attendance Report (Excel only) ----------------
+//
+// Replaces the plain date-range "Daily Student Attendance" generic report
+// with the real thing the Maktab actually needs: one month, grouped by
+// branch, with branch/grand totals and a 40%-attendance highlight - built
+// from the exact same eligible-session rules (computeMonthAttendance) the
+// rest of the app already uses for a student's own attendance %, not a
+// re-invented one. Excel (.xlsx) is produced with the `excel` package
+// (aliased `xl` to avoid clashing with local variables below); PDF/CSV are
+// deliberately not offered for this report, per spec.
+class MonthlyAttendanceReportScreen extends StatefulWidget {
+  const MonthlyAttendanceReportScreen({super.key});
+  @override
+  State<MonthlyAttendanceReportScreen> createState() => _MonthlyAttendanceReportScreenState();
+}
+
+const kMonthNames = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+
+class _MonthlyAttendanceReportScreenState extends State<MonthlyAttendanceReportScreen> {
+  late int month;
+  late int year;
+  String madrasa = 'All';
+  bool loading = false;
+  String? error;
+  String? resultSummary;
+
+  @override
+  void initState() {
+    super.initState();
+    final now = DateTime.now();
+    month = now.month;
+    year = now.year;
+  }
+
+  Future<void> _generate() async {
+    setState(() {
+      loading = true;
+      error = null;
+      resultSummary = null;
+    });
+    try {
+      final targetStudents = st.students.where((s) => madrasa == 'All' || s.madrasa == madrasa).toList();
+      if (targetStudents.isEmpty) {
+        setState(() => error = 'No students found for this Maktab.');
+        return;
+      }
+      final summaries = await loadMonthAttendanceBulk(targetStudents, year, month);
+      final bytes = buildMonthlyAttendanceExcel(
+        students: targetStudents,
+        summaries: summaries,
+        year: year,
+        month: month,
+        madrasaFilter: madrasa == 'All' ? null : madrasa,
+      );
+      final dir = await getTemporaryDirectory();
+      final file = File('${dir.path}/monthly_attendance_${year}_${month.toString().padLeft(2, '0')}.xlsx');
+      await file.writeAsBytes(bytes);
+      await Share.shareXFiles([XFile(file.path)], text: 'Monthly Student Attendance - ${kMonthNames[month - 1]} $year');
+      if (mounted) setState(() => resultSummary = '${targetStudents.length} student(s) included.');
+    } catch (_) {
+      if (mounted) setState(() => error = 'Could not generate the report. Check your connection and try again.');
+    } finally {
+      if (mounted) setState(() => loading = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final years = [for (var y = DateTime.now().year; y >= 2020; y--) y];
+    return Scaffold(
+      appBar: AppBar(title: const Text('Monthly Student Attendance'), backgroundColor: kGreen, foregroundColor: Colors.white),
+      body: page([
+        const Text(
+          'Per-student daily Present/Absent for the selected month, grouped by Maktab, with branch and grand totals. Weekends (Friday) and recorded events/holidays are excluded from attendance %, and a row below 40% is highlighted red. Excel (.xlsx) only.',
+          style: TextStyle(color: Colors.black54),
+        ),
+        const SizedBox(height: 12),
+        Row(children: [
+          Expanded(
+            child: DropdownButtonFormField<int>(
+              value: month,
+              decoration: const InputDecoration(labelText: 'Month', border: OutlineInputBorder()),
+              items: [for (var m = 1; m <= 12; m++) DropdownMenuItem(value: m, child: Text(kMonthNames[m - 1]))],
+              onChanged: (v) => setState(() => month = v ?? month),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: DropdownButtonFormField<int>(
+              value: year,
+              decoration: const InputDecoration(labelText: 'Year', border: OutlineInputBorder()),
+              items: [for (final y in years) DropdownMenuItem(value: y, child: Text('$y'))],
+              onChanged: (v) => setState(() => year = v ?? year),
+            ),
+          ),
+        ]),
+        const SizedBox(height: 8),
+        DropdownButtonFormField<String>(
+          value: madrasa,
+          decoration: const InputDecoration(labelText: 'Maktab / Branch', border: OutlineInputBorder()),
+          items: ['All', for (final m in st.madrasas) m.name].map((m) => DropdownMenuItem(value: m, child: Text(m))).toList(),
+          onChanged: (v) => setState(() => madrasa = v ?? 'All'),
+        ),
+        const SizedBox(height: 12),
+        ElevatedButton.icon(
+          onPressed: loading ? null : _generate,
+          icon: loading
+              ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+              : const Icon(Icons.grid_on),
+          label: Text(loading ? 'Generating...' : 'Download Excel'),
+        ),
+        if (error != null) Padding(padding: const EdgeInsets.only(top: 8), child: Text(error!, style: const TextStyle(color: Colors.red))),
+        if (resultSummary != null) Padding(padding: const EdgeInsets.only(top: 8), child: Text(resultSummary!, style: const TextStyle(color: Colors.green))),
+      ]),
+    );
+  }
+}
+
+// Builds the real .xlsx bytes. `summaries` is keyed by Student.id (local
+// int id, not the db uuid) from loadMonthAttendanceBulk - a student with no
+// row there (e.g. dbId == null, never synced) is simply shown with 0s
+// rather than dropped, per spec's "handle students with no attendance
+// records without dropping them" requirement.
+List<int> buildMonthlyAttendanceExcel({
+  required List<Student> students,
+  required Map<int, MonthAttendanceSummary> summaries,
+  required int year,
+  required int month,
+  required String? madrasaFilter,
+}) {
+  final lastDay = DateTime(year, month + 1, 0).day;
+  final excel = xl.Excel.createExcel();
+  final sheetName = 'Attendance ${kMonthNames[month - 1]} $year';
+  final xl.Sheet sheet = excel[sheetName];
+  for (final name in List<String>.from(excel.sheets.keys)) {
+    if (name != sheetName) excel.delete(name);
+  }
+
+  final headerStyle = xl.CellStyle(bold: true, backgroundColorHex: xl.ExcelColor.fromHexString('#D9E8D4'), horizontalAlign: xl.HorizontalAlign.Center);
+  final branchHeaderStyle = xl.CellStyle(bold: true, backgroundColorHex: xl.ExcelColor.fromHexString('#FFF0C2'));
+  final totalStyle = xl.CellStyle(bold: true, backgroundColorHex: xl.ExcelColor.fromHexString('#E0E0E0'));
+  final grandTotalStyle = xl.CellStyle(bold: true, backgroundColorHex: xl.ExcelColor.fromHexString('#C8E6C9'));
+  final redStyle = xl.CellStyle(backgroundColorHex: xl.ExcelColor.fromHexString('#FFCCCC'));
+  final titleStyle = xl.CellStyle(bold: true, fontSize: 14);
+
+  void setCell(int col, int row, Object value, {xl.CellStyle? style}) {
+    final cell = sheet.cell(xl.CellIndex.indexByColumnRow(columnIndex: col, rowIndex: row));
+    cell.value = value is int ? xl.IntCellValue(value) : xl.TextCellValue('$value');
+    if (style != null) cell.cellStyle = style;
+  }
+
+  var row = 0;
+  setCell(0, row, 'Monthly Student Attendance Report - ${kMonthNames[month - 1]} $year${madrasaFilter != null ? ' - $madrasaFilter' : ''}', style: titleStyle);
+  row++;
+  setCell(0, row, 'Faiz-E-Raza Group Mehkar - Maktab e Tajushshriah');
+  row++;
+  row++; // blank spacer
+
+  final headerRow = row;
+  final headers = <String>['Student Name', 'Branch Name', 'Parent Mobile Number', for (var d = 1; d <= lastDay; d++) 'Day $d', 'Total Present', 'Total Absent', 'Total Attendance Sessions', 'Attendance %'];
+  for (var c = 0; c < headers.length; c++) {
+    setCell(c, headerRow, headers[c], style: headerStyle);
+  }
+  row++;
+
+  sheet.setColumnWidth(0, 22);
+  sheet.setColumnWidth(1, 18);
+  sheet.setColumnWidth(2, 16);
+  for (var d = 0; d < lastDay; d++) {
+    sheet.setColumnWidth(3 + d, 4);
+  }
+  sheet.setColumnWidth(3 + lastDay, 10);
+  sheet.setColumnWidth(4 + lastDay, 10);
+  sheet.setColumnWidth(5 + lastDay, 12);
+  sheet.setColumnWidth(6 + lastDay, 10);
+
+  // Freeze the header rows and the student-identification columns
+  // (Name/Branch/Phone) - "where practical" per spec; wrapped defensively
+  // since this is a nice-to-have, not core to the report being correct.
+  try {
+    sheet.setFreezePane(xl.CellIndex.indexByColumnRow(columnIndex: 3, rowIndex: headerRow + 1));
+  } catch (_) {}
+
+  final byBranch = <String, List<Student>>{};
+  for (final s in students) {
+    (byBranch[s.madrasa] ??= []).add(s);
+  }
+  final branchNames = byBranch.keys.toList()..sort();
+
+  var grandStudents = 0, grandPresent = 0, grandAbsent = 0, grandEligible = 0;
+
+  for (final branch in branchNames) {
+    final list = byBranch[branch]!..sort((a, b) => a.name.compareTo(b.name));
+    var bPresent = 0, bAbsent = 0, bEligible = 0;
+    for (final s in list) {
+      final sum = summaries[s.id];
+      bPresent += sum?.present ?? 0;
+      bAbsent += sum?.absent ?? 0;
+      bEligible += (sum?.present ?? 0) + (sum?.absent ?? 0);
+    }
+    final bPct = bEligible == 0 ? null : bPresent * 100 / bEligible;
+
+    setCell(0, row, 'Branch: $branch', style: branchHeaderStyle);
+    setCell(1, row, '', style: branchHeaderStyle);
+    setCell(2, row, 'Students: ${list.length}', style: branchHeaderStyle);
+    for (var d = 0; d < lastDay; d++) {
+      setCell(3 + d, row, '', style: branchHeaderStyle);
+    }
+    setCell(3 + lastDay, row, bPresent, style: branchHeaderStyle);
+    setCell(4 + lastDay, row, bAbsent, style: branchHeaderStyle);
+    setCell(5 + lastDay, row, bEligible, style: branchHeaderStyle);
+    setCell(6 + lastDay, row, bPct == null ? 'N/A' : '${bPct.toStringAsFixed(2)}%', style: branchHeaderStyle);
+    row++;
+
+    for (final s in list) {
+      final sum = summaries[s.id];
+      final present = sum?.present ?? 0;
+      final absent = sum?.absent ?? 0;
+      final eligible = present + absent;
+      final pct = eligible == 0 ? null : present * 100 / eligible;
+      // Strictly below 40.00% only - a student at exactly 40% is not
+      // highlighted (spec's own worked example), so this must compare the
+      // raw double, never a rounded display value.
+      final highlight = pct != null && pct < 40.0;
+      final rowStyle = highlight ? redStyle : null;
+
+      setCell(0, row, s.name, style: rowStyle);
+      setCell(1, row, branch, style: rowStyle);
+      setCell(2, row, s.parentPhone, style: rowStyle);
+
+      final dayByDate = {for (final da in (sum?.days ?? const <DayAttendance>[])) da.date: da.status};
+      for (var d = 1; d <= lastDay; d++) {
+        final ds = fd(DateTime(year, month, d));
+        final status = dayByDate[ds];
+        String symbol;
+        if (status == 'Present') {
+          symbol = 'P';
+        } else if (status == 'Absent') {
+          symbol = 'A';
+        } else if (status == 'Not Recorded') {
+          symbol = 'NR'; // scheduled, but attendance was never submitted - not the same as Absent
+        } else {
+          symbol = '-'; // Weekend, Holiday, Event, before admission, or a future day this month
+        }
+        setCell(3 + (d - 1), row, symbol, style: rowStyle);
+      }
+      setCell(3 + lastDay, row, present, style: rowStyle);
+      setCell(4 + lastDay, row, absent, style: rowStyle);
+      setCell(5 + lastDay, row, eligible, style: rowStyle);
+      setCell(6 + lastDay, row, pct == null ? 'N/A' : '${pct.toStringAsFixed(2)}%', style: rowStyle);
+      row++;
+    }
+
+    setCell(0, row, 'Branch Total', style: totalStyle);
+    setCell(1, row, branch, style: totalStyle);
+    setCell(2, row, '', style: totalStyle);
+    for (var d = 0; d < lastDay; d++) {
+      setCell(3 + d, row, '', style: totalStyle);
+    }
+    setCell(3 + lastDay, row, bPresent, style: totalStyle);
+    setCell(4 + lastDay, row, bAbsent, style: totalStyle);
+    setCell(5 + lastDay, row, bEligible, style: totalStyle);
+    setCell(6 + lastDay, row, bPct == null ? 'N/A' : '${bPct.toStringAsFixed(2)}%', style: totalStyle);
+    row++;
+
+    grandStudents += list.length;
+    grandPresent += bPresent;
+    grandAbsent += bAbsent;
+    grandEligible += bEligible;
+  }
+
+  final grandPct = grandEligible == 0 ? null : grandPresent * 100 / grandEligible;
+  setCell(0, row, 'GRAND TOTAL', style: grandTotalStyle);
+  setCell(1, row, 'All Branches ($grandStudents students)', style: grandTotalStyle);
+  setCell(2, row, '', style: grandTotalStyle);
+  for (var d = 0; d < lastDay; d++) {
+    setCell(3 + d, row, '', style: grandTotalStyle);
+  }
+  setCell(3 + lastDay, row, grandPresent, style: grandTotalStyle);
+  setCell(4 + lastDay, row, grandAbsent, style: grandTotalStyle);
+  setCell(5 + lastDay, row, grandEligible, style: grandTotalStyle);
+  setCell(6 + lastDay, row, grandPct == null ? 'N/A' : '${grandPct.toStringAsFixed(2)}%', style: grandTotalStyle);
+
+  return excel.save() ?? <int>[];
+}
+
+// ---------------- Student Complete History Report (PDF only) ----------------
+//
+// One student's full picture in a single branded PDF: personal details,
+// current class (class *history* isn't tracked anywhere in this schema -
+// there is no promotions table, confirmed while building the Reports
+// centre above - so this is honestly labelled "current class" rather than
+// a fabricated progression), syllabus progress, course completion, and a
+// month-by-month attendance table built from the same computeMonthAttendance
+// rules as every other attendance screen. There is no
+// additional-work/achievements/teacher-remarks module anywhere in this app
+// (the only "Note" model is a local, session-only activity toast, never
+// persisted or loaded from the backend) - so that section is left out of
+// the PDF entirely rather than inventing one, per spec's own instruction
+// for exactly this situation.
+class StudentHistoryReportScreen extends StatefulWidget {
+  const StudentHistoryReportScreen({super.key});
+  @override
+  State<StudentHistoryReportScreen> createState() => _StudentHistoryReportScreenState();
+}
+
+class _StudentHistoryReportScreenState extends State<StudentHistoryReportScreen> {
+  String q = '';
+  Student? selected;
+  bool loading = false;
+  String? error;
+
+  Future<void> _generate() async {
+    final s = selected;
+    if (s == null) return;
+    setState(() {
+      loading = true;
+      error = null;
+    });
+    try {
+      final bytes = await buildStudentHistoryPdf(s);
+      final safeId = s.key.replaceAll(RegExp(r'[^A-Za-z0-9]+'), '_');
+      await Printing.sharePdf(bytes: bytes, filename: 'Student_History_${safeId}_${fd(DateTime.now())}.pdf');
+    } catch (_) {
+      if (mounted) setState(() => error = 'Could not generate the report. Check your connection and try again.');
+    } finally {
+      if (mounted) setState(() => loading = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final results = q.trim().isEmpty
+        ? const <Student>[]
+        : st.students.where((s) => s.name.toLowerCase().contains(q.toLowerCase()) || s.key.toLowerCase().contains(q.toLowerCase())).take(20).toList();
+    return Scaffold(
+      appBar: AppBar(title: const Text('Student Complete History'), backgroundColor: kGreen, foregroundColor: Colors.white),
+      body: page([
+        const Text(
+          "Full history for one student - personal details, class, syllabus progress, course completion, and month-wise attendance from admission to today. PDF only.",
+          style: TextStyle(color: Colors.black54),
+        ),
+        const SizedBox(height: 10),
+        TextField(
+          decoration: const InputDecoration(labelText: 'Search by student name or ID', border: OutlineInputBorder()),
+          onChanged: (v) => setState(() {
+            q = v;
+            selected = null;
+          }),
+        ),
+        const SizedBox(height: 8),
+        if (selected == null)
+          for (final s in results)
+            Card(
+              child: ListTile(
+                title: Text(s.name),
+                subtitle: Text('${s.madrasa} - ${st.className(s.cls)} - ID ${s.key}'),
+                onTap: () => setState(() => selected = s),
+              ),
+            ),
+        if (selected != null) ...[
+          Card(
+            color: const Color(0xFFEEF4E8),
+            child: ListTile(
+              leading: const Icon(Icons.check_circle, color: kGreen),
+              title: Text(selected!.name),
+              subtitle: Text('${selected!.madrasa} - ${st.className(selected!.cls)} - ID ${selected!.key}'),
+              trailing: TextButton(onPressed: () => setState(() => selected = null), child: const Text('Change')),
+            ),
+          ),
+          const SizedBox(height: 12),
+          ElevatedButton.icon(
+            onPressed: loading ? null : _generate,
+            icon: loading
+                ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                : const Icon(Icons.picture_as_pdf),
+            label: Text(loading ? 'Generating...' : 'Download PDF'),
+          ),
+          if (error != null) Padding(padding: const EdgeInsets.only(top: 8), child: Text(error!, style: const TextStyle(color: Colors.red))),
+        ],
+      ]),
+    );
+  }
+}
+
+pw.Widget _pdfKv(String label, String value) => pw.Padding(
+      padding: const pw.EdgeInsets.only(bottom: 3),
+      child: pw.Row(crossAxisAlignment: pw.CrossAxisAlignment.start, children: [
+        pw.SizedBox(width: 130, child: pw.Text(label, style: pw.TextStyle(fontSize: 9, color: PdfColors.grey700))),
+        pw.Expanded(child: pw.Text(value, style: const pw.TextStyle(fontSize: 9))),
+      ]),
+    );
+
+pw.Widget _pdfSectionHeading(String text) => pw.Padding(
+      padding: const pw.EdgeInsets.only(top: 14, bottom: 6),
+      child: pw.Column(crossAxisAlignment: pw.CrossAxisAlignment.start, children: [
+        pw.Text(text, style: pw.TextStyle(fontSize: 12, fontWeight: pw.FontWeight.bold, color: PdfColors.green900)),
+        pw.Divider(color: PdfColors.green200, thickness: 1),
+      ]),
+    );
+
+Future<Uint8List> buildStudentHistoryPdf(Student s) async {
+  final logoBytes = (await rootBundle.load('assets/logo.png')).buffer.asUint8List();
+  final logoImage = pw.MemoryImage(logoBytes);
+  final cd = st.classDefs[s.cls];
+  final category = st.madrasas.where((m) => m.name == s.madrasa).map((m) => m.category).firstOrNull;
+  final prog = progFor(s);
+  final generatedOn = fmtDate(fd(DateTime.now()));
+
+  // ---- Section D source data: this student's course enrollments, plus
+  // any course assigned to their class with no enrollment row yet at all
+  // ("Not Started" - a real, distinct state, not the same as In Progress).
+  final enrollmentsByCourse = {for (final e in st.courseEnrollments.where((e) => e.studentId == s.id)) e.courseId: e};
+  final assignedCourseIds = {for (final a in st.classCourseAssignments.where((a) => a.classId == s.cls)) a.courseId, ...enrollmentsByCourse.keys};
+  final courseRows = <List<String>>[];
+  for (final cid in assignedCourseIds) {
+    final course = st.courses.where((c) => c.id == cid).firstOrNull;
+    if (course == null) continue;
+    final e = enrollmentsByCourse[cid];
+    String status;
+    if (e == null) {
+      status = 'Not Started';
+    } else if (e.status == 'completed') {
+      status = 'Completed/Approved';
+    } else if (e.status == 'awaiting_approval') {
+      status = 'Pending Approval';
+    } else {
+      status = 'In Progress';
+    }
+    courseRows.add([course.name, status, e?.completedOn ?? '-', e?.approvedBy != null ? 'Yes' : '-']);
+  }
+  final completedCourses = courseRows.where((r) => r[1] == 'Completed/Approved').length;
+  final pendingApprovalCourses = courseRows.where((r) => r[1] == 'Pending Approval').length;
+
+  // ---- Section E source data: one real loadMonthAttendance call per
+  // calendar month from admission to the current month - same function,
+  // same eligible-session rules the rest of the app uses for this exact
+  // number, not a re-derivation.
+  final monthRows = <List<String>>[];
+  var totalPresent = 0, totalAbsent = 0, totalNotRecorded = 0, totalEligible = 0;
+  final admission = validDate(s.start) ? pd(s.start) : DateTime.now();
+  var cursor = DateTime(admission.year, admission.month, 1);
+  final now = DateTime.now();
+  final end = DateTime(now.year, now.month, 1);
+  final monthRowStyles = <int>[]; // row index (within monthRows) to highlight
+  while (!cursor.isAfter(end)) {
+    final summary = await loadMonthAttendance(s, cursor.year, cursor.month);
+    if (summary != null && (summary.present + summary.absent + summary.notRecorded) > 0) {
+      final eligible = summary.present + summary.absent;
+      final pct = eligible == 0 ? null : summary.present * 100 / eligible;
+      if (pct != null && pct < 40.0) monthRowStyles.add(monthRows.length);
+      monthRows.add([
+        '${kMonthNames[cursor.month - 1]} ${cursor.year}',
+        '$eligible',
+        '${summary.present}',
+        '${summary.absent}',
+        '${summary.notRecorded}',
+        pct == null ? 'N/A' : '${pct.toStringAsFixed(2)}%',
+      ]);
+      totalPresent += summary.present;
+      totalAbsent += summary.absent;
+      totalNotRecorded += summary.notRecorded;
+      totalEligible += eligible;
+    }
+    cursor = DateTime(cursor.year, cursor.month + 1, 1);
+  }
+  final overallPct = totalEligible == 0 ? null : totalPresent * 100 / totalEligible;
+
+  final doc = pw.Document();
+  doc.addPage(
+    pw.MultiPage(
+      pageFormat: PdfPageFormat.a4,
+      margin: const pw.EdgeInsets.fromLTRB(28, 28, 28, 36),
+      footer: (ctx) => pw.Column(children: [
+        pw.Divider(color: PdfColors.grey400),
+        pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
+          pw.Text('Maktab e Tajushshriah - Student Complete History Report - Confidential educational record', style: const pw.TextStyle(fontSize: 7, color: PdfColors.grey600)),
+          pw.Text('Page ${ctx.pageNumber} of ${ctx.pagesCount}', style: const pw.TextStyle(fontSize: 7, color: PdfColors.grey600)),
+        ]),
+      ]),
+      build: (ctx) => [
+        pw.Row(crossAxisAlignment: pw.CrossAxisAlignment.center, children: [
+          pw.Image(logoImage, width: 54, height: 54),
+          pw.SizedBox(width: 12),
+          pw.Expanded(
+            child: pw.Column(crossAxisAlignment: pw.CrossAxisAlignment.start, children: [
+              pw.Text('Maktab e Tajushshriah', style: pw.TextStyle(fontSize: 18, fontWeight: pw.FontWeight.bold, color: PdfColors.green900)),
+              pw.Text('Faiz-E-Raza Group Mehkar', style: const pw.TextStyle(fontSize: 10, color: PdfColors.grey700)),
+              pw.SizedBox(height: 4),
+              pw.Text('Student Complete History Report', style: pw.TextStyle(fontSize: 13, fontWeight: pw.FontWeight.bold)),
+              pw.Text('Generated: $generatedOn  -  Period: Admission to date', style: const pw.TextStyle(fontSize: 8, color: PdfColors.grey700)),
+            ]),
+          ),
+        ]),
+        pw.Divider(color: PdfColors.green200, thickness: 2),
+
+        _pdfSectionHeading('A. Student Details'),
+        _pdfKv('Student Name', s.name),
+        _pdfKv('Student ID', s.key),
+        _pdfKv('Date of Birth', s.dob == null ? '-' : fmtDate(s.dob)),
+        _pdfKv('Gender', s.gender),
+        _pdfKv('Admission Date', fmtDate(s.start)),
+        _pdfKv('Status', s.status),
+        _pdfKv('Maktab', s.madrasa),
+        _pdfKv('Category', category ?? '-'),
+        _pdfKv('Current Class', cd?.name ?? 'Class ${s.cls}'),
+        _pdfKv("Father's / Guardian's Name", s.fatherName.isEmpty ? '-' : s.fatherName),
+        _pdfKv('Parent Mobile Number', s.parentPhone.isEmpty ? '-' : s.parentPhone),
+
+        _pdfSectionHeading('B. Current Class Details'),
+        pw.Text(
+          "Class progression isn't tracked as a dated history anywhere in this app yet (there is no class-history/promotions table), so only the current class is shown here - not invented prior classes.",
+          style: const pw.TextStyle(fontSize: 8, color: PdfColors.grey700),
+        ),
+        pw.SizedBox(height: 4),
+        _pdfKv('Class', cd?.name ?? 'Class ${s.cls}'),
+        _pdfKv('Syllabus Type', cd?.pageBased == true ? 'Page-based (e.g. Hafizi Quran)' : 'Chapter-based'),
+
+        _pdfSectionHeading('C. Syllabus Progress'),
+        _pdfKv('Progress', prog.label ?? '${prog.n} of ${prog.total}'),
+        _pdfKv('Completion %', prog.total == 0 ? 'N/A' : '${prog.pct}%'),
+        _pdfKv('Pending Items', prog.total == 0 ? 'N/A' : '${prog.total - prog.n}'),
+
+        _pdfSectionHeading('D. Course Completion History'),
+        if (courseRows.isEmpty) pw.Text('No add-on courses assigned to this student yet.', style: const pw.TextStyle(fontSize: 9)),
+        if (courseRows.isNotEmpty)
+          pw.Table.fromTextArray(
+            headers: const ['Course', 'Status', 'Completed On', 'Approved'],
+            data: courseRows,
+            cellStyle: const pw.TextStyle(fontSize: 8),
+            headerStyle: pw.TextStyle(fontSize: 8, fontWeight: pw.FontWeight.bold),
+            headerDecoration: const pw.BoxDecoration(color: PdfColors.green50),
+          ),
+
+        _pdfSectionHeading('E. Month-Wise Attendance Report'),
+        if (monthRows.isEmpty) pw.Text('No attendance history recorded for this student yet.', style: const pw.TextStyle(fontSize: 9)),
+        if (monthRows.isNotEmpty)
+          pw.Table.fromTextArray(
+            headers: const ['Month', 'Eligible Sessions', 'Present', 'Absent', 'Attendance Not Submitted', 'Attendance %'],
+            data: monthRows,
+            cellStyle: const pw.TextStyle(fontSize: 8),
+            headerStyle: pw.TextStyle(fontSize: 8, fontWeight: pw.FontWeight.bold),
+            headerDecoration: const pw.BoxDecoration(color: PdfColors.green50),
+            cellDecoration: (colIndex, data, rowNum) {
+              if (rowNum > 0 && monthRowStyles.contains(rowNum - 1)) {
+                return const pw.BoxDecoration(color: PdfColors.red100);
+              }
+              return null;
+            },
+          ),
+        pw.SizedBox(height: 4),
+        pw.Text(
+          'Eligible sessions exclude Fridays (the Maktab\'s weekly off day) and recorded events/holidays. "Attendance Not Submitted" is tracked separately and is never counted as Absent.',
+          style: const pw.TextStyle(fontSize: 7, color: PdfColors.grey600),
+        ),
+
+        _pdfSectionHeading('F. Additional Work, Achievements and Activities'),
+        pw.Text(
+          "Not available: there is no additional-work/homework/achievements/teacher-remarks module in this application with persisted records to report from. (A local activity feed exists for in-session toasts only - it isn't saved to the database and isn't a real history source, so nothing from it is shown here.)",
+          style: const pw.TextStyle(fontSize: 8, color: PdfColors.grey700),
+        ),
+
+        _pdfSectionHeading('G. Overall Student Summary'),
+        _pdfKv('Current Maktab / Class', '${s.madrasa} - ${cd?.name ?? 'Class ${s.cls}'}'),
+        _pdfKv('Syllabus Completion', prog.total == 0 ? 'N/A' : '${prog.pct}%'),
+        _pdfKv('Courses Completed', '$completedCourses'),
+        _pdfKv('Courses Awaiting Approval', '$pendingApprovalCourses'),
+        _pdfKv('Overall Attendance % (full history)', overallPct == null ? 'N/A' : '${overallPct.toStringAsFixed(2)}%'),
+        _pdfKv('Total Eligible Sessions', '$totalEligible'),
+        _pdfKv('Total Present / Absent', '$totalPresent / $totalAbsent'),
+        _pdfKv('Total Not Submitted', '$totalNotRecorded'),
+      ],
+    ),
+  );
+  return doc.save();
 }
