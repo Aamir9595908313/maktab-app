@@ -3622,11 +3622,11 @@ final Map<String, AppTab> _kPermTabs = {
 // additive - never removes or replaces anything already in `base`.
 List<AppTab> _withExtraTabs(Account u, List<AppTab> base) {
   if (u.extraPerms.isEmpty) return base;
-  final have = base.map((t) => t.label).toSet();
+  final have = base.map((t) => t.title).toSet();
   final out = [...base];
   for (final key in u.extraPerms) {
     final tab = _kPermTabs[key];
-    if (tab != null && !have.contains(tab.label)) out.add(tab);
+    if (tab != null && !have.contains(tab.title)) out.add(tab);
   }
   return out;
 }
