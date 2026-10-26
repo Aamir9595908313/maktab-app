@@ -3581,6 +3581,8 @@ List<AppTab> tabsFor(Account u) {
       if (perms.contains('Fees')) list.add(AppTab('Fees', Icons.payments, () => const FeesAdmin()));
       if (perms.contains('Reports')) list.add(AppTab('Reports', Icons.assessment, () => const ReportsView()));
       if (perms.contains('Leave')) list.add(AppTab('Teacher Leave', Icons.groups, () => const TeachersView()));
+      if (perms.contains('Sadqa Peti')) list.add(AppTab('Sadqa Peti', Icons.inventory_2, () => const SadqaPetiDashboardView()));
+      if (perms.contains('Monthly Members')) list.add(AppTab('Monthly Members', Icons.groups_3, () => const MonthlyMembersDashboard()));
       if (list.isEmpty) list.add(AppTab('No screens', Icons.block, () => page([const Text('No screens have been given to this role.')])));
       return list;
   }
@@ -7261,7 +7263,7 @@ class _RolesViewState extends State<RolesView> {
   String? pick;
   final Set<String> branches = {};
   bool busy = false;
-  static const List<String> screens = ['Students', 'Fees', 'Reports', 'Leave'];
+  static const List<String> screens = ['Students', 'Fees', 'Reports', 'Leave', 'Sadqa Peti', 'Monthly Members'];
   static const List<String> builtInRoles = ['Super Admin', 'Maktab Admin', 'Teacher', 'Committee Member'];
 
   @override
