@@ -2135,6 +2135,37 @@ class AppState extends ChangeNotifier {
     }
     return null;
   }
+
+  // ---------- Super Admin "missing attendance" notifications ----------
+  // Generated server-side by the nightly 11:00 PM IST pg_cron job
+  // (public.run_missing_attendance_check) - this list is just what got
+  // loaded from public.admin_notifications. Empty/untouched for any
+  // non-Super-Admin account (loadAdminNotifications() below is a no-op
+  // for them, and RLS would refuse the query anyway).
+  final List<AdminNotification> adminNotifications = [];
+
+  void setAdminNotificationsFromDb(List<AdminNotification> list) {
+    adminNotifications
+      ..clear()
+      ..addAll(list..sort((a, b) => b.createdAt.compareTo(a.createdAt)));
+    notifyListeners();
+  }
+
+  int get unreadAdminNotifCount => adminNotifications.where((n) => !n.isRead).length;
+
+  void markAdminNotificationReadLocal(String id) {
+    for (final n in adminNotifications) {
+      if (n.id == id) n.isRead = true;
+    }
+    notifyListeners();
+  }
+
+  void markAllAdminNotificationsReadLocal() {
+    for (final n in adminNotifications) {
+      n.isRead = true;
+    }
+    notifyListeners();
+  }
 }
 
 class ChapPlan {
@@ -2143,6 +2174,59 @@ class ChapPlan {
   final String? done;
   final String grade;
   ChapPlan(this.title, this.plan, this.done, this.grade);
+}
+
+// One row of public.admin_notifications - a missing-attendance (or
+// timing-not-configured) alert for Super Admin, generated server-side.
+// Marking it read only flips is_read/read_at; it's never deleted, and a
+// later-submitted session flips status to 'Resolved' without touching the
+// original record - so this is real history, not a disappearing toast.
+class AdminNotification {
+  final String id;
+  final String notifType; // 'missing_attendance' | 'configuration_missing'
+  final String title;
+  final String message;
+  final String madrasaName;
+  final String? category;
+  final String? className;
+  final String? batch; // Morning/Afternoon/Evening; null for configuration_missing
+  final String attendanceDate; // yyyy-mm-dd
+  final String? teacherName; // null => no teacher is assigned
+  final String status; // 'Unresolved' | 'Resolved'
+  bool isRead;
+  final DateTime createdAt;
+
+  AdminNotification({
+    required this.id,
+    required this.notifType,
+    required this.title,
+    required this.message,
+    required this.madrasaName,
+    this.category,
+    this.className,
+    this.batch,
+    required this.attendanceDate,
+    this.teacherName,
+    required this.status,
+    required this.isRead,
+    required this.createdAt,
+  });
+
+  factory AdminNotification.fromJson(Map<String, dynamic> j) => AdminNotification(
+        id: j['id'] as String,
+        notifType: (j['notif_type'] as String?) ?? 'missing_attendance',
+        title: (j['title'] as String?) ?? '',
+        message: (j['message'] as String?) ?? '',
+        madrasaName: (j['madrasa_name'] as String?) ?? '',
+        category: j['category'] as String?,
+        className: j['class_name'] as String?,
+        batch: j['batch'] as String?,
+        attendanceDate: (j['attendance_date'] as String?) ?? '',
+        teacherName: j['teacher_name'] as String?,
+        status: (j['status'] as String?) ?? 'Unresolved',
+        isRead: (j['is_read'] as bool?) ?? false,
+        createdAt: DateTime.tryParse('${j['created_at']}') ?? DateTime.now(),
+      );
 }
 
 // ---------------- Sadqa Peti (donation box) module models ----------------

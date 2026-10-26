@@ -218,6 +218,7 @@ Future<void> loadMasterData() async {
     await loadSadqaCollectors(); // needed first: decides whether this account can even see Sadqa Peti screens
     await loadSadqaPetis();
     await loadSadqaCollections();
+    await loadAdminNotifications();
   } catch (_) {
     // Swallow - see note above. The Master Data screen still works off
     // whatever was already loaded; a retry happens next time this is
@@ -282,6 +283,7 @@ void subscribeRealtime() {
     'receipts',
     'announcements',
     'teacher_leaves',
+    'admin_notifications',
   ];
   var channel = sb.channel('app-data-sync');
   for (final t in tables) {
@@ -393,6 +395,47 @@ Future<void> loadAttendanceSessions() async {
       );
     }
     st.setAttendanceSessionsFromDb(map);
+  } catch (_) {}
+}
+
+// ---------------- Super Admin: missing-attendance notifications (public.admin_notifications) ----------------
+//
+// Only a Super Admin account can ever see rows here - RLS (`admin_notifications_super_read`)
+// refuses the select for anyone else, so this is a safe no-op for every other role rather than
+// something that needs a role check here too. Before loading, asks the backend to resolve any
+// missing_attendance/configuration_missing alerts that are now stale (attendance since submitted,
+// or the class now has a batch configured) - cheap, safe to call every time, and keeps what the
+// Super Admin sees in sync with reality without waiting for tonight's job.
+Future<void> loadAdminNotifications() async {
+  if (st.user?.role != 'super') {
+    st.setAdminNotificationsFromDb(const []);
+    return;
+  }
+  try {
+    try {
+      await sb.rpc('resolve_missing_attendance_notifications');
+    } catch (_) {
+      // Best-effort freshen; the list below still loads whatever is on file.
+    }
+    final rows = await sb.from('admin_notifications').select().order('created_at', ascending: false);
+    st.setAdminNotificationsFromDb([for (final r in (rows as List)) AdminNotification.fromJson(r as Map<String, dynamic>)]);
+  } catch (_) {
+    // Swallow, same as the rest of loadMasterData - whatever was already
+    // loaded (or nothing, on first run) stays as-is until the next reload.
+  }
+}
+
+Future<void> markAdminNotificationRead(String id) async {
+  st.markAdminNotificationReadLocal(id);
+  try {
+    await sb.from('admin_notifications').update({'is_read': true, 'read_at': DateTime.now().toIso8601String()}).eq('id', id);
+  } catch (_) {}
+}
+
+Future<void> markAllAdminNotificationsRead() async {
+  st.markAllAdminNotificationsReadLocal();
+  try {
+    await sb.from('admin_notifications').update({'is_read': true, 'read_at': DateTime.now().toIso8601String()}).eq('is_read', false);
   } catch (_) {}
 }
 
@@ -3503,6 +3546,16 @@ class _ShellState extends State<Shell> {
             Text('${roleLabel(u)} - ${u.name}', style: const TextStyle(fontSize: 11, color: Color(0xFFF0D98A))),
           ]),
           actions: [
+            if (u.role == 'super')
+              IconButton(
+                icon: Badge(
+                  label: Text('${st.unreadAdminNotifCount}'),
+                  isLabelVisible: st.unreadAdminNotifCount > 0,
+                  child: const Icon(Icons.notifications),
+                ),
+                tooltip: 'Notifications',
+                onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const AdminNotificationsScreen())),
+              ),
             if (idx != 0)
               Builder(
                 builder: (ctx) => IconButton(
@@ -8381,5 +8434,138 @@ class _FeeQrAdminState extends State<FeeQrAdmin> {
       if (st.whatsappLog.isEmpty) const Text('No absence notifications sent yet.'),
       ...st.whatsappLog.reversed.map((l) => Card(child: ListTile(title: Text(l, style: const TextStyle(fontSize: 12.5))))),
     ]);
+  }
+}
+
+// ---------------- Super Admin: Notifications screen (public.admin_notifications) ----------------
+//
+// Lists every missing-attendance / configuration-missing alert the nightly
+// 11 PM job (and the on-demand resolve called from loadAdminNotifications)
+// has produced. Read-status taps call markAdminNotificationRead/
+// markAllAdminNotificationsRead (local state first for an instant UI
+// update, then the real update()). Nothing here is ever deleted - a
+// notification that's since been fixed just shows status Resolved.
+
+String _niceAttendanceDate(String ymd) {
+  const months = ['', 'January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+  final parts = ymd.split('-');
+  if (parts.length != 3) return ymd;
+  final y = parts[0];
+  final m = int.tryParse(parts[1]) ?? 0;
+  final d = int.tryParse(parts[2]) ?? 0;
+  if (m < 1 || m > 12) return ymd;
+  return '$d ${months[m]} $y';
+}
+
+String _niceGeneratedAt(DateTime dt) {
+  final local = dt.toLocal();
+  final h24 = local.hour;
+  final h12 = h24 % 12 == 0 ? 12 : h24 % 12;
+  final ampm = h24 < 12 ? 'AM' : 'PM';
+  final mm = local.minute.toString().padLeft(2, '0');
+  return '${_niceAttendanceDate('${local.year}-${local.month.toString().padLeft(2, '0')}-${local.day.toString().padLeft(2, '0')}')} at $h12:$mm $ampm';
+}
+
+class AdminNotificationsScreen extends StatefulWidget {
+  const AdminNotificationsScreen({super.key});
+  @override
+  State<AdminNotificationsScreen> createState() => _AdminNotificationsScreenState();
+}
+
+class _AdminNotificationsScreenState extends State<AdminNotificationsScreen> {
+  bool _unreadOnly = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: st,
+      builder: (context, _) {
+        final all = st.adminNotifications;
+        final shown = _unreadOnly ? all.where((n) => !n.isRead).toList() : all;
+        return Scaffold(
+          appBar: AppBar(
+            backgroundColor: kGreen,
+            foregroundColor: Colors.white,
+            title: const Text('Notifications'),
+            actions: [
+              if (all.any((n) => !n.isRead))
+                TextButton(
+                  onPressed: () => markAllAdminNotificationsRead(),
+                  child: const Text('Mark all read', style: TextStyle(color: Colors.white)),
+                ),
+            ],
+          ),
+          body: Column(children: [
+            Padding(
+              padding: const EdgeInsets.all(8),
+              child: Row(children: [
+                ChoiceChip(label: const Text('All'), selected: !_unreadOnly, onSelected: (_) => setState(() => _unreadOnly = false)),
+                const SizedBox(width: 8),
+                ChoiceChip(label: const Text('Unread'), selected: _unreadOnly, onSelected: (_) => setState(() => _unreadOnly = true)),
+              ]),
+            ),
+            Expanded(
+              child: shown.isEmpty
+                  ? Center(
+                      child: Text(
+                        _unreadOnly ? 'No unread notifications.' : 'No notifications yet.',
+                        style: const TextStyle(color: Colors.black54),
+                      ),
+                    )
+                  : RefreshIndicator(
+                      onRefresh: loadAdminNotifications,
+                      child: ListView.builder(
+                        padding: const EdgeInsets.all(8),
+                        itemCount: shown.length,
+                        itemBuilder: (context, i) {
+                          final n = shown[i];
+                          final resolved = n.status == 'Resolved';
+                          return Card(
+                            color: n.isRead ? null : const Color(0xFFFFF8E1),
+                            child: ListTile(
+                              leading: Icon(
+                                resolved ? Icons.check_circle : Icons.error_outline,
+                                color: resolved ? Colors.green : (n.isRead ? Colors.black45 : const Color(0xFFC62828)),
+                              ),
+                              title: Text(
+                                n.title,
+                                style: TextStyle(fontWeight: n.isRead ? FontWeight.normal : FontWeight.bold),
+                              ),
+                              subtitle: Padding(
+                                padding: const EdgeInsets.only(top: 4),
+                                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                                  Text(n.message),
+                                  const SizedBox(height: 4),
+                                  Wrap(spacing: 6, runSpacing: 2, children: [
+                                    Text(n.madrasaName, style: const TextStyle(fontSize: 12, color: Colors.black54)),
+                                    if (n.category != null) Text('• ${n.category}', style: const TextStyle(fontSize: 12, color: Colors.black54)),
+                                    if (n.className != null) Text('• ${n.className}', style: const TextStyle(fontSize: 12, color: Colors.black54)),
+                                    if (n.batch != null) Text('• ${n.batch}', style: const TextStyle(fontSize: 12, color: Colors.black54)),
+                                    Text('• ${_niceAttendanceDate(n.attendanceDate)}', style: const TextStyle(fontSize: 12, color: Colors.black54)),
+                                  ]),
+                                  Text(
+                                    'Teacher: ${n.teacherName ?? 'Not assigned'}',
+                                    style: const TextStyle(fontSize: 12, color: Colors.black54),
+                                  ),
+                                  Text(
+                                    'Generated: ${_niceGeneratedAt(n.createdAt)}',
+                                    style: const TextStyle(fontSize: 11, color: Colors.black38),
+                                  ),
+                                  if (resolved) const Text('Resolved', style: TextStyle(fontSize: 12, color: Colors.green, fontWeight: FontWeight.bold)),
+                                ]),
+                              ),
+                              isThreeLine: true,
+                              trailing: n.isRead ? null : const Icon(Icons.circle, size: 10, color: Color(0xFFC62828)),
+                              onTap: n.isRead ? null : () => markAdminNotificationRead(n.id),
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+            ),
+          ]),
+        );
+      },
+    );
   }
 }
