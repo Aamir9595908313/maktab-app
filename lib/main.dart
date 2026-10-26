@@ -3615,6 +3615,23 @@ class _ShellState extends State<Shell> {
                   Navigator.pop(context);
                 },
               ),
+            // A teacher/admin/super-admin whose own phone number is also
+            // the parent_phone on one of their children's student records
+            // (a real, supported scenario, not an error) already has that
+            // child matched by st.kids() - parentPhone matching has no role
+            // check. What's missing is a way to reach it, since their
+            // tabsFor() role never includes the Kid* screens. This reuses
+            // those same screens rather than a parallel parent account.
+            if (u.role != 'parent' && u.role != 'student' && st.kids().isNotEmpty)
+              ListTile(
+                leading: const Icon(Icons.child_care),
+                title: const Text('My Child'),
+                subtitle: Text(st.kids().length > 1 ? '${st.kids().length} children linked to this number' : st.kids().first.name),
+                onTap: () {
+                  Navigator.pop(context);
+                  Navigator.push(context, MaterialPageRoute(builder: (_) => const StaffChildView()));
+                },
+              ),
             if (u.role == 'super' || st.canRecordSadqaCollections) ...[
               const Padding(padding: EdgeInsets.fromLTRB(16, 12, 16, 4), child: Text('Sadqa Peti', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.black54, fontSize: 12))),
               if (u.role == 'super') ...[
@@ -3942,6 +3959,44 @@ class KidSyllabus extends StatelessWidget {
       Expanded(child: SyllabusBody(s: k, edit: false)),
     ]);
   }
+}
+
+// Reached from the "My Child" drawer item (teacher/admin/super-admin whose
+// own phone is also the parent_phone on one of their children). Reuses the
+// same KidHome/KidAttendance/KidSyllabus screens a real parent account
+// sees, rather than building a second, parallel view of the same data.
+class StaffChildView extends StatelessWidget {
+  const StaffChildView({super.key});
+  @override
+  Widget build(BuildContext context) => Scaffold(
+        appBar: AppBar(title: const Text('My Child'), backgroundColor: kGreen, foregroundColor: Colors.white),
+        body: Column(children: [
+          const Expanded(child: KidHome()),
+          SafeArea(
+            top: false,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(14, 0, 14, 14),
+              child: Row(children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: () => pushPage(context, 'Attendance', const KidAttendance()),
+                    icon: const Icon(Icons.event_available),
+                    label: const Text('Attendance'),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: () => pushPage(context, 'Syllabus', const KidSyllabus()),
+                    icon: const Icon(Icons.menu_book),
+                    label: const Text('Syllabus'),
+                  ),
+                ),
+              ]),
+            ),
+          ),
+        ]),
+      );
 }
 
 // A single body used by parent/student (read-only) and teacher (editable),
