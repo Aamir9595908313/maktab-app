@@ -4570,6 +4570,12 @@ class _StaffHomeState extends State<StaffHome> {
           tile('Complaints open', '$open', icon: Icons.report_problem, onTap: () => pushPage(context, 'Complaints', const ComplaintsView())),
           tile('Committee members', '${st.committeeAccounts.where((m) => !m.pending).length}', icon: Icons.diversity_3, onTap: () => pushPage(context, 'Committee', const CommitteeAdmin())),
           tile('Monthly Members', '${st.monthlyMembers.where((m) => m.isActive).length} active', icon: Icons.volunteer_activism, onTap: () => pushPage(context, 'Monthly Members', const MonthlyMembersDashboard())),
+          tile(
+            'Notifications',
+            st.unreadAdminNotifCount > 0 ? '${st.unreadAdminNotifCount} unread' : 'All caught up',
+            icon: Icons.notifications,
+            onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const AdminNotificationsScreen())),
+          ),
         ]),
         h('Post common announcement (all Makatib, all roles)'),
         field(title, 'Title'),
