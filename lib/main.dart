@@ -7115,8 +7115,8 @@ class _ReportGeneratorScreenState extends State<ReportGeneratorScreen> {
             pw.Text('$_fromStr to $_toStr${madrasa == 'All' ? '' : ' - $madrasa'}', style: const pw.TextStyle(fontSize: 10, color: PdfColors.grey700)),
             pw.SizedBox(height: 10),
             pw.Table.fromTextArray(
-              headers: headers,
-              data: rows,
+              headers: headers!,
+              data: rows!,
               cellStyle: const pw.TextStyle(fontSize: 8),
               headerStyle: pw.TextStyle(fontSize: 8, fontWeight: pw.FontWeight.bold),
             ),
