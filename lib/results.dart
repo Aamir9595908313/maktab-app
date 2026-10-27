@@ -990,14 +990,17 @@ class _StudentMyResultsScreenState extends State<StudentMyResultsScreen> {
       return;
     }
     final r = await loadMyResultsFor(kid!.dbId!);
-    for (final n in st.resultNotifs.where((n) => !n.isRead)) {
-      markResultNotifReadRemote(n);
-    }
     if (mounted) setState(() => rows = r);
   }
 
   @override
-  Widget build(BuildContext context) => page(_resultsBody(rows, title: 'My Results'));
+  Widget build(BuildContext context) => AnimatedBuilder(
+        animation: st,
+        builder: (context, _) => page([
+          ..._notifBanners(st.resultNotifs.where((n) => !n.isRead)),
+          ..._resultsBody(rows, title: 'My Results'),
+        ]),
+      );
 }
 
 // ============================================================
@@ -1026,15 +1029,13 @@ class _ParentChildResultsScreenState extends State<ParentChildResultsScreen> {
       return;
     }
     final r = await loadMyResultsFor(kid!.dbId!);
-    for (final n in st.resultNotifs.where((n) => !n.isRead && n.studentId == kid.dbId)) {
-      markResultNotifReadRemote(n);
-    }
     if (mounted) setState(() => rows = r);
   }
 
   @override
   Widget build(BuildContext context) {
     final kids = st.kids();
+    final kidDbId = st.currentKid()?.dbId;
     return AnimatedBuilder(
       animation: st,
       builder: (context, _) => page([
@@ -1053,11 +1054,33 @@ class _ParentChildResultsScreenState extends State<ParentChildResultsScreen> {
           ]),
           const SizedBox(height: 8),
         ],
+        ..._notifBanners(st.resultNotifs.where((n) => !n.isRead && n.studentId == kidDbId)),
         ..._resultsBody(rows, title: "My Child's Results"),
       ]),
     );
   }
 }
+
+// A short, dismissible "<Examination> results published/corrected" card -
+// never shows marks (section 11: "Avoid exposing detailed marks in
+// notification previews"). Tapping it marks that one notification read;
+// it stays visible until then, so opening this screen always surfaces it
+// at least once, and it is never re-created just by reopening or
+// refreshing (result_notifications only gets a new row from publish_exam
+// / a real correction in save_exam_mark, never from a read).
+List<Widget> _notifBanners(Iterable<ResultNotif> unread) => [
+      for (final n in unread)
+        Card(
+          color: const Color(0xFFFFF6E0),
+          child: ListTile(
+            leading: const Icon(Icons.notifications_active, color: Color(0xFFB8860B)),
+            title: Text(n.kind == 'corrected' ? '${n.examName} - result corrected' : '${n.examName} - result published'),
+            subtitle: const Text('Tap to view and dismiss', style: TextStyle(fontSize: 11.5)),
+            trailing: IconButton(icon: const Icon(Icons.close, size: 18), onPressed: () => markResultNotifReadRemote(n)),
+            onTap: () => markResultNotifReadRemote(n),
+          ),
+        ),
+    ];
 
 // Shared rendering for both the Student and Parent results screens -
 // grouped by examination, published-only (loadMyResultsFor() only ever
