@@ -1273,6 +1273,15 @@ class AboutUsScreen extends StatefulWidget {
 
 class _AboutUsScreenState extends State<AboutUsScreen> {
   AboutUsContent? _remote;
+  // True only once the fetch has actually failed (offline / unreachable) -
+  // distinct from "still loading". Previously this screen rendered the
+  // bundled, possibly-outdated _aboutUsFallback() text immediately and
+  // then replaced it with the real database content once the fetch
+  // resolved a moment later, so every open visibly flashed old content
+  // before "refreshing" to the current one. Now the bundled copy is only
+  // ever shown for a genuine failure; otherwise the screen waits for the
+  // live content so what's shown is always up to date on the first paint.
+  bool _failed = false;
 
   @override
   void initState() {
@@ -1288,7 +1297,11 @@ class _AboutUsScreenState extends State<AboutUsScreen> {
   Future<void> _load() async {
     try {
       final row = await Supabase.instance.client.from('about_us').select().eq('id', 1).maybeSingle();
-      if (row == null || !mounted) return;
+      if (!mounted) return;
+      if (row == null) {
+        setState(() => _failed = true);
+        return;
+      }
       setState(() {
         _remote = AboutUsContent(
           heading: (row['heading'] as String?) ?? '',
@@ -1299,6 +1312,7 @@ class _AboutUsScreenState extends State<AboutUsScreen> {
       });
     } catch (_) {
       // Offline or not reachable - the fallback below is shown instead.
+      if (mounted) setState(() => _failed = true);
     }
   }
 
@@ -1311,13 +1325,15 @@ class _AboutUsScreenState extends State<AboutUsScreen> {
       // phone's gesture bar on some devices - this leaves real breathing
       // room below it instead.
       body: SafeArea(
-        child: ListView(
-          padding: const EdgeInsets.fromLTRB(16, 16, 16, 40),
-          children: [
-            ...aboutUsBodyWidgets(_remote ?? _aboutUsFallback()),
-            const SizedBox(height: 24),
-          ],
-        ),
+        child: _remote == null && !_failed
+            ? const Center(child: Padding(padding: EdgeInsets.all(24), child: CircularProgressIndicator()))
+            : ListView(
+                padding: const EdgeInsets.fromLTRB(16, 16, 16, 40),
+                children: [
+                  ...aboutUsBodyWidgets(_remote ?? _aboutUsFallback()),
+                  const SizedBox(height: 24),
+                ],
+              ),
       ),
     );
   }
