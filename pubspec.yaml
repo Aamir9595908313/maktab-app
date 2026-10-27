@@ -28,7 +28,12 @@ flutter:
   uses-material-design: true
   assets:
     - assets/logo.png
-    - assets/icon/app_icon.png
+    # assets/icon/app_icon.png is intentionally NOT listed here: nothing in
+    # lib/ ever does Image.asset('assets/icon/app_icon.png') - it's read
+    # straight off disk at build time by flutter_launcher_icons (below),
+    # which generates the actual Android mipmap icons from it. Listing it
+    # as a Flutter asset too just bundled this 1.3MB source PNG a second
+    # time, uselessly, into every APK's asset bundle.
     - assets/surah_yaseen.pdf
     - assets/durood_e_taj.pdf
 

@@ -109,6 +109,30 @@ jobs:
                       src = src.replace("compileOptions {", "compileOptions {\n        coreLibraryDesugaringEnabled true", 1)
                   src += "\n\ndependencies {\n    coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.1.2'\n}\n"
 
+          # Flutter's own scaffold template leaves the release buildType
+          # with no R8 shrinking at all - minifyEnabled/shrinkResources are
+          # off by default, so every plugin's unused Java/Kotlin classes
+          # and unused Android resources ship in the APK untouched. Every
+          # bundled plugin here (supabase_flutter, geolocator, image_picker,
+          # file_picker, flutter_local_notifications, printing, share_plus,
+          # ...) already ships its own consumer proguard rules, so turning
+          # this on is the normal, low-risk default - not something those
+          # plugins need extra rules written for.
+          if is_kts:
+              if "isMinifyEnabled" not in src:
+                  src = src.replace(
+                      "release {",
+                      "release {\n            isMinifyEnabled = true\n            isShrinkResources = true\n            proguardFiles(getDefaultProguardFile(\"proguard-android-optimize.txt\"))",
+                      1,
+                  )
+          else:
+              if "minifyEnabled" not in src:
+                  src = src.replace(
+                      "release {",
+                      "release {\n            minifyEnabled true\n            shrinkResources true\n            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt')",
+                      1,
+                  )
+
           with open(path, "w") as f:
               f.write(src)
           PYEOF
@@ -144,10 +168,16 @@ jobs:
         # emulators. set -o pipefail: without it, `| tee` makes this step
         # exit 0 (tee's own exit code) even when flutter build fails, which
         # is exactly what happened on an earlier run - "succeeded" with no
-        # APK produced.
+        # APK produced. --obfuscate --split-debug-info=<dir>: Flutter's own
+        # documented app-size reduction - without it, Dart debug/symbol
+        # info for crash-stack-trace purposes is bundled straight into the
+        # APK; this writes it to build/app/outputs/symbols instead (not
+        # uploaded anywhere here - fine, since this project has no crash
+        # reporting set up to symbolicate with it yet) and ships a smaller,
+        # obfuscated AOT snapshot in the APK itself.
         run: |
           set -o pipefail
-          (flutter pub get && flutter build apk --release --split-per-abi) 2>&1 | tee build-log.txt
+          (flutter pub get && flutter build apk --release --split-per-abi --obfuscate --split-debug-info=build/app/outputs/symbols) 2>&1 | tee build-log.txt
       - uses: actions/upload-artifact@v4
         if: steps.build.outcome == 'success'
         with:
