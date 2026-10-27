@@ -3578,7 +3578,7 @@ class _GuestHomeState extends State<GuestHome> {
             const SizedBox(height: 10),
             Center(child: Image.asset('assets/logo.png', height: logoHeight)),
             const SizedBox(height: 18),
-            const Text('Maktab-e-Tajushshariah', style: TextStyle(color: kGreen, fontSize: 23, fontWeight: FontWeight.bold), textAlign: TextAlign.center),
+            const Text('Maktab-E-Tajushshriah', style: TextStyle(color: kGreen, fontSize: 23, fontWeight: FontWeight.bold), textAlign: TextAlign.center),
             const SizedBox(height: 4),
             const Text('Powered by Faiz-E-Raza Group Mehkar', style: TextStyle(color: Colors.black54, fontSize: 13), textAlign: TextAlign.center),
             const SizedBox(height: 28),
@@ -7517,7 +7517,7 @@ class _ReportGeneratorScreenState extends State<ReportGeneratorScreen> {
           pageFormat: PdfPageFormat.a4,
           build: (ctx) => [
             pw.Text(widget.def.name, style: pw.TextStyle(fontSize: 16, fontWeight: pw.FontWeight.bold)),
-            pw.Text('Faiz-E-Raza Group Mehkar - Maktab e Tajushshriah', style: const pw.TextStyle(fontSize: 10, color: PdfColors.grey700)),
+            pw.Text('Faiz-E-Raza Group Mehkar - Maktab-E-Tajushshriah', style: const pw.TextStyle(fontSize: 10, color: PdfColors.grey700)),
             pw.Text('$_fromStr to $_toStr${madrasa == 'All' ? '' : ' - $madrasa'}', style: const pw.TextStyle(fontSize: 10, color: PdfColors.grey700)),
             pw.SizedBox(height: 10),
             pw.Table.fromTextArray(
@@ -9781,7 +9781,7 @@ List<int> buildMonthlyAttendanceExcel({
   var row = 0;
   setCell(0, row, 'Monthly Student Attendance Report - ${kMonthNames[month - 1]} $year${madrasaFilter != null ? ' - $madrasaFilter' : ''}', style: titleStyle);
   row++;
-  setCell(0, row, 'Faiz-E-Raza Group Mehkar - Maktab e Tajushshriah');
+  setCell(0, row, 'Faiz-E-Raza Group Mehkar - Maktab-E-Tajushshriah');
   row++;
   row++; // blank spacer
 
@@ -10157,7 +10157,7 @@ Future<Uint8List> buildStudentHistoryPdf(Student s) async {
       footer: (ctx) => pw.Column(children: [
         pw.Divider(color: PdfColors.grey400),
         pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
-          pw.Text('Maktab e Tajushshriah - Student Complete History Report - Confidential educational record', style: const pw.TextStyle(fontSize: 7, color: PdfColors.grey600)),
+          pw.Text('Maktab-E-Tajushshriah - Student Complete History Report - Confidential educational record', style: const pw.TextStyle(fontSize: 7, color: PdfColors.grey600)),
           pw.Text('Page ${ctx.pageNumber} of ${ctx.pagesCount}', style: const pw.TextStyle(fontSize: 7, color: PdfColors.grey600)),
         ]),
       ]),
@@ -10167,7 +10167,7 @@ Future<Uint8List> buildStudentHistoryPdf(Student s) async {
           pw.SizedBox(width: 12),
           pw.Expanded(
             child: pw.Column(crossAxisAlignment: pw.CrossAxisAlignment.start, children: [
-              pw.Text('Maktab e Tajushshriah', style: pw.TextStyle(fontSize: 18, fontWeight: pw.FontWeight.bold, color: PdfColors.green900)),
+              pw.Text('Maktab-E-Tajushshriah', style: pw.TextStyle(fontSize: 18, fontWeight: pw.FontWeight.bold, color: PdfColors.green900)),
               pw.Text('Faiz-E-Raza Group Mehkar', style: const pw.TextStyle(fontSize: 10, color: PdfColors.grey700)),
               pw.SizedBox(height: 4),
               pw.Text('Student Complete History Report', style: pw.TextStyle(fontSize: 13, fontWeight: pw.FontWeight.bold)),

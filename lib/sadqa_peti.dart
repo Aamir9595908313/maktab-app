@@ -403,7 +403,7 @@ Future<Uint8List> buildSadqaReceiptPdf(SadqaPeti peti, SadqaCollection c, {Strin
             if (logoBytes != null) pw.Image(pw.MemoryImage(logoBytes), height: 54),
             pw.SizedBox(height: 6),
             pw.Text('Faiz-E-Raza Group Mehkar', style: pw.TextStyle(fontSize: 17, fontWeight: pw.FontWeight.bold, color: PdfColor.fromInt(0xFF054D00))),
-            pw.Text('Maktab e Tajushshriah', style: const pw.TextStyle(fontSize: 11, color: PdfColors.grey700)),
+            pw.Text('Maktab-E-Tajushshriah', style: const pw.TextStyle(fontSize: 11, color: PdfColors.grey700)),
             pw.SizedBox(height: 4),
             pw.Text('Sadqa Peti Collection Receipt', style: pw.TextStyle(fontSize: 13, fontWeight: pw.FontWeight.bold)),
           ]),
@@ -1178,7 +1178,7 @@ class _SadqaPetiDashboardViewState extends State<SadqaPetiDashboardView> {
           pageFormat: PdfPageFormat.a4,
           build: (ctx) => [
             pw.Text('Sadqa Peti Collection Report', style: pw.TextStyle(fontSize: 16, fontWeight: pw.FontWeight.bold)),
-            pw.Text('Faiz-E-Raza Group Mehkar - Maktab e Tajushshriah', style: const pw.TextStyle(fontSize: 10, color: PdfColors.grey700)),
+            pw.Text('Faiz-E-Raza Group Mehkar - Maktab-E-Tajushshriah', style: const pw.TextStyle(fontSize: 10, color: PdfColors.grey700)),
             pw.SizedBox(height: 10),
             pw.Table.fromTextArray(
               headers: ['Date', 'Shopkeeper', 'Shop', 'Amount', 'Receipt No'],
