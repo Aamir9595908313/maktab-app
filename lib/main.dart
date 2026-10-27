@@ -3099,6 +3099,41 @@ Widget tile(String label, String value, {Color? color, VoidCallback? onTap, Icon
   return InkWell(borderRadius: BorderRadius.circular(4), onTap: onTap, child: card);
 }
 
+// Same glossy-icon card as tile() above, but title + icon only - no
+// value/subtitle line underneath. Used for the Super Admin Home
+// dashboard's grid specifically (per that screen's own request: "just the
+// menu name, no descriptive text below it"), not a replacement for tile()
+// itself, which plenty of other screens (StudentDetail's stat grid,
+// KidHome, ...) still use exactly as before, where that second line is the
+// actual data being shown, not a removable subtitle.
+Widget menuTile(String label, {IconData? icon, VoidCallback? onTap}) {
+  final emoji = icon == null ? null : _kTileEmoji[icon];
+  final card = Card(
+    child: Padding(
+      padding: const EdgeInsets.all(10),
+      child: Row(crossAxisAlignment: CrossAxisAlignment.center, children: [
+        if (icon != null) ...[
+          if (emoji != null)
+            Text(emoji, style: const TextStyle(fontSize: 34))
+          else
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(color: kGreen.withOpacity(0.1), borderRadius: BorderRadius.circular(10)),
+              child: Icon(icon, size: 26, color: kGreen),
+            ),
+          const SizedBox(width: 10),
+        ],
+        Expanded(
+          child: Text(label, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600), maxLines: 2, overflow: TextOverflow.ellipsis),
+        ),
+        if (onTap != null) const Icon(Icons.chevron_right, size: 16, color: Colors.black38),
+      ]),
+    ),
+  );
+  if (onTap == null) return card;
+  return InkWell(borderRadius: BorderRadius.circular(4), onTap: onTap, child: card);
+}
+
 // Was a fixed crossAxisCount: 2 - fine on a phone, but on a tablet (or a
 // wide Chrome window, which is what this app is actually tested in) two
 // columns stretch into oversized, mostly-empty-looking tiles. Picks more
@@ -4924,26 +4959,29 @@ class _StaffHomeState extends State<StaffHome> {
     if (u.role == 'super') {
       return page([
         banner(),
+        // Per the Super Admin dashboard's own simplification request: menu
+        // names only (no stat/subtitle line below them), "Teachers" removed
+        // as its own card (Teacher management already lives under Master
+        // Data Management, and Teacher *attendance/leave* is still one tap
+        // away via "Leave requests" below), and three renames for clarity.
         grid([
-          tile('Search', 'Phone, name, Maktab', icon: Icons.search, onTap: () => pushPage(context, 'Search', const GlobalSearchView())),
-          tile('Master Data', '${st.madrasas.length} Makatib', icon: Icons.storage, onTap: () => pushPage(context, 'Master Data', const MasterDataDashboard())),
+          menuTile('Student Search', icon: Icons.search, onTap: () => pushPage(context, 'Search', const GlobalSearchView())),
+          menuTile('Master Data Management', icon: Icons.storage, onTap: () => pushPage(context, 'Master Data', const MasterDataDashboard())),
           // Browse by Maktab, with each student's live attendance/syllabus
           // status (StudentDetail's Status/Syllabus/Attendance tabs) -
-          // distinct from the plain "Students" tile below, which is the
+          // distinct from "New Student and Promote" below, which is the
           // admit/edit/promote form, not a status overview.
-          tile('Students by Maktab', '${st.students.length} total', icon: Icons.account_tree, onTap: () => pushPage(context, 'Students by Maktab', const SuperMakatibOverview())),
-          tile('Students', '${st.students.length}', icon: Icons.groups, onTap: () => pushPage(context, 'Students', const StudentsView())),
-          tile('Teachers', '${st.teacherAccounts.where((t) => !t.pending).length}', icon: Icons.co_present, onTap: () => pushPage(context, 'Teachers & Leave', const TeachersView())),
-          tile('Average attendance', '${st.avgAttAll()}%', icon: Icons.event_available),
-          tile('Average syllabus', '${st.avgSylAll()}%', icon: Icons.menu_book),
-          tile('Leave requests', '$pendingLeave pending', icon: Icons.event_busy, onTap: () => pushPage(context, 'Teachers & Leave', const TeachersView())),
-          tile('Complaints open', '$open', icon: Icons.report_problem, onTap: () => pushPage(context, 'Complaints', const ComplaintsView())),
-          tile('Committee members', '${st.committeeAccounts.where((m) => !m.pending).length}', icon: Icons.diversity_3, onTap: () => pushPage(context, 'Committee', const CommitteeAdmin())),
-          tile('Monthly Members', '${st.monthlyMembers.where((m) => m.isActive).length} active', icon: Icons.volunteer_activism, onTap: () => pushPage(context, 'Monthly Members', const MonthlyMembersDashboard())),
-          tile('Results', '${st.examinations.length} examinations', icon: Icons.grading, onTap: () => pushPage(context, 'Results', const ResultsHub())),
-          tile(
+          menuTile('Students by Maktab', icon: Icons.account_tree, onTap: () => pushPage(context, 'Students by Maktab', const SuperMakatibOverview())),
+          menuTile('New Student and Promote', icon: Icons.groups, onTap: () => pushPage(context, 'Students', const StudentsView())),
+          menuTile('Average attendance', icon: Icons.event_available),
+          menuTile('Average syllabus', icon: Icons.menu_book),
+          menuTile('Leave requests', icon: Icons.event_busy, onTap: () => pushPage(context, 'Teachers & Leave', const TeachersView())),
+          menuTile('Complaints open', icon: Icons.report_problem, onTap: () => pushPage(context, 'Complaints', const ComplaintsView())),
+          menuTile('Committee members', icon: Icons.diversity_3, onTap: () => pushPage(context, 'Committee', const CommitteeAdmin())),
+          menuTile('Monthly Members', icon: Icons.volunteer_activism, onTap: () => pushPage(context, 'Monthly Members', const MonthlyMembersDashboard())),
+          menuTile('Results', icon: Icons.grading, onTap: () => pushPage(context, 'Results', const ResultsHub())),
+          menuTile(
             'Notifications',
-            st.unreadAdminNotifCount > 0 ? '${st.unreadAdminNotifCount} unread' : 'All caught up',
             icon: Icons.notifications,
             onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const AdminNotificationsScreen())),
           ),
