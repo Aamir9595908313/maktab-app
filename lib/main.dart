@@ -21,6 +21,7 @@ import 'sadqa_peti.dart';
 import 'prayer_notifications.dart';
 import 'monthly_members.dart';
 import 'results.dart';
+import 'help.dart';
 
 final AppState st = AppState();
 const Color kGreen = Color(0xFF054D00);
@@ -3660,7 +3661,11 @@ List<AppTab> _withExtraTabs(Account u, List<AppTab> base) {
   return out;
 }
 
-List<AppTab> tabsFor(Account u) => _withExtraTabs(u, _baseTabsFor(u));
+// Help is appended here, once, for every role - including a brand-new
+// custom role with nothing else ticked yet - rather than inside each
+// branch of _baseTabsFor, so it can never be missed for one role and not
+// another.
+List<AppTab> tabsFor(Account u) => [..._withExtraTabs(u, _baseTabsFor(u)), AppTab('Help', Icons.help_outline, () => const HelpScreen())];
 
 List<AppTab> _baseTabsFor(Account u) {
   final kidTabs = <AppTab>[
