@@ -7424,11 +7424,19 @@ class _ReportsViewState extends State<ReportsView> {
           ),
         ),
       if (defs.isEmpty) const Padding(padding: EdgeInsets.all(16), child: Text('No report matches that search.')),
-      const Padding(
-        padding: EdgeInsets.fromLTRB(4, 12, 4, 4),
-        child: Text(
-          "Results isn't offered here: there's no Exams/Results feature anywhere in the app yet to pull real marks from.",
-          style: TextStyle(fontSize: 12, color: Colors.black54),
+      // Exam results aren't one of the date-range reports above (marks
+      // don't fit the generic From/To row shape the others share) - this
+      // used to say Results didn't exist in the app at all, which stopped
+      // being true once the Results module shipped; it now points at
+      // where results actually live instead.
+      Padding(
+        padding: const EdgeInsets.fromLTRB(4, 12, 4, 4),
+        child: InkWell(
+          onTap: () => pushPage(context, 'Results', const ResultsHub()),
+          child: const Text(
+            'Looking for exam results? See the Results tab instead - publishing, marks entry and per-student results all live there, not in this report list.',
+            style: TextStyle(fontSize: 12, color: kGreen, decoration: TextDecoration.underline),
+          ),
         ),
       ),
     ]);
@@ -7895,36 +7903,45 @@ class _CommitteeAdminState extends State<CommitteeAdmin> {
         ),
         h('Members'),
         if (st.committeeAccounts.isEmpty) const Text('No committee members yet.', style: TextStyle(color: Colors.black54)),
-        ...st.committeeAccounts.map((m) => Card(
-              child: ListTile(
-                title: Text(m.name),
-                subtitle: Text('${m.phone} - ${m.branches.join(', ')}${m.pending ? ' - invited, waiting for first login' : ''}'),
-                trailing: TextButton(
-                  onPressed: () async {
-                    // Section 10: confirm before removing - this revokes
-                    // access (deactivates) rather than deleting history for
-                    // anyone who has actually logged in; a never-activated
-                    // invite has nothing to deactivate, so it's just deleted.
-                    final ok = await showDialog<bool>(
-                      context: context,
-                      builder: (ctx) => AlertDialog(
-                        title: const Text('Remove this member?'),
-                        content: Text('${m.name} will lose access. ${m.pending ? 'Nothing has been created for them yet, so this just cancels the invite.' : 'Their account is kept and can be reactivated later by a Super Admin if needed.'}'),
-                        actions: [
-                          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
-                          ElevatedButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Remove')),
-                        ],
-                      ),
-                    );
-                    if (ok != true) return;
-                    if (!context.mounted) return;
-                    final e = await removeCommitteeRemote(m);
-                    if (context.mounted) toast(context, e ?? 'Removed.');
-                  },
-                  child: const Text('Remove'),
+        // A still-pending invite has no real account yet, so there's
+        // nothing to switch on/off - only cancelling the invite outright
+        // makes sense for that row. A real member gets the same reversible
+        // Active/Inactive switch Teachers and Maktab Admins already have,
+        // instead of a one-way "Remove" that could only deactivate, never
+        // bring someone back without going elsewhere to do it.
+        ...st.committeeAccounts.map((m) => m.pending
+            ? Card(
+                child: ListTile(
+                  title: Text(m.name),
+                  subtitle: Text('${m.phone} - ${m.branches.join(', ')} - Invited, waiting for first login'),
+                  trailing: TextButton(
+                    onPressed: () async {
+                      final ok = await confirmDialog(context, 'Cancel this invite?', "Nothing has been created for ${m.name} yet, so this just cancels the invite.", confirmLabel: 'Cancel invite');
+                      if (!ok || !context.mounted) return;
+                      final e = await removeCommitteeRemote(m);
+                      if (context.mounted) toast(context, e ?? 'Invite cancelled.');
+                    },
+                    child: const Text('Cancel invite'),
+                  ),
                 ),
-              ),
-            )),
+              )
+            : Card(
+                child: SwitchListTile(
+                  title: Text(m.name),
+                  subtitle: Text('${m.phone} - ${m.branches.join(', ')}'),
+                  value: m.active,
+                  onChanged: (v) async {
+                    if (!v) {
+                      final ok = await confirmDialog(context, 'Deactivate ${m.name}?', 'They will no longer be able to sign in. Their account and history are kept, and a Super Admin can reactivate them later.', confirmLabel: 'Deactivate');
+                      if (!ok) return;
+                      if (!context.mounted) return;
+                    }
+                    final e = await setAccountActiveRemote(m, v);
+                    if (!mounted) return;
+                    if (e != null) toast(context, e);
+                  },
+                ),
+              )),
         h('View log'),
         if (st.viewLog.isEmpty) const Text('No student views yet. Log in as Working Committee and open a student.'),
         ...st.viewLog.reversed.map((l) => Text(l)),
@@ -8964,32 +8981,16 @@ class _MasterDataViewState extends State<MasterDataView> {
       ], // end canManageOrg && _show(maktabAdmins)
       if (canManageOrg && _show(MasterDataSection.committee)) ...[
       h('Committee Members', icon: Icons.diversity_3),
-      if (st.committeeAccounts.isEmpty) const Text('No Committee Members yet.', style: TextStyle(color: Colors.black54)),
-      ...st.committeeAccounts.map((a) => a.pending
-          ? Card(
-              child: ListTile(
-                title: Text(a.name),
-                subtitle: Text('${a.phone} - ${a.branches.join(', ')} - Invited, waiting for first login'),
-                trailing: const Icon(Icons.hourglass_empty, color: Colors.black38),
-              ),
-            )
-          : Card(
-              child: SwitchListTile(
-                title: Text(a.name),
-                subtitle: Text('${a.phone} - ${a.branches.join(', ')}'),
-                value: a.active,
-                onChanged: (v) async {
-                  if (!v) {
-                    final ok = await confirmDialog(context, 'Deactivate ${a.name}?', 'They will no longer be able to sign in. Their account and history are kept, and a Super Admin can reactivate them later.', confirmLabel: 'Deactivate');
-                    if (!ok) return;
-                    if (!context.mounted) return;
-                  }
-                  final e = await setAccountActiveRemote(a, v);
-                  if (!mounted) return;
-                  if (e != null) toast(context, e);
-                },
-              ),
-            )),
+      // The full list with Active/Inactive switches lives in exactly one
+      // place - the "Committee Members" screen below (also a top-level
+      // Super Admin tab) - rather than duplicated here too; this section
+      // keeps only the quick-invite form plus a link to that one screen.
+      ElevatedButton.icon(
+        onPressed: () => pushPage(context, 'Committee Members', const CommitteeAdmin()),
+        icon: const Icon(Icons.diversity_3),
+        label: const Text('Open Committee Members'),
+      ),
+      const SizedBox(height: 10),
       field(committeeName, 'New Committee Member name'),
       field(committeePhone, 'Mobile number (10 digits)', number: true),
       DropdownButtonFormField<String>(
