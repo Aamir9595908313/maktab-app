@@ -1758,20 +1758,34 @@ Future<void> loadAnnouncements() async {
     final rows = await sb.from('announcements').select().order('created_at', ascending: false);
     final list = <Announcement>[
       for (final r in (rows as List))
-        Announcement((r['title'] as String?) ?? '', (r['msg'] as String?) ?? '', (r['priority'] as String?) ?? 'Normal', dbId: r['id'] as String?)
+        Announcement((r['title'] as String?) ?? '', (r['msg'] as String?) ?? '', (r['priority'] as String?) ?? 'Normal',
+            dbId: r['id'] as String?, startDate: r['start_date'] as String?, endDate: r['end_date'] as String?)
           ..active = (r['active'] as bool?) ?? true,
     ];
     st.setAnnouncementsFromDb(list);
   } catch (_) {}
 }
 
-Future<String?> postAnnouncementRemote(String title, String msg, String priority) async {
+// priority is no longer collected from the Super Admin (dropped per that
+// screen's own request - the running/animated title is the highlight now
+// instead) - every new row just gets the column's own DB default
+// ('Normal'), kept only so old rows and this column don't need a
+// migration to drop them. endDate is required: this is what makes an
+// announcement disappear on its own:
+// banner()/StaffHome's "Active announcements" filter against it every
+// time they read st.announcements, so nothing has to come back and flip a
+// flag once the date passes. startDate is optional - null means show
+// immediately, same as leaving it out used to mean before this existed.
+Future<String?> postAnnouncementRemote(String title, String msg, {String? startDate, required String endDate}) async {
   if (title.trim().isEmpty) return 'Enter a title';
+  if (endDate.isEmpty) return 'Choose a "To" date - it decides when this announcement disappears on its own.';
+  if (startDate != null && startDate.isNotEmpty && diffDays(startDate, endDate) > 0) return 'The "To" date must be on or after the "From" date.';
   try {
     await sb.from('announcements').insert({
       'title': title.trim(),
       'msg': msg.trim(),
-      'priority': priority,
+      'start_date': (startDate == null || startDate.isEmpty) ? null : startDate,
+      'end_date': endDate,
       'created_by': sb.auth.currentUser?.id,
     });
     await loadAnnouncements();
@@ -1782,6 +1796,17 @@ Future<String?> postAnnouncementRemote(String title, String msg, String priority
   } catch (_) {
     return 'Could not save. Check your internet connection and try again.';
   }
+}
+
+// Whether an announcement should actually be shown today - active (not
+// withdrawn) AND today falls inside its optional start/end date range.
+// Shared by the banner and StaffHome's own "Active announcements" list so
+// the two can never disagree about what's currently live.
+bool announcementIsLive(Announcement a) {
+  if (!a.active) return false;
+  if (a.startDate != null && a.startDate!.isNotEmpty && diffDays(kToday, a.startDate!) < 0) return false;
+  if (a.endDate != null && a.endDate!.isNotEmpty && diffDays(kToday, a.endDate!) > 0) return false;
+  return true;
 }
 
 Future<void> withdrawAnnouncementRemote(Announcement a) async {
@@ -3222,16 +3247,67 @@ void pushPage(BuildContext context, String title, Widget body) {
   );
 }
 
-Widget banner() {
-  final a = st.announcements.where((x) => x.active).toList();
-  if (a.isEmpty) return const SizedBox.shrink();
-  final x = a.last;
-  return Container(
-    margin: const EdgeInsets.only(bottom: 10),
-    padding: const EdgeInsets.all(10),
-    decoration: const BoxDecoration(color: Color(0xFFFFF3CF), border: Border(left: BorderSide(color: kGold, width: 4))),
-    child: Text('Announcement from Super Admin (${x.priority}): ${x.title}\n${x.msg}', style: const TextStyle(fontWeight: FontWeight.w600)),
-  );
+Widget banner() => const _AnnouncementBanner();
+
+// Was a plain function returning a static Text - now a small StatefulWidget
+// so the title can gently pulse (scale in/out) to actually catch the eye,
+// per that screen's own request, instead of relying on a "(Important)"
+// priority tag that's gone now. The message got its own clearly separate,
+// rounded white box underneath instead of being run into the title on one
+// line with a literal "\n" - two different things, two visually distinct
+// blocks. announcementIsLive() (shared with StaffHome's own "Active
+// announcements" list) is what makes this disappear on its own once its
+// end date passes - nothing here has to notice that happening; it's just
+// filtered out on the next read.
+class _AnnouncementBanner extends StatefulWidget {
+  const _AnnouncementBanner();
+  @override
+  State<_AnnouncementBanner> createState() => _AnnouncementBannerState();
+}
+
+class _AnnouncementBannerState extends State<_AnnouncementBanner> with SingleTickerProviderStateMixin {
+  late final AnimationController _c = AnimationController(vsync: this, duration: const Duration(milliseconds: 1300))..repeat(reverse: true);
+  late final Animation<double> _scale = Tween<double>(begin: 0.96, end: 1.05).animate(CurvedAnimation(parent: _c, curve: Curves.easeInOut));
+
+  @override
+  void dispose() {
+    _c.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final live = st.announcements.where(announcementIsLive).toList();
+    if (live.isEmpty) return const SizedBox.shrink();
+    final x = live.last;
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(color: const Color(0xFFFFF3CF), borderRadius: BorderRadius.circular(8), border: const Border(left: BorderSide(color: kGold, width: 4))),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: const [
+          Icon(Icons.campaign, size: 15, color: kGold),
+          SizedBox(width: 5),
+          Text('Announcement from Super Admin', style: TextStyle(fontSize: 11, color: Colors.black54, fontWeight: FontWeight.w600)),
+        ]),
+        const SizedBox(height: 4),
+        ScaleTransition(
+          scale: _scale,
+          alignment: Alignment.centerLeft,
+          child: Text(x.title, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16.5)),
+        ),
+        if (x.msg.trim().isNotEmpty) ...[
+          const SizedBox(height: 8),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(6), border: Border.all(color: const Color(0xFFE8DCA8))),
+            child: Text(x.msg, style: const TextStyle(fontSize: 13.5, height: 1.4)),
+          ),
+        ],
+      ]),
+    );
+  }
 }
 
 // Shared "are you sure?" dialog for a destructive/hard-to-undo action -
@@ -4949,7 +5025,12 @@ class StaffHome extends StatefulWidget {
 class _StaffHomeState extends State<StaffHome> {
   final title = TextEditingController();
   final msg = TextEditingController();
-  String priority = 'Important';
+  // yyyy-MM-dd, same convention as every other date field in this app.
+  // annFrom empty means "show immediately" once posted; annTo is required
+  // (validated in postAnnouncementRemote) - it's what makes the
+  // announcement disappear on its own once that day has passed.
+  String annFrom = '';
+  String annTo = '';
 
   @override
   Widget build(BuildContext context) =>
@@ -5014,12 +5095,37 @@ class _StaffHomeState extends State<StaffHome> {
         h('Post common announcement (all Makatib, all roles)'),
         field(title, 'Title'),
         field(msg, 'Message', lines: 2),
-        DropdownButtonFormField<String>(
-          value: priority,
-          decoration: const InputDecoration(labelText: 'Priority', border: OutlineInputBorder()),
-          items: const [DropdownMenuItem(value: 'Normal', child: Text('Normal')), DropdownMenuItem(value: 'Important', child: Text('Important'))],
-          onChanged: (v) => setState(() => priority = v ?? priority),
-        ),
+        Row(children: [
+          Expanded(
+            child: GestureDetector(
+              onTap: () async {
+                final picked = await showDatePicker(context: context, initialDate: DateTime.now(), firstDate: DateTime.now().subtract(const Duration(days: 1)), lastDate: DateTime(2035, 12, 31));
+                if (picked != null) setState(() => annFrom = fd(picked));
+              },
+              child: AbsorbPointer(
+                child: TextField(
+                  controller: TextEditingController(text: annFrom.isEmpty ? '' : nice(annFrom)),
+                  decoration: const InputDecoration(labelText: 'From (blank = now)', border: OutlineInputBorder()),
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: GestureDetector(
+              onTap: () async {
+                final picked = await showDatePicker(context: context, initialDate: DateTime.now(), firstDate: DateTime.now(), lastDate: DateTime(2035, 12, 31));
+                if (picked != null) setState(() => annTo = fd(picked));
+              },
+              child: AbsorbPointer(
+                child: TextField(
+                  controller: TextEditingController(text: annTo.isEmpty ? '' : nice(annTo)),
+                  decoration: const InputDecoration(labelText: 'To (required)', border: OutlineInputBorder()),
+                ),
+              ),
+            ),
+          ),
+        ]),
         const SizedBox(height: 8),
         ElevatedButton(
           onPressed: () async {
@@ -5027,24 +5133,51 @@ class _StaffHomeState extends State<StaffHome> {
               toast(context, 'Enter a title');
               return;
             }
-            final e = await postAnnouncementRemote(title.text, msg.text, priority);
+            if (annTo.isEmpty) {
+              toast(context, 'Choose a "To" date - it decides when this announcement disappears on its own.');
+              return;
+            }
+            final toShown = nice(annTo);
+            final e = await postAnnouncementRemote(title.text, msg.text, startDate: annFrom.isEmpty ? null : annFrom, endDate: annTo);
             if (e != null) {
               toast(context, e);
               return;
             }
             title.clear();
             msg.clear();
-            toast(context, 'Announcement posted. It now shows on every dashboard.');
+            setState(() {
+              annFrom = '';
+              annTo = '';
+            });
+            toast(context, 'Announcement posted. It shows on every dashboard until $toShown, then disappears on its own.');
           },
           child: const Text('Post announcement'),
         ),
         h('Active announcements'),
-        ...st.announcements.where((a) => a.active).map((a) => Card(child: ListTile(title: Text(a.title), subtitle: Text(a.msg), trailing: TextButton(onPressed: () async {
-                final ok = await confirmDialog(context, 'Withdraw this announcement?', 'It will stop showing on every dashboard. This cannot be undone - posting it again would be a new announcement.', confirmLabel: 'Withdraw');
-                if (!ok) return;
-                if (!context.mounted) return;
-                await withdrawAnnouncementRemote(a);
-              }, child: const Text('Withdraw'))))),
+        ...st.announcements.where((a) => a.active).map((a) {
+          final live = announcementIsLive(a);
+          final range = '${a.startDate == null || a.startDate!.isEmpty ? 'From now' : 'From ${nice(a.startDate!)}'} to ${a.endDate == null || a.endDate!.isEmpty ? 'no end date set' : nice(a.endDate!)}';
+          return Card(
+            child: ListTile(
+              title: Text(a.title),
+              isThreeLine: true,
+              subtitle: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text(a.msg),
+                const SizedBox(height: 2),
+                Text(live ? range : '$range - Expired, no longer shown', style: TextStyle(fontSize: 11.5, color: live ? Colors.black54 : Colors.red, fontWeight: live ? FontWeight.normal : FontWeight.w600)),
+              ]),
+              trailing: TextButton(
+                onPressed: () async {
+                  final ok = await confirmDialog(context, 'Withdraw this announcement?', 'It will stop showing on every dashboard. This cannot be undone - posting it again would be a new announcement.', confirmLabel: 'Withdraw');
+                  if (!ok) return;
+                  if (!context.mounted) return;
+                  await withdrawAnnouncementRemote(a);
+                },
+                child: const Text('Withdraw'),
+              ),
+            ),
+          );
+        }),
       ]);
     }
     if (u.role == 'admin') {

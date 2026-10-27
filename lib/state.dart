@@ -670,9 +670,19 @@ class Announcement {
   String msg;
   String priority;
   bool active = true;
+  // Date range this announcement should actually be shown in, yyyy-MM-dd
+  // (same convention as every other date field in this app - Student.dob,
+  // Leave.from/to, etc.) - null startDate means "show immediately", null
+  // endDate means "never auto-expire" (only possible for a row posted
+  // before this feature existed). The banner filters by these against
+  // kToday on every read, client-side, so an announcement disappears the
+  // day after endDate with no server job needed - `active` stays a
+  // separate, manual "Withdraw" flag.
+  String? startDate;
+  String? endDate;
   // public.announcements row id, once loaded from (or saved to) the database.
   String? dbId;
-  Announcement(this.title, this.msg, this.priority, {this.dbId});
+  Announcement(this.title, this.msg, this.priority, {this.dbId, this.startDate, this.endDate});
 }
 
 class DayEntry {
