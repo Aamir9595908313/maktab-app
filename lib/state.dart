@@ -9,6 +9,14 @@ String get kToday => fd(DateTime.now());
 const List<String> kMon = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const List<String> kBranches = ['Hanfi', 'Jama', 'Khwajapiya', 'Bagwanpura'];
 const List<String> kBatches = ['Morning', 'Afternoon', 'Evening'];
+
+// Who the "father's name" field actually names for this student - picked
+// by the admitting teacher/admin, defaults to 'Father'. Lets an adult
+// student admitted under her husband's guardianship (not every student is
+// a minor admitted under her father) be recorded correctly instead of
+// forcing every admission into a father relationship. See Student.
+// guardianRelation / public.students.guardian_relation.
+const List<String> kGuardianRelations = ['Father', 'Husband'];
 // Fixed list of values (LOV) for Maktab Category - public.madrasas.category.
 // Not free text: every place that lets a user set this must offer exactly
 // these three and nothing else.
@@ -154,6 +162,13 @@ class Student {
   String status;
   String? dob; // yyyy-MM-dd, matches public.students.dob
   String fatherName;
+  // 'Father' (default) or 'Husband' - whether fatherName above is the
+  // student's father's name or, for an adult student admitted under her
+  // husband's guardianship, her husband's name. The admitting
+  // teacher/admin picks this at admission time (kGuardianRelations); it's
+  // never guessed from the name or anything else - public.students.
+  // guardian_relation.
+  String guardianRelation;
   // 'Morning' / 'Afternoon' / 'Evening' - same class, split by session, so
   // Mark Attendance can group students who attend different times of day
   // instead of silently defaulting everyone to Present on Final Submit.
@@ -193,6 +208,7 @@ class Student {
     this.status = 'Active',
     this.dob,
     this.fatherName = '',
+    this.guardianRelation = 'Father',
     this.batch = 'Morning',
     Map<int, String>? pageDate,
     Map<int, String>? pageGrade,
@@ -1155,7 +1171,7 @@ class AppState extends ChangeNotifier {
     return '${s.name} reactivated.';
   }
 
-  void editStudent(Student s, {String? name, String? parentPhone, String? address, String? madrasa, int? cls, String? dob, String? fatherName, String? batch}) {
+  void editStudent(Student s, {String? name, String? parentPhone, String? address, String? madrasa, int? cls, String? dob, String? fatherName, String? guardianRelation, String? batch}) {
     if (name != null && name.trim().isNotEmpty) s.name = name.trim();
     if (parentPhone != null && parentPhone.trim().isNotEmpty) s.parentPhone = parentPhone.trim();
     if (address != null) s.address = address.trim();
@@ -1163,6 +1179,7 @@ class AppState extends ChangeNotifier {
     if (cls != null) s.cls = cls;
     if (dob != null) s.dob = dob.trim().isEmpty ? null : dob.trim();
     if (fatherName != null) s.fatherName = fatherName.trim();
+    if (guardianRelation != null && kGuardianRelations.contains(guardianRelation)) s.guardianRelation = guardianRelation;
     if (batch != null && batch.isNotEmpty) s.batch = batch;
     notifyListeners();
   }
@@ -1775,12 +1792,28 @@ class AppState extends ChangeNotifier {
     String address = '',
     String? dob,
     String fatherName = '',
+    String guardianRelation = 'Father',
     String batch = 'Morning',
     String? dbId,
   }) {
     final id = nextId++;
     students.add(Student(
-        id: id, key: key, name: name, gender: gender, cls: cls, madrasa: madrasa, start: start, parentPhone: parentPhone, studentPhone: studentPhone, aadhaar: aadhaar, address: address, dob: dob, fatherName: fatherName, batch: batch, dbId: dbId));
+        id: id,
+        key: key,
+        name: name,
+        gender: gender,
+        cls: cls,
+        madrasa: madrasa,
+        start: start,
+        parentPhone: parentPhone,
+        studentPhone: studentPhone,
+        aadhaar: aadhaar,
+        address: address,
+        dob: dob,
+        fatherName: fatherName,
+        guardianRelation: guardianRelation,
+        batch: batch,
+        dbId: dbId));
     notifyListeners();
   }
 

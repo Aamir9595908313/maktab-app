@@ -216,6 +216,7 @@ Future<void> loadMasterData() async {
           status: (r['is_active'] as bool?) ?? true ? 'Active' : 'Inactive',
           dob: r['dob'] as String?,
           fatherName: (r['father_name'] as String?) ?? '',
+          guardianRelation: kGuardianRelations.contains(r['guardian_relation']) ? r['guardian_relation'] as String : 'Father',
           batch: (r['batch'] as String?) ?? 'Morning',
           dbId: r['id'] as String?,
         ),
@@ -2186,9 +2187,11 @@ Future<String?> addStudentRemote({
   required String madrasa,
   String? dob,
   String fatherName = '',
+  String guardianRelation = 'Father',
   String batch = 'Morning',
   bool confirmDuplicate = false,
 }) async {
+  final relation = kGuardianRelations.contains(guardianRelation) ? guardianRelation : 'Father';
   final n = name.trim();
   if (n.isEmpty) return 'Enter the student name';
   if (gender.isEmpty) return 'Select gender (Male or Female)';
@@ -2232,6 +2235,7 @@ Future<String?> addStudentRemote({
       'admission_date': start,
       'dob': (dob == null || dob.trim().isEmpty) ? null : dob.trim(),
       'father_name': fatherName.trim().isEmpty ? null : fatherName.trim(),
+      'guardian_relation': relation,
       'batch': batch,
     }).select().single();
     st.addStudentFromRemote(
@@ -2247,6 +2251,7 @@ Future<String?> addStudentRemote({
       address: address.trim(),
       dob: (dob == null || dob.trim().isEmpty) ? null : dob.trim(),
       fatherName: fatherName.trim(),
+      guardianRelation: relation,
       batch: batch,
       dbId: row['id'] as String?,
     );
@@ -2356,7 +2361,7 @@ Future<String> promoteRemote(Student s) async {
 // Section 3.2.3/5: re-runs the active-duplicate check if name or DOB
 // changed. A return value starting with "DUPLICATE:" is the warning, not
 // an error - same confirm-and-retry pattern as addStudentRemote.
-Future<String?> editStudentRemote(Student s, {String? name, String? parentPhone, String? address, String? madrasa, int? cls, String? dob, String? fatherName, String? batch, bool confirmDuplicate = false}) async {
+Future<String?> editStudentRemote(Student s, {String? name, String? parentPhone, String? address, String? madrasa, int? cls, String? dob, String? fatherName, String? guardianRelation, String? batch, bool confirmDuplicate = false}) async {
   final newName = (name != null && name.trim().isNotEmpty) ? name.trim() : s.name;
   final newDob = dob != null ? (dob.trim().isEmpty ? null : dob.trim()) : s.dob;
   if (!confirmDuplicate && (newName != s.name || newDob != s.dob)) {
@@ -2374,6 +2379,7 @@ Future<String?> editStudentRemote(Student s, {String? name, String? parentPhone,
   if (address != null) patch['address'] = address.trim().isEmpty ? null : address.trim();
   if (dob != null) patch['dob'] = dob.trim().isEmpty ? null : dob.trim();
   if (fatherName != null) patch['father_name'] = fatherName.trim().isEmpty ? null : fatherName.trim();
+  if (guardianRelation != null && kGuardianRelations.contains(guardianRelation)) patch['guardian_relation'] = guardianRelation;
   if (batch != null && batch.isNotEmpty) patch['batch'] = batch;
   if (madrasa != null) {
     final m = st.madrasas.where((x) => x.name == madrasa).toList();
@@ -2398,7 +2404,7 @@ Future<String?> editStudentRemote(Student s, {String? name, String? parentPhone,
       return 'Could not save. Check your internet connection and try again.';
     }
   }
-  st.editStudent(s, name: name, parentPhone: parentPhone == null ? null : digits(parentPhone), address: address, madrasa: madrasa, cls: cls, dob: dob, fatherName: fatherName, batch: batch);
+  st.editStudent(s, name: name, parentPhone: parentPhone == null ? null : digits(parentPhone), address: address, madrasa: madrasa, cls: cls, dob: dob, fatherName: fatherName, guardianRelation: guardianRelation, batch: batch);
   return null;
 }
 
@@ -3163,6 +3169,7 @@ Future<void> editStudentDialog(BuildContext context, Student s) async {
   String madrasa = s.madrasa;
   int cls = s.cls;
   String batch = kBatches.contains(s.batch) ? s.batch : 'Morning';
+  String guardianRelation = kGuardianRelations.contains(s.guardianRelation) ? s.guardianRelation : 'Father';
   final result = await showDialog<bool>(
     context: context,
     builder: (ctx) => StatefulBuilder(
@@ -3172,7 +3179,16 @@ Future<void> editStudentDialog(BuildContext context, Student s) async {
           child: Column(mainAxisSize: MainAxisSize.min, children: [
             TextField(controller: name, decoration: const InputDecoration(labelText: 'Name')),
             const SizedBox(height: 8),
-            TextField(controller: fatherName, decoration: const InputDecoration(labelText: "Father's name")),
+            // Not every student is a minor admitted under her father - an
+            // adult student may be admitted under her husband's
+            // guardianship instead. Defaults to Father; the admitting
+            // teacher/admin picks Husband only when it actually applies.
+            Wrap(spacing: 6, children: [
+              for (final r in kGuardianRelations)
+                ChoiceChip(label: Text(r), selected: guardianRelation == r, onSelected: (_) => setD(() => guardianRelation = r)),
+            ]),
+            const SizedBox(height: 4),
+            TextField(controller: fatherName, decoration: InputDecoration(labelText: guardianRelation == 'Husband' ? "Husband's name" : "Father's name")),
             const SizedBox(height: 8),
             GestureDetector(
               onTap: () async {
@@ -3235,7 +3251,7 @@ Future<void> editStudentDialog(BuildContext context, Student s) async {
     ),
   );
   if (result != true) return;
-  var e = await editStudentRemote(s, name: name.text, parentPhone: parent.text, address: address.text, madrasa: madrasa, cls: cls, dob: dob.text, fatherName: fatherName.text, batch: batch);
+  var e = await editStudentRemote(s, name: name.text, parentPhone: parent.text, address: address.text, madrasa: madrasa, cls: cls, dob: dob.text, fatherName: fatherName.text, guardianRelation: guardianRelation, batch: batch);
   if (e != null && e.startsWith('DUPLICATE:')) {
     if (!context.mounted) return;
     final proceed = await showDialog<bool>(
@@ -3251,7 +3267,7 @@ Future<void> editStudentDialog(BuildContext context, Student s) async {
     );
     if (proceed != true) return;
     if (!context.mounted) return;
-    e = await editStudentRemote(s, name: name.text, parentPhone: parent.text, address: address.text, madrasa: madrasa, cls: cls, dob: dob.text, fatherName: fatherName.text, batch: batch, confirmDuplicate: true);
+    e = await editStudentRemote(s, name: name.text, parentPhone: parent.text, address: address.text, madrasa: madrasa, cls: cls, dob: dob.text, fatherName: fatherName.text, guardianRelation: guardianRelation, batch: batch, confirmDuplicate: true);
   }
   if (context.mounted) toast(context, e ?? 'Student updated.');
 }
@@ -5078,17 +5094,20 @@ class _ImportRow {
   final String gender;
   final String dob;
   final String fatherName;
+  // 'Father' (default) or 'Husband' - optional column; blank or omitted
+  // defaults to Father so existing template files keep working unchanged.
+  final String guardianRelation;
   final String parentPhone;
   final String studentPhone;
   final String address;
   final int cls;
   String? error; // non-null => this row is skipped
   bool duplicate = false;
-  _ImportRow(this.rowNo, this.name, this.gender, this.dob, this.fatherName, this.parentPhone, this.studentPhone, this.address, this.cls);
+  _ImportRow(this.rowNo, this.name, this.gender, this.dob, this.fatherName, this.guardianRelation, this.parentPhone, this.studentPhone, this.address, this.cls);
 }
 
-const String kImportTemplateCsv = 'name,gender,class,dob,father_name,parent_phone,student_phone,address\n'
-    'Ahmed Khan,Male,1,2017-05-12,Imran Khan,9800000111,,House 12 Station Road\n';
+const String kImportTemplateCsv = 'name,gender,class,dob,father_name,guardian_relation,parent_phone,student_phone,address\n'
+    'Ahmed Khan,Male,1,2017-05-12,Imran Khan,Father,9800000111,,House 12 Station Road\n';
 
 class BulkImportStudents extends StatefulWidget {
   final List<String> pickableMadrasas;
@@ -5135,7 +5154,7 @@ class _BulkImportStudentsState extends State<BulkImportStudents> {
       return;
     }
     final header = table.first.map((h) => h.toString().trim().toLowerCase()).toList();
-    const expected = ['name', 'gender', 'class', 'dob', 'father_name', 'parent_phone', 'student_phone', 'address'];
+    const expected = ['name', 'gender', 'class', 'dob', 'father_name', 'guardian_relation', 'parent_phone', 'student_phone', 'address'];
     final colIndex = {for (final c in expected) c: header.indexOf(c)};
     if (colIndex['name'] == -1 || colIndex['gender'] == -1 || colIndex['class'] == -1 || colIndex['parent_phone'] == -1) {
       setState(() => parseError = 'The header row must include at least: name, gender, class, parent_phone. Download the sample template below and use it as a starting point.');
@@ -5153,12 +5172,14 @@ class _BulkImportStudentsState extends State<BulkImportStudents> {
       if (r.every((x) => x.toString().trim().isEmpty)) continue; // skip blank lines
       final clsText = cell(r, 'class');
       final cls = int.tryParse(clsText) ?? -1;
+      final relationCell = cell(r, 'guardian_relation');
       final row = _ImportRow(
         i + 1, // 1-based, matches what a spreadsheet shows including header row
         cell(r, 'name'),
         cell(r, 'gender'),
         cell(r, 'dob'),
         cell(r, 'father_name'),
+        kGuardianRelations.contains(relationCell) ? relationCell : 'Father',
         digits(cell(r, 'parent_phone')),
         digits(cell(r, 'student_phone')),
         cell(r, 'address'),
@@ -5221,6 +5242,7 @@ class _BulkImportStudentsState extends State<BulkImportStudents> {
         madrasa: madrasa!,
         dob: r.dob,
         fatherName: r.fatherName,
+        guardianRelation: r.guardianRelation,
         confirmDuplicate: true, // already shown and accepted in the preview step
       );
       if (!mounted) return;
@@ -6366,6 +6388,7 @@ class _StudentsViewState extends State<StudentsView> {
   String gender = '';
   int cls = 1;
   String batch = 'Morning';
+  String guardianRelation = 'Father';
   bool aadhaar = false;
   bool busy = false;
   String? regMadrasa;
@@ -6459,7 +6482,16 @@ class _StudentsViewState extends State<StudentsView> {
       const SizedBox(height: 8),
       field(parent, 'Parent mobile number * (mandatory)', number: true),
       field(stuPhone, 'Student mobile number (optional)', number: true),
-      field(fatherName, "Father's name (optional)"),
+      // Not every student is admitted under her father - an adult student
+      // may be admitted under her husband's guardianship instead. Defaults
+      // to Father; the admitting teacher/admin picks Husband only when it
+      // actually applies, never guessed from anything else.
+      const Text('Guardian relation', style: TextStyle(fontSize: 12.5, color: Colors.black54)),
+      Wrap(spacing: 6, children: [
+        for (final r in kGuardianRelations) ChoiceChip(label: Text(r), selected: guardianRelation == r, onSelected: (_) => setState(() => guardianRelation = r)),
+      ]),
+      const SizedBox(height: 4),
+      field(fatherName, "${guardianRelation == 'Husband' ? "Husband's" : "Father's"} name (optional)"),
       GestureDetector(
         onTap: () => _pickDob(context, dob),
         child: AbsorbPointer(
@@ -6490,6 +6522,7 @@ class _StudentsViewState extends State<StudentsView> {
                   madrasa: madrasaToUse,
                   dob: dob.text,
                   fatherName: fatherName.text,
+                  guardianRelation: guardianRelation,
                   batch: batch,
                 );
                 if (!mounted) return;
@@ -6520,6 +6553,7 @@ class _StudentsViewState extends State<StudentsView> {
                     madrasa: madrasaToUse,
                     dob: dob.text,
                     fatherName: fatherName.text,
+                    guardianRelation: guardianRelation,
                     batch: batch,
                     confirmDuplicate: true,
                   );
@@ -6537,6 +6571,7 @@ class _StudentsViewState extends State<StudentsView> {
                   setState(() {
                     gender = '';
                     aadhaar = false;
+                    guardianRelation = 'Father';
                   });
                 }
               },
@@ -9922,7 +9957,7 @@ Future<Uint8List> buildStudentHistoryPdf(Student s) async {
         _pdfKv('Maktab', s.madrasa),
         _pdfKv('Category', category ?? '-'),
         _pdfKv('Current Class', cd?.name ?? 'Class ${s.cls}'),
-        _pdfKv("Father's / Guardian's Name", s.fatherName.isEmpty ? '-' : s.fatherName),
+        _pdfKv(s.guardianRelation == 'Husband' ? "Husband's Name" : "Father's Name", s.fatherName.isEmpty ? '-' : s.fatherName),
         _pdfKv('Parent Mobile Number', s.parentPhone.isEmpty ? '-' : s.parentPhone),
 
         _pdfSectionHeading('B. Current Class Details'),
