@@ -3167,9 +3167,18 @@ Widget menuTile(String label, {IconData? icon, VoidCallback? onTap, int? badge})
   // its outside edge, which is what made it look misaligned/floating
   // between cards before) - a small positive inset keeps it clear of the
   // card's rounded corner and its own border.
+  //
+  // Positioned.fill is required here: a plain (non-positioned) Stack child
+  // only gets *loose* constraints, so the Card shrinks to its own content
+  // height instead of filling the grid tile - leaving empty space below a
+  // short card, with the badge (anchored to the *tile's* bottom-right)
+  // floating in that gap below the card instead of inside it. Positioned.fill
+  // forces the card back to the full tile size, matching every other
+  // (badge-less) tile in the grid, so the badge's corner lines up with the
+  // card's own corner.
   return Stack(
     children: [
-      tappable,
+      Positioned.fill(child: tappable),
       Positioned(
         right: 8,
         bottom: 6,
