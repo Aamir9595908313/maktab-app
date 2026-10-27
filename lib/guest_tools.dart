@@ -714,14 +714,31 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
         ],
       );
 
+  // The Aladhan API returns each time as 24-hour "HH:mm" (occasionally with
+  // a trailing " (TZ)", already stripped elsewhere in this file for the
+  // same reason) - shown as-is, that read like "13:10" instead of a time a
+  // guest actually reads a clock in. Converts to 12-hour with AM/PM; falls
+  // back to the raw string if it's ever not in the expected shape.
+  String _fmt12Hour(String? hhmm) {
+    if (hhmm == null || hhmm.isEmpty) return '-';
+    final m = RegExp(r'^(\d{1,2}):(\d{2})').firstMatch(hhmm.trim());
+    if (m == null) return hhmm;
+    var h = int.parse(m.group(1)!);
+    final minute = m.group(2)!;
+    final suffix = h >= 12 ? 'PM' : 'AM';
+    h %= 12;
+    if (h == 0) h = 12;
+    return '$h:$minute $suffix';
+  }
+
   Widget _ready() {
     final rows = [
-      ['Fajr', timings['Fajr']],
-      ['Sunrise', timings['Sunrise']],
-      ['Dhuhr', timings['Dhuhr']],
-      ['Asr', timings['Asr']],
-      ['Maghrib', timings['Maghrib']],
-      ['Isha', timings['Isha']],
+      ['Fajr', _fmt12Hour(timings['Fajr'])],
+      ['Sunrise', _fmt12Hour(timings['Sunrise'])],
+      ['Dhuhr', _fmt12Hour(timings['Dhuhr'])],
+      ['Asr', _fmt12Hour(timings['Asr'])],
+      ['Maghrib', _fmt12Hour(timings['Maghrib'])],
+      ['Isha', _fmt12Hour(timings['Isha'])],
     ];
     return ListView(
       padding: const EdgeInsets.all(16),
