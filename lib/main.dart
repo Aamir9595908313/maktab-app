@@ -20,6 +20,7 @@ import 'supabase_config.dart';
 import 'sadqa_peti.dart';
 import 'prayer_notifications.dart';
 import 'monthly_members.dart';
+import 'results.dart';
 
 final AppState st = AppState();
 const Color kGreen = Color(0xFF054D00);
@@ -245,6 +246,9 @@ Future<void> loadMasterData() async {
     await loadSadqaPetis();
     await loadSadqaCollections();
     await loadAdminNotifications();
+    await loadAcademicYears();
+    await loadExaminations();
+    await loadMyResultNotifs();
   } catch (_) {
     // Swallow - see note above. The Master Data screen still works off
     // whatever was already loaded; a retry happens next time this is
@@ -3613,6 +3617,12 @@ final Map<String, AppTab> _kPermTabs = {
   'Leave': AppTab('Teacher Leave', Icons.groups, () => const TeachersView()),
   'Sadqa Peti': AppTab('Sadqa Peti', Icons.inventory_2, () => const SadqaPetiDashboardView()),
   'Monthly Members': AppTab('Monthly Members', Icons.groups_3, () => const MonthlyMembersDashboard()),
+  // All 10 granular Result Manager permissions open the same Results tab -
+  // what's actually allowed inside it (create, enter marks, publish,
+  // correct, delete, ...) is decided screen-by-screen inside results.dart
+  // by calling userHasPerm() for the specific action, not by which of
+  // these 10 keys opened the tab.
+  for (final k in kResultPerms) k: AppTab('Results', Icons.grading, () => const ResultsHub()),
 };
 
 // Appends a tab for each extra permission `u` holds (u.extraPerms) that
@@ -3626,7 +3636,10 @@ List<AppTab> _withExtraTabs(Account u, List<AppTab> base) {
   final out = [...base];
   for (final key in u.extraPerms) {
     final tab = _kPermTabs[key];
-    if (tab != null && !have.contains(tab.title)) out.add(tab);
+    if (tab != null && !have.contains(tab.title)) {
+      out.add(tab);
+      have.add(tab.title);
+    }
   }
   return out;
 }
@@ -3641,16 +3654,19 @@ List<AppTab> _baseTabsFor(Account u) {
   ];
   switch (u.role) {
     case 'parent':
-      if (st.studentView) return kidTabs;
+      if (st.studentView) {
+        return [...kidTabs, AppTab('My Results', Icons.grading, () => const StudentMyResultsScreen())];
+      }
       return [
         ...kidTabs,
         AppTab('Add-on Course Progress', Icons.verified, () => const KidCourseProgress()),
         AppTab('Fees', Icons.payments, () => const KidFees()),
+        AppTab("My Child's Results", Icons.grading, () => const ParentChildResultsScreen()),
         AppTab('Complaints', Icons.report_problem, () => const ComplaintsView()),
         AppTab('Documents', Icons.badge, () => const KidDocs()),
       ];
     case 'student':
-      return kidTabs;
+      return [...kidTabs, AppTab('My Results', Icons.grading, () => const StudentMyResultsScreen())];
     case 'teacher':
       return [
         AppTab('Home', Icons.home, () => const StaffHome()),
@@ -3691,6 +3707,7 @@ List<AppTab> _baseTabsFor(Account u) {
         AppTab('Add-on Course Approvals', Icons.verified, () => const CourseApprovalsView()),
         AppTab('Fee QR & Reminders', Icons.qr_code, () => const FeeQrAdmin()),
         AppTab('Reports', Icons.assessment, () => const ReportsView()),
+        AppTab('Results', Icons.grading, () => const ResultsHub()),
         AppTab('Roles', Icons.admin_panel_settings, () => const RolesView()),
         AppTab('Committee Members', Icons.visibility, () => const CommitteeAdmin()),
         AppTab('Complaints', Icons.report_problem, () => const ComplaintsView()),
@@ -3706,6 +3723,7 @@ List<AppTab> _baseTabsFor(Account u) {
       if (perms.contains('Leave')) list.add(AppTab('Teacher Leave', Icons.groups, () => const TeachersView()));
       if (perms.contains('Sadqa Peti')) list.add(AppTab('Sadqa Peti', Icons.inventory_2, () => const SadqaPetiDashboardView()));
       if (perms.contains('Monthly Members')) list.add(AppTab('Monthly Members', Icons.groups_3, () => const MonthlyMembersDashboard()));
+      if (perms.any(kResultPerms.contains)) list.add(AppTab('Results', Icons.grading, () => const ResultsHub()));
       if (list.isEmpty && u.extraPerms.isEmpty) list.add(AppTab('No screens', Icons.block, () => page([const Text('No screens have been given to this role.')])));
       return list;
   }
@@ -4828,6 +4846,7 @@ class _StaffHomeState extends State<StaffHome> {
           tile('Complaints open', '$open', icon: Icons.report_problem, onTap: () => pushPage(context, 'Complaints', const ComplaintsView())),
           tile('Committee members', '${st.committeeAccounts.where((m) => !m.pending).length}', icon: Icons.diversity_3, onTap: () => pushPage(context, 'Committee', const CommitteeAdmin())),
           tile('Monthly Members', '${st.monthlyMembers.where((m) => m.isActive).length} active', icon: Icons.volunteer_activism, onTap: () => pushPage(context, 'Monthly Members', const MonthlyMembersDashboard())),
+          tile('Results', '${st.examinations.length} examinations', icon: Icons.grading, onTap: () => pushPage(context, 'Results', const ResultsHub())),
           tile(
             'Notifications',
             st.unreadAdminNotifCount > 0 ? '${st.unreadAdminNotifCount} unread' : 'All caught up',
@@ -7397,15 +7416,57 @@ class _RolesViewState extends State<RolesView> {
   final Set<String> gNewBranches = {};
   bool gBusy = false;
 
+  List<Widget> _grantCheckboxes(List<String> keys) => [
+        for (final s in keys)
+          CheckboxListTile(
+            dense: true,
+            title: Text(s == 'Students' ? 'Students and Add Student form' : s == 'Leave' ? 'Teacher leave' : s),
+            value: found!.extraPerms.contains(s),
+            onChanged: gBusy
+                ? null
+                : (v) async {
+                    final f = found!;
+                    setState(() => gBusy = true);
+                    final String? e;
+                    if (v == true) {
+                      e = await grantExtraPermissionRemote(f.userId, s, newBranches: gNewBranches.toList());
+                      if (e == null) f.extraPerms.add(s);
+                    } else {
+                      e = await revokeExtraPermissionRemote(f.userId, s);
+                      if (e == null) f.extraPerms.remove(s);
+                    }
+                    if (!mounted) return;
+                    setState(() => gBusy = false);
+                    if (e != null) toast(context, e);
+                  },
+          ),
+      ];
+
   @override
   Widget build(BuildContext context) {
     final names = st.customRoles.keys.toList();
     return page([
       h('Create role', icon: Icons.admin_panel_settings),
-      field(roleName, 'Role name (for example Accountant)'),
+      field(roleName, 'Role name (for example Accountant, or Result Manager)'),
       const Text('Tick the screens this role can see and add/edit:'),
       ...screens.map((s) => CheckboxListTile(
             title: Text(s == 'Students' ? 'Students and Add Student form' : s == 'Leave' ? 'Teacher leave' : s),
+            value: perms.contains(s),
+            onChanged: (v) => setState(() {
+              if (v == true) {
+                perms.add(s);
+              } else {
+                perms.remove(s);
+              }
+            }),
+          )),
+      const Padding(
+        padding: EdgeInsets.only(top: 6, bottom: 2),
+        child: Text('Result Manager permissions (tick only what this role needs - e.g. one person can enter marks but not publish them):', style: TextStyle(color: Colors.black54, fontSize: 12.5)),
+      ),
+      ...kResultPerms.map((s) => CheckboxListTile(
+            dense: true,
+            title: Text(s),
             value: perms.contains(s),
             onChanged: (v) => setState(() {
               if (v == true) {
@@ -7568,27 +7629,9 @@ class _RolesViewState extends State<RolesView> {
               if (found!.extraPerms.isNotEmpty) Text('Already granted extra: ${found!.extraPerms.join(', ')}', style: const TextStyle(fontSize: 12.5, color: Colors.black54)),
               const SizedBox(height: 8),
               const Text('Tick to grant, untick to revoke just that one:'),
-              ...screens.map((s) => CheckboxListTile(
-                    title: Text(s == 'Students' ? 'Students and Add Student form' : s == 'Leave' ? 'Teacher leave' : s),
-                    value: found!.extraPerms.contains(s),
-                    onChanged: gBusy
-                        ? null
-                        : (v) async {
-                            final f = found!;
-                            setState(() => gBusy = true);
-                            final String? e;
-                            if (v == true) {
-                              e = await grantExtraPermissionRemote(f.userId, s, newBranches: gNewBranches.toList());
-                              if (e == null) f.extraPerms.add(s);
-                            } else {
-                              e = await revokeExtraPermissionRemote(f.userId, s);
-                              if (e == null) f.extraPerms.remove(s);
-                            }
-                            if (!mounted) return;
-                            setState(() => gBusy = false);
-                            if (e != null) toast(context, e);
-                          },
-                  )),
+              ..._grantCheckboxes(screens),
+              const Padding(padding: EdgeInsets.only(top: 4), child: Text('Result Manager permissions:', style: TextStyle(color: Colors.black54, fontSize: 12.5))),
+              ..._grantCheckboxes(kResultPerms),
               const Padding(padding: EdgeInsets.only(top: 4, bottom: 4), child: Text('Also give access to these Makatib (kept on top of their existing ones):', style: TextStyle(color: Colors.black54, fontSize: 12.5))),
               Wrap(spacing: 4, children: [
                 for (final m in st.activeMadrasaNames.where((m) => !found!.branches.contains(m)))

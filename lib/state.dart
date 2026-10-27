@@ -13,6 +13,20 @@ const List<String> kBatches = ['Morning', 'Afternoon', 'Evening'];
 // Not free text: every place that lets a user set this must offer exactly
 // these three and nothing else.
 const List<String> kMadrasaCategories = ['Boys', 'Girls', 'Children'];
+// The 10 granular Result Manager permissions (public.user_extra_permissions
+// / public.role_permissions screen_key values) - see results.dart.
+const List<String> kResultPerms = [
+  'Results View',
+  'Results Create',
+  'Results Enter Marks',
+  'Results Edit Unpublished',
+  'Results Submit',
+  'Results Publish',
+  'Results Correct Published',
+  'Results Delete',
+  'Results View Reports',
+  'Results Export',
+];
 
 DateTime pd(String s) => DateTime.parse('${s}T00:00:00Z');
 String fd(DateTime d) => '${d.year.toString().padLeft(4, '0')}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
@@ -2125,6 +2139,44 @@ class AppState extends ChangeNotifier {
     return null;
   }
 
+  // ---------- Student Results Management module ----------
+  // Academic Years: public.academic_years already existed in the database
+  // before this feature (0 rows, never wired to any screen) - this is the
+  // first thing that actually reads/writes it, not a new invented concept.
+  final List<AcademicYear> academicYears = [];
+  // Examinations this account is allowed to see (RLS: Super Admin sees
+  // everything, a Result Manager sees their branch(es), a student/parent
+  // only ever sees Published ones with a result of their own - see
+  // loadMyResults() in results.dart, which queries exam_results directly
+  // rather than populating this list).
+  final List<Examination> examinations = [];
+  // "Published"/"corrected" notifications for the signed-in student or
+  // the child(ren) linked to a signed-in parent - public.result_notifications.
+  final List<ResultNotif> resultNotifs = [];
+
+  void setAcademicYearsFromDb(List<AcademicYear> list) {
+    academicYears
+      ..clear()
+      ..addAll(list..sort((a, b) => b.startsOn.compareTo(a.startsOn)));
+    notifyListeners();
+  }
+
+  void setExaminationsFromDb(List<Examination> list) {
+    examinations
+      ..clear()
+      ..addAll(list..sort((a, b) => b.createdAt.compareTo(a.createdAt)));
+    notifyListeners();
+  }
+
+  void setResultNotifsFromDb(List<ResultNotif> list) {
+    resultNotifs
+      ..clear()
+      ..addAll(list..sort((a, b) => b.createdAt.compareTo(a.createdAt)));
+    notifyListeners();
+  }
+
+  int get unreadResultNotifCount => resultNotifs.where((n) => !n.isRead).length;
+
   // ---------- Super Admin "missing attendance" notifications ----------
   // Generated server-side by the nightly 11:00 PM IST pg_cron job
   // (public.run_missing_attendance_check) - this list is just what got
@@ -2213,6 +2265,180 @@ class AdminNotification {
         attendanceDate: (j['attendance_date'] as String?) ?? '',
         teacherName: j['teacher_name'] as String?,
         status: (j['status'] as String?) ?? 'Unresolved',
+        isRead: (j['is_read'] as bool?) ?? false,
+        createdAt: DateTime.tryParse('${j['created_at']}') ?? DateTime.now(),
+      );
+}
+
+// ---------------- Student Results Management module models ----------------
+// public.academic_years - existed before this feature, never used.
+class AcademicYear {
+  final String id;
+  String label;
+  String startsOn;
+  String endsOn;
+  bool active;
+  AcademicYear({required this.id, required this.label, required this.startsOn, required this.endsOn, this.active = true});
+  factory AcademicYear.fromJson(Map<String, dynamic> j) => AcademicYear(
+        id: j['id'] as String,
+        label: (j['label'] as String?) ?? '',
+        startsOn: (j['starts_on'] as String?) ?? '',
+        endsOn: (j['ends_on'] as String?) ?? '',
+        active: (j['is_active'] as bool?) ?? true,
+      );
+}
+
+// One examination/result record for one class in one Maktab in one
+// academic year - public.examinations. The subjects tested and the
+// marks themselves are loaded separately, on demand, by the exam detail
+// screen (see ExamSubject/ExamResultRow below and results.dart).
+class Examination {
+  final String id;
+  final String madrasaId;
+  final String madrasaName;
+  final String classId;
+  final int classNo;
+  final String className;
+  final String academicYearId;
+  final String academicYearLabel;
+  String name;
+  String startsOn;
+  String? endsOn;
+  String? remarks;
+  String status; // Draft | Ready for Review | Published
+  final DateTime createdAt;
+  final String? submittedAt;
+  final String? publishedAt;
+  Examination({
+    required this.id,
+    required this.madrasaId,
+    required this.madrasaName,
+    required this.classId,
+    required this.classNo,
+    required this.className,
+    required this.academicYearId,
+    required this.academicYearLabel,
+    required this.name,
+    required this.startsOn,
+    this.endsOn,
+    this.remarks,
+    this.status = 'Draft',
+    required this.createdAt,
+    this.submittedAt,
+    this.publishedAt,
+  });
+  factory Examination.fromJson(Map<String, dynamic> j) => Examination(
+        id: j['id'] as String,
+        madrasaId: (j['madrasa_id'] as String?) ?? '',
+        madrasaName: ((j['madrasas'] as Map?)?['name'] as String?) ?? '',
+        classId: (j['class_id'] as String?) ?? '',
+        classNo: ((j['classes'] as Map?)?['class_no'] as int?) ?? 0,
+        className: ((j['classes'] as Map?)?['name'] as String?) ?? '',
+        academicYearId: (j['academic_year_id'] as String?) ?? '',
+        academicYearLabel: ((j['academic_years'] as Map?)?['label'] as String?) ?? '',
+        name: (j['name'] as String?) ?? '',
+        startsOn: (j['starts_on'] as String?) ?? '',
+        endsOn: j['ends_on'] as String?,
+        remarks: j['remarks'] as String?,
+        status: (j['status'] as String?) ?? 'Draft',
+        createdAt: DateTime.tryParse('${j['created_at']}') ?? DateTime.now(),
+        submittedAt: j['submitted_at'] as String?,
+        publishedAt: j['published_at'] as String?,
+      );
+}
+
+// One subject tested within an examination - public.exam_subjects. Built
+// from the class's own existing Books (class_books) or Add-on Courses,
+// never invented - see "Subject/Course" picker in results.dart.
+class ExamSubject {
+  final String id;
+  final String examId;
+  String subjectName;
+  final String? sourceBookId;
+  final String? sourceCourseId;
+  num maxMarks;
+  num? passingMarks;
+  int sortOrder;
+  ExamSubject({required this.id, required this.examId, required this.subjectName, this.sourceBookId, this.sourceCourseId, required this.maxMarks, this.passingMarks, this.sortOrder = 0});
+  factory ExamSubject.fromJson(Map<String, dynamic> j) => ExamSubject(
+        id: j['id'] as String,
+        examId: (j['exam_id'] as String?) ?? '',
+        subjectName: (j['subject_name'] as String?) ?? '',
+        sourceBookId: j['source_book_id'] as String?,
+        sourceCourseId: j['source_course_id'] as String?,
+        maxMarks: (j['max_marks'] as num?) ?? 0,
+        passingMarks: j['passing_marks'] as num?,
+        sortOrder: (j['sort_order'] as int?) ?? 0,
+      );
+}
+
+// One student's mark for one subject within an examination -
+// public.exam_results. `id` is null when nothing has been entered yet for
+// this student/subject pair - the UI fetches the full class roster and
+// fills in a blank row for anyone without a saved result, per "Clearly
+// identify students whose marks have not yet been entered."
+class ExamResultRow {
+  final String? id;
+  final String examSubjectId;
+  final String studentId;
+  num? marksObtained;
+  bool isAbsent;
+  String? remarks;
+  bool isDeleted;
+  String? deleteReason;
+  ExamResultRow({this.id, required this.examSubjectId, required this.studentId, this.marksObtained, this.isAbsent = false, this.remarks, this.isDeleted = false, this.deleteReason});
+  factory ExamResultRow.fromJson(Map<String, dynamic> j) => ExamResultRow(
+        id: j['id'] as String?,
+        examSubjectId: (j['exam_subject_id'] as String?) ?? '',
+        studentId: (j['student_id'] as String?) ?? '',
+        marksObtained: j['marks_obtained'] as num?,
+        isAbsent: (j['is_absent'] as bool?) ?? false,
+        remarks: j['remarks'] as String?,
+        isDeleted: (j['is_deleted'] as bool?) ?? false,
+        deleteReason: j['delete_reason'] as String?,
+      );
+}
+
+// One correction/delete/restore history entry - public.exam_result_audit.
+class ResultAuditRow {
+  final int id;
+  final String? studentId;
+  final String action;
+  final num? oldMarks;
+  final num? newMarks;
+  final String reason;
+  final String? actorRole;
+  final DateTime createdAt;
+  ResultAuditRow({required this.id, this.studentId, required this.action, this.oldMarks, this.newMarks, required this.reason, this.actorRole, required this.createdAt});
+  factory ResultAuditRow.fromJson(Map<String, dynamic> j) => ResultAuditRow(
+        id: j['id'] as int,
+        studentId: j['student_id'] as String?,
+        action: (j['action'] as String?) ?? '',
+        oldMarks: j['old_marks'] as num?,
+        newMarks: j['new_marks'] as num?,
+        reason: (j['reason'] as String?) ?? '',
+        actorRole: j['actor_role'] as String?,
+        createdAt: DateTime.tryParse('${j['created_at']}') ?? DateTime.now(),
+      );
+}
+
+// "Your result has been published/corrected" - public.result_notifications,
+// for the Student / Parent "My Results" bell. Never carries marks.
+class ResultNotif {
+  final String id;
+  final String examId;
+  String examName;
+  final String studentId;
+  final String kind; // published | corrected
+  bool isRead;
+  final DateTime createdAt;
+  ResultNotif({required this.id, required this.examId, this.examName = '', required this.studentId, required this.kind, this.isRead = false, required this.createdAt});
+  factory ResultNotif.fromJson(Map<String, dynamic> j) => ResultNotif(
+        id: j['id'] as String,
+        examId: (j['exam_id'] as String?) ?? '',
+        examName: ((j['examinations'] as Map?)?['name'] as String?) ?? '',
+        studentId: (j['student_id'] as String?) ?? '',
+        kind: (j['kind'] as String?) ?? 'published',
         isRead: (j['is_read'] as bool?) ?? false,
         createdAt: DateTime.tryParse('${j['created_at']}') ?? DateTime.now(),
       );
