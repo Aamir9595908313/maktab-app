@@ -3138,19 +3138,22 @@ Widget menuTile(String label, {IconData? icon, VoidCallback? onTap, int? badge})
   );
   final tappable = onTap == null ? card : InkWell(borderRadius: BorderRadius.circular(4), onTap: onTap, child: card);
   if (badge == null || badge <= 0) return tappable;
+  // Sits just inside the card's own bottom-right corner (not hanging off
+  // its outside edge, which is what made it look misaligned/floating
+  // between cards before) - a small positive inset keeps it clear of the
+  // card's rounded corner and its own border.
   return Stack(
-    clipBehavior: Clip.none,
     children: [
       tappable,
       Positioned(
-        right: -6,
-        bottom: -6,
+        right: 8,
+        bottom: 6,
         child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
-          constraints: const BoxConstraints(minWidth: 22, minHeight: 22),
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+          constraints: const BoxConstraints(minWidth: 20, minHeight: 20),
           alignment: Alignment.center,
-          decoration: BoxDecoration(color: Colors.red, borderRadius: BorderRadius.circular(12), border: Border.all(color: Colors.white, width: 1.5)),
-          child: Text(badge > 99 ? '99+' : '$badge', style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold)),
+          decoration: BoxDecoration(color: Colors.red, borderRadius: BorderRadius.circular(10)),
+          child: Text(badge > 99 ? '99+' : '$badge', style: const TextStyle(color: Colors.white, fontSize: 10.5, fontWeight: FontWeight.bold)),
         ),
       ),
     ],
