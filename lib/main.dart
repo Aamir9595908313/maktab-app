@@ -241,6 +241,7 @@ Future<void> loadMasterData() async {
     await loadComplaints();
     await loadCustomRoles();
     await loadCommitteeMembers();
+    await loadMaktabAdmins();
     await loadFees();
     await loadAnnouncements();
     await loadLeaves();
@@ -1688,6 +1689,62 @@ Future<String?> removeCommitteeRemote(Account m) async {
     return null;
   } catch (_) {
     return 'Could not remove. Check your internet connection and try again.';
+  }
+}
+
+// ---------------- Maktab Admins ----------------
+// Same shape as loadCommitteeMembers/loadTeachers above: real accounts
+// (base_role='madrasa_admin') plus anyone invited but not yet signed in.
+// Master Data's "Maktab Admins" section used to only have an invite form -
+// there was no way for a Super Admin to see who already had admin access,
+// or to deactivate/reactivate one, short of looking them up one at a time
+// in Roles & Permissions.
+Future<void> loadMaktabAdmins() async {
+  final list = <Account>[];
+  try {
+    final profRows = await sb.from('user_profiles').select('id, full_name, phone, is_active').eq('base_role', 'madrasa_admin');
+    for (final r in (profRows as List)) {
+      final scopeRows = await sb.from('user_madrasa_scope').select('madrasas(name)').eq('user_id', r['id'] as Object);
+      final branches = [for (final s in (scopeRows as List)) ((s['madrasas'] as Map?)?['name'] as String?) ?? ''].where((n) => n.isNotEmpty).toList();
+      list.add(Account(
+        (r['phone'] as String?) ?? '',
+        (r['full_name'] as String?) ?? 'Maktab Admin',
+        'admin',
+        branches: branches,
+        active: (r['is_active'] as bool?) ?? true,
+        dbId: r['id'] as String?,
+      ));
+    }
+  } catch (_) {}
+  try {
+    final inviteRows = await sb.from('pending_role_invites').select().eq('base_role', 'madrasa_admin');
+    for (final r in (inviteRows as List)) {
+      list.add(Account(
+        (r['phone'] as String?) ?? '',
+        (r['full_name'] as String?) ?? 'Maktab Admin',
+        'admin',
+        branches: List<String>.from((r['madrasa_names'] as List?) ?? []),
+        pending: true,
+      ));
+    }
+  } catch (_) {}
+  st.setMaktabAdminsFromDb(list);
+}
+
+// Generic deactivate/reactivate for an already-real Maktab Admin or
+// Committee Member account (Teacher keeps setTeacherActiveRemote above,
+// which fires its own message). a.dbId == null means still just a pending
+// invite - there's no real account yet to flip.
+Future<String?> setAccountActiveRemote(Account a, bool v) async {
+  if (a.dbId == null) {
+    return "This person hasn't logged in yet, so there's nothing to activate/deactivate.";
+  }
+  try {
+    await sb.from('user_profiles').update({'is_active': v}).eq('id', a.dbId as Object);
+    st.setAccountActive(a, v);
+    return null;
+  } catch (_) {
+    return 'Could not save. Check your internet connection and try again.';
   }
 }
 
@@ -8849,7 +8906,32 @@ class _MasterDataViewState extends State<MasterDataView> {
       ], // end canManageOrg && _show(teachers)
       if (canManageOrg && _show(MasterDataSection.maktabAdmins)) ...[
       h('Maktab Admins', icon: Icons.admin_panel_settings),
-      const Text('Invites a Maktab Admin for one Maktab. This list only shows who you invite this session - open Roles & Permissions below to see everyone with access.', style: TextStyle(color: Colors.black54, fontSize: 12.5)),
+      if (st.maktabAdminAccounts.isEmpty) const Text('No Maktab Admins yet.', style: TextStyle(color: Colors.black54)),
+      ...st.maktabAdminAccounts.map((a) => a.pending
+          ? Card(
+              child: ListTile(
+                title: Text(a.name),
+                subtitle: Text('${a.phone} - ${a.branches.join(', ')} - Invited, waiting for first login'),
+                trailing: const Icon(Icons.hourglass_empty, color: Colors.black38),
+              ),
+            )
+          : Card(
+              child: SwitchListTile(
+                title: Text(a.name),
+                subtitle: Text('${a.phone} - ${a.branches.join(', ')}'),
+                value: a.active,
+                onChanged: (v) async {
+                  if (!v) {
+                    final ok = await confirmDialog(context, 'Deactivate ${a.name}?', 'They will no longer be able to sign in. Their account and history are kept, and a Super Admin can reactivate them later.', confirmLabel: 'Deactivate');
+                    if (!ok) return;
+                    if (!context.mounted) return;
+                  }
+                  final e = await setAccountActiveRemote(a, v);
+                  if (!mounted) return;
+                  if (e != null) toast(context, e);
+                },
+              ),
+            )),
       field(adminName, 'New Maktab Admin name'),
       field(adminPhone, 'Mobile number (10 digits)', number: true),
       DropdownButtonFormField<String>(
@@ -8882,6 +8964,32 @@ class _MasterDataViewState extends State<MasterDataView> {
       ], // end canManageOrg && _show(maktabAdmins)
       if (canManageOrg && _show(MasterDataSection.committee)) ...[
       h('Committee Members', icon: Icons.diversity_3),
+      if (st.committeeAccounts.isEmpty) const Text('No Committee Members yet.', style: TextStyle(color: Colors.black54)),
+      ...st.committeeAccounts.map((a) => a.pending
+          ? Card(
+              child: ListTile(
+                title: Text(a.name),
+                subtitle: Text('${a.phone} - ${a.branches.join(', ')} - Invited, waiting for first login'),
+                trailing: const Icon(Icons.hourglass_empty, color: Colors.black38),
+              ),
+            )
+          : Card(
+              child: SwitchListTile(
+                title: Text(a.name),
+                subtitle: Text('${a.phone} - ${a.branches.join(', ')}'),
+                value: a.active,
+                onChanged: (v) async {
+                  if (!v) {
+                    final ok = await confirmDialog(context, 'Deactivate ${a.name}?', 'They will no longer be able to sign in. Their account and history are kept, and a Super Admin can reactivate them later.', confirmLabel: 'Deactivate');
+                    if (!ok) return;
+                    if (!context.mounted) return;
+                  }
+                  final e = await setAccountActiveRemote(a, v);
+                  if (!mounted) return;
+                  if (e != null) toast(context, e);
+                },
+              ),
+            )),
       field(committeeName, 'New Committee Member name'),
       field(committeePhone, 'Mobile number (10 digits)', number: true),
       DropdownButtonFormField<String>(

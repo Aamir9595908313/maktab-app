@@ -2034,6 +2034,34 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
+  // Real Maktab Admins (same shape as committeeAccounts/teacherAccounts
+  // above: real accounts from public.user_profiles, base_role =
+  // 'madrasa_admin', plus anyone invited but not yet joined from
+  // public.pending_role_invites). Lets Master Data's "Maktab Admins"
+  // section show and deactivate/reactivate them, the same as Teachers and
+  // Committee Members already could - previously this section only had an
+  // invite form, with no way to see who already had admin access or to
+  // revoke it short of the Roles & Permissions phone-number lookup tool.
+  final List<Account> maktabAdminAccounts = [];
+  void setMaktabAdminsFromDb(List<Account> list) {
+    maktabAdminAccounts
+      ..clear()
+      ..addAll(list);
+    notifyListeners();
+  }
+
+  // Generic active/inactive flip for an already-real account of any role
+  // (Maktab Admin, Committee Member - Teacher keeps its own
+  // setTeacherActive for the message it fires on an attendance-related
+  // screen elsewhere). Used by Master Data's Maktab Admins/Committee
+  // Members switches so toggling back on (reactivating) is just as easy as
+  // toggling off, instead of the one-way "Remove" button that used to be
+  // the only option for Committee Members.
+  void setAccountActive(Account a, bool v) {
+    a.active = v;
+    notifyListeners();
+  }
+
   String? addTeacher(String phone, String name, List<String> madrasasList) {
     if (phone.length != 10) return 'Enter a 10-digit mobile number';
     if (name.trim().isEmpty) return 'Enter the name';
