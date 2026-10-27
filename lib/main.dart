@@ -9653,9 +9653,11 @@ List<int> buildMonthlyAttendanceExcel({
 // current class (class *history* isn't tracked anywhere in this schema -
 // there is no promotions table, confirmed while building the Reports
 // centre above - so this is honestly labelled "current class" rather than
-// a fabricated progression), syllabus progress, course completion, and a
+// a fabricated progression), syllabus progress, course completion, a
 // month-by-month attendance table built from the same computeMonthAttendance
-// rules as every other attendance screen. There is no
+// rules as every other attendance screen, and every Published examination
+// result the student has (Section F, reusing the same RLS-scoped read the
+// Student/Parent "My Results" screens use - see results.dart). There is no
 // additional-work/achievements/teacher-remarks module anywhere in this app
 // (the only "Note" model is a local, session-only activity toast, never
 // persisted or loaded from the backend) - so that section is left out of
@@ -9705,7 +9707,7 @@ class _StudentHistoryReportScreenState extends State<StudentHistoryReportScreen>
       appBar: AppBar(title: const Text('Student Complete History'), backgroundColor: kGreen, foregroundColor: Colors.white),
       body: page([
         const Text(
-          "Full history for one student - personal details, class, syllabus progress, course completion, and month-wise attendance from admission to today. PDF only.",
+          "Full history for one student - personal details, class, syllabus progress, course completion, month-wise attendance, and published examination results from admission to today. PDF only.",
           style: TextStyle(color: Colors.black54),
         ),
         const SizedBox(height: 10),
@@ -9834,6 +9836,54 @@ Future<Uint8List> buildStudentHistoryPdf(Student s) async {
   }
   final overallPct = totalEligible == 0 ? null : totalPresent * 100 / totalEligible;
 
+  // ---- Section F source data: every Published examination result for
+  // this student, across every academic year and examination it has ever
+  // had - reuses loadMyResultsFor() (the same RLS-scoped read the
+  // Student/Parent "My Results" screens use), then keeps only Published
+  // rows for this official record even if the account generating this
+  // report (a Result Manager/Super Admin) can also see Draft/Ready for
+  // Review rows - a history report should reflect the official result,
+  // never a result still being entered or checked.
+  final examRows = s.dbId == null ? <Map<String, dynamic>>[] : await loadMyResultsFor(s.dbId!);
+  final examHistoryRows = <List<String>>[];
+  var examsPassed = 0, examsFailed = 0;
+  for (final r in examRows) {
+    final es = r['exam_subjects'] as Map? ?? {};
+    final exam = es['examinations'] as Map? ?? {};
+    if (exam['status'] != 'Published') continue;
+    final examName = (exam['name'] as String?) ?? '-';
+    final yearLabel = ((exam['academic_years'] as Map?)?['label'] as String?) ?? '-';
+    final subject = (es['subject_name'] as String?) ?? '-';
+    final maxMarks = (es['max_marks'] as num?) ?? 0;
+    final passing = es['passing_marks'] as num?;
+    final isAbsent = (r['is_absent'] as bool?) ?? false;
+    final marks = r['marks_obtained'] as num?;
+    final pct = (!isAbsent && marks != null && maxMarks > 0) ? (marks / maxMarks * 100) : null;
+    String resultStatus;
+    if (isAbsent) {
+      resultStatus = 'Absent';
+    } else if (marks == null) {
+      resultStatus = 'Not entered';
+    } else if (passing == null) {
+      resultStatus = '-';
+    } else if (marks >= passing) {
+      resultStatus = 'Pass';
+      examsPassed++;
+    } else {
+      resultStatus = 'Fail';
+      examsFailed++;
+    }
+    examHistoryRows.add([
+      examName,
+      yearLabel,
+      subject,
+      '$maxMarks',
+      isAbsent ? 'Absent' : (marks?.toString() ?? 'Not entered'),
+      pct == null ? '-' : '${pct.toStringAsFixed(1)}%',
+      resultStatus,
+    ]);
+  }
+
   final doc = pw.Document();
   doc.addPage(
     pw.MultiPage(
@@ -9922,15 +9972,41 @@ Future<Uint8List> buildStudentHistoryPdf(Student s) async {
           style: const pw.TextStyle(fontSize: 7, color: PdfColors.grey600),
         ),
 
-        // Section F ("Additional Work, Achievements and Activities") is
-        // intentionally left out of the PDF: there is no additional-work /
-        // homework / achievements / teacher-remarks module in this
-        // application with persisted records to report from (the only
-        // candidate, a local "Note" activity feed, is session-only and
-        // never saved to the backend, so it isn't a real history source).
-        // Per the spec's own instruction, the missing capability is
-        // disclosed in the implementation report instead of being shown
-        // here with invented or placeholder content.
+        _pdfSectionHeading('F. Examination Results'),
+        if (examHistoryRows.isEmpty)
+          pw.Text(
+            s.dbId == null
+                ? 'This student record has not finished syncing to the database yet, so examination results cannot be fetched.'
+                : 'No published examination results for this student yet.',
+            style: const pw.TextStyle(fontSize: 9),
+          ),
+        if (examHistoryRows.isNotEmpty)
+          pw.Table.fromTextArray(
+            headers: const ['Examination', 'Academic Year', 'Subject', 'Max Marks', 'Marks Obtained', 'Percentage', 'Result'],
+            data: examHistoryRows,
+            cellStyle: const pw.TextStyle(fontSize: 8),
+            headerStyle: pw.TextStyle(fontSize: 8, fontWeight: pw.FontWeight.bold),
+            headerDecoration: const pw.BoxDecoration(color: PdfColors.green50),
+            cellDecoration: (colIndex, data, rowNum) {
+              if (rowNum > 0 && data.length > 6 && data[6] == 'Fail') return const pw.BoxDecoration(color: PdfColors.red100);
+              return const pw.BoxDecoration();
+            },
+          ),
+        pw.SizedBox(height: 4),
+        pw.Text(
+          'Only officially Published results are shown here - draft or under-review entries are never part of a student\'s official record.',
+          style: const pw.TextStyle(fontSize: 7, color: PdfColors.grey600),
+        ),
+
+        // "Additional Work, Achievements and Activities" is intentionally
+        // left out of the PDF: there is no additional-work / homework /
+        // achievements / teacher-remarks module in this application with
+        // persisted records to report from (the only candidate, a local
+        // "Note" activity feed, is session-only and never saved to the
+        // backend, so it isn't a real history source). Per the spec's own
+        // instruction, the missing capability is disclosed in the
+        // implementation report instead of being shown here with invented
+        // or placeholder content.
 
         _pdfSectionHeading('G. Overall Student Summary'),
         _pdfKv('Current Maktab / Class', '${s.madrasa} - ${cd?.name ?? 'Class ${s.cls}'}'),
@@ -9941,6 +10017,7 @@ Future<Uint8List> buildStudentHistoryPdf(Student s) async {
         _pdfKv('Total Eligible Sessions', '$totalEligible'),
         _pdfKv('Total Present / Absent', '$totalPresent / $totalAbsent'),
         _pdfKv('Total Not Submitted', '$totalNotRecorded'),
+        _pdfKv('Published Examinations Passed / Failed', '$examsPassed / $examsFailed'),
       ],
     ),
   );
