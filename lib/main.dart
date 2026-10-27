@@ -3328,7 +3328,12 @@ Widget field(TextEditingController c, String label, {bool number = false, int li
         controller: c,
         autofocus: autofocus,
         maxLines: lines,
-        keyboardType: number ? TextInputType.number : TextInputType.text,
+        // A multi-line field (lines > 1) needs TextInputType.multiline AND
+        // TextInputAction.newline, or most soft keyboards treat Enter as
+        // "Done" (submits/closes the keyboard) instead of inserting a line
+        // break - maxLines alone does not make Enter add a new line.
+        keyboardType: number ? TextInputType.number : (lines > 1 ? TextInputType.multiline : TextInputType.text),
+        textInputAction: (!number && lines > 1) ? TextInputAction.newline : null,
         decoration: InputDecoration(labelText: label, border: const OutlineInputBorder()),
       ),
     );
@@ -4724,6 +4729,8 @@ class _ComplaintsViewState extends State<ComplaintsView> {
           child: TextField(
             controller: text,
             maxLines: 3,
+            keyboardType: TextInputType.multiline,
+            textInputAction: TextInputAction.newline,
             maxLength: kComplaintMaxLen,
             decoration: const InputDecoration(
               labelText: 'Please describe your complaint briefly (maximum 500 characters).',
@@ -5909,7 +5916,7 @@ Future<void> addEventDialog(BuildContext c, String madrasa, String initialDate) 
               Expanded(child: TextField(controller: endCtrl, decoration: const InputDecoration(labelText: 'End time (optional, HH:mm)'))),
             ]),
             const SizedBox(height: 8),
-            TextField(controller: descCtrl, maxLines: 2, decoration: const InputDecoration(labelText: 'Description (optional)')),
+            TextField(controller: descCtrl, maxLines: 2, keyboardType: TextInputType.multiline, textInputAction: TextInputAction.newline, decoration: const InputDecoration(labelText: 'Description (optional)')),
           ]),
         ),
         actions: [

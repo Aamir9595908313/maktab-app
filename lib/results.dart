@@ -320,7 +320,7 @@ Future<String?> _askReason(BuildContext c, String title) async {
     context: c,
     builder: (ctx) => AlertDialog(
       title: Text(title),
-      content: TextField(controller: ctl, autofocus: true, maxLines: 2, decoration: const InputDecoration(labelText: 'Reason', border: OutlineInputBorder())),
+      content: TextField(controller: ctl, autofocus: true, maxLines: 2, keyboardType: TextInputType.multiline, textInputAction: TextInputAction.newline, decoration: const InputDecoration(labelText: 'Reason', border: OutlineInputBorder())),
       actions: [
         TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
         ElevatedButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Confirm')),
