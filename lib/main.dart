@@ -8391,7 +8391,16 @@ class StudentDetail extends StatelessWidget {
           // the same SyllabusBody every other syllabus screen (student,
           // parent) uses, so a fix there reaches here too and this view
           // never drifts out of sync again.
-          SyllabusBody(s: s, edit: true),
+          // edit was unconditionally true here, regardless of role - this
+          // screen is also how a Working Committee member opens a student
+          // (from "All Maktab Students"/"Maktab-Wise Student Information"
+          // on their dashboard), so a committee member could actually tap
+          // "Mark page complete" and change a student's syllabus progress,
+          // the exact kind of write action the Working Committee role is
+          // meant to never have (see the Results-tab note just below -
+          // committee is read-only by design everywhere else in this
+          // screen already).
+          SyllabusBody(s: s, edit: u.role != 'committee'),
           page([AttendanceMonthReport(key: ValueKey(s.id), s: s)]),
           canSeeResults
               ? StudentResultsTab(key: ValueKey(s.id), s: s)
