@@ -3106,7 +3106,13 @@ Widget tile(String label, String value, {Color? color, VoidCallback? onTap, Icon
 // itself, which plenty of other screens (StudentDetail's stat grid,
 // KidHome, ...) still use exactly as before, where that second line is the
 // actual data being shown, not a removable subtitle.
-Widget menuTile(String label, {IconData? icon, VoidCallback? onTap}) {
+//
+// [badge]: the same number that used to be this card's subtitle text,
+// shown instead as a small red count in the bottom-right corner (per that
+// screen's own follow-up request) - omitted entirely once it's back down
+// to 0/null rather than showing a red "0", since red specifically reads as
+// "something needs attention" and a literal zero doesn't.
+Widget menuTile(String label, {IconData? icon, VoidCallback? onTap, int? badge}) {
   final emoji = icon == null ? null : _kTileEmoji[icon];
   final card = Card(
     child: Padding(
@@ -3130,8 +3136,25 @@ Widget menuTile(String label, {IconData? icon, VoidCallback? onTap}) {
       ]),
     ),
   );
-  if (onTap == null) return card;
-  return InkWell(borderRadius: BorderRadius.circular(4), onTap: onTap, child: card);
+  final tappable = onTap == null ? card : InkWell(borderRadius: BorderRadius.circular(4), onTap: onTap, child: card);
+  if (badge == null || badge <= 0) return tappable;
+  return Stack(
+    clipBehavior: Clip.none,
+    children: [
+      tappable,
+      Positioned(
+        right: -6,
+        bottom: -6,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+          constraints: const BoxConstraints(minWidth: 22, minHeight: 22),
+          alignment: Alignment.center,
+          decoration: BoxDecoration(color: Colors.red, borderRadius: BorderRadius.circular(12), border: Border.all(color: Colors.white, width: 1.5)),
+          child: Text(badge > 99 ? '99+' : '$badge', style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold)),
+        ),
+      ),
+    ],
+  );
 }
 
 // Was a fixed crossAxisCount: 2 - fine on a phone, but on a tablet (or a
@@ -4966,23 +4989,22 @@ class _StaffHomeState extends State<StaffHome> {
         // away via "Leave requests" below), and three renames for clarity.
         grid([
           menuTile('Student Search', icon: Icons.search, onTap: () => pushPage(context, 'Search', const GlobalSearchView())),
-          menuTile('Master Data Management', icon: Icons.storage, onTap: () => pushPage(context, 'Master Data', const MasterDataDashboard())),
+          menuTile('Master Data Management', icon: Icons.storage, badge: st.madrasas.length, onTap: () => pushPage(context, 'Master Data', const MasterDataDashboard())),
           // Browse by Maktab, with each student's live attendance/syllabus
           // status (StudentDetail's Status/Syllabus/Attendance tabs) -
           // distinct from "New Student and Promote" below, which is the
           // admit/edit/promote form, not a status overview.
-          menuTile('Students by Maktab', icon: Icons.account_tree, onTap: () => pushPage(context, 'Students by Maktab', const SuperMakatibOverview())),
-          menuTile('New Student and Promote', icon: Icons.groups, onTap: () => pushPage(context, 'Students', const StudentsView())),
-          menuTile('Average attendance', icon: Icons.event_available),
-          menuTile('Average syllabus', icon: Icons.menu_book),
-          menuTile('Leave requests', icon: Icons.event_busy, onTap: () => pushPage(context, 'Teachers & Leave', const TeachersView())),
-          menuTile('Complaints open', icon: Icons.report_problem, onTap: () => pushPage(context, 'Complaints', const ComplaintsView())),
-          menuTile('Committee members', icon: Icons.diversity_3, onTap: () => pushPage(context, 'Committee', const CommitteeAdmin())),
-          menuTile('Monthly Members', icon: Icons.volunteer_activism, onTap: () => pushPage(context, 'Monthly Members', const MonthlyMembersDashboard())),
-          menuTile('Results', icon: Icons.grading, onTap: () => pushPage(context, 'Results', const ResultsHub())),
+          menuTile('Students by Maktab', icon: Icons.account_tree, badge: st.students.length, onTap: () => pushPage(context, 'Students by Maktab', const SuperMakatibOverview())),
+          menuTile('New Student and Promote', icon: Icons.groups, badge: st.students.length, onTap: () => pushPage(context, 'Students', const StudentsView())),
+          menuTile('Leave requests', icon: Icons.event_busy, badge: pendingLeave, onTap: () => pushPage(context, 'Teachers & Leave', const TeachersView())),
+          menuTile('Complaints open', icon: Icons.report_problem, badge: open, onTap: () => pushPage(context, 'Complaints', const ComplaintsView())),
+          menuTile('Committee members', icon: Icons.diversity_3, badge: st.committeeAccounts.where((m) => !m.pending).length, onTap: () => pushPage(context, 'Committee', const CommitteeAdmin())),
+          menuTile('Monthly Members', icon: Icons.volunteer_activism, badge: st.monthlyMembers.where((m) => m.isActive).length, onTap: () => pushPage(context, 'Monthly Members', const MonthlyMembersDashboard())),
+          menuTile('Results', icon: Icons.grading, badge: st.examinations.length, onTap: () => pushPage(context, 'Results', const ResultsHub())),
           menuTile(
             'Notifications',
             icon: Icons.notifications,
+            badge: st.unreadAdminNotifCount,
             onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const AdminNotificationsScreen())),
           ),
         ]),
