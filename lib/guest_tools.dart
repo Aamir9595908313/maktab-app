@@ -1152,6 +1152,47 @@ const List<_AboutSection> _aboutSections = [
   ),
 ];
 
+// Lightweight rich-text markup for About Us paragraphs/bullets: **bold**
+// and {{color:#RRGGBB}}...{{/color}}, stored inline in the same plain
+// String a paragraph/bullet already was - no schema change, and any text
+// typed before this feature existed (with no markup in it) still renders
+// exactly as before. The Super Admin's editor toolbar (in main.dart)
+// inserts these markers around the selected text instead of exposing this
+// syntax directly, but it still parses correctly if someone types it by
+// hand. Color wraps are parsed first so a bold run can sit inside a
+// colored one (applying both to the same selection nests correctly);
+// a bold wrap can likewise contain a color run.
+final RegExp _rxAboutUsColor = RegExp(r'\{\{color:(#[0-9A-Fa-f]{6})\}\}(.*?)\{\{/color\}\}', dotAll: true);
+final RegExp _rxAboutUsBold = RegExp(r'\*\*(.*?)\*\*', dotAll: true);
+
+List<InlineSpan> _parseAboutUsBold(String text, TextStyle base, Color? color) {
+  final withColor = color == null ? base : base.copyWith(color: color);
+  final spans = <InlineSpan>[];
+  int last = 0;
+  for (final m in _rxAboutUsBold.allMatches(text)) {
+    if (m.start > last) spans.add(TextSpan(text: text.substring(last, m.start), style: withColor));
+    spans.add(TextSpan(text: m.group(1) ?? '', style: withColor.copyWith(fontWeight: FontWeight.bold)));
+    last = m.end;
+  }
+  if (last < text.length) spans.add(TextSpan(text: text.substring(last), style: withColor));
+  if (spans.isEmpty) spans.add(TextSpan(text: text, style: withColor));
+  return spans;
+}
+
+List<InlineSpan> parseAboutUsRichText(String text, TextStyle base) {
+  final spans = <InlineSpan>[];
+  int last = 0;
+  for (final m in _rxAboutUsColor.allMatches(text)) {
+    if (m.start > last) spans.addAll(_parseAboutUsBold(text.substring(last, m.start), base, null));
+    final color = Color(int.parse(m.group(1)!.substring(1), radix: 16) + 0xFF000000);
+    spans.addAll(_parseAboutUsBold(m.group(2) ?? '', base, color));
+    last = m.end;
+  }
+  if (last < text.length) spans.addAll(_parseAboutUsBold(text.substring(last), base, null));
+  if (spans.isEmpty) spans.add(TextSpan(text: text, style: base));
+  return spans;
+}
+
 // Shared renderer used both by this public/no-login screen and by the
 // Super Admin's "About Us Management" Preview (in main.dart), so there is
 // exactly one place that turns an AboutUsContent into widgets - editing
@@ -1171,7 +1212,11 @@ List<Widget> aboutUsBodyWidgets(AboutUsContent c) {
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Text(s.title, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15.5, color: _kGreen)),
             const SizedBox(height: 8),
-            for (final p in s.paras) Padding(padding: const EdgeInsets.only(bottom: 8), child: Text(p, style: const TextStyle(fontSize: 13.5, height: 1.5))),
+            for (final p in s.paras)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: RichText(text: TextSpan(children: parseAboutUsRichText(p, const TextStyle(fontSize: 13.5, height: 1.5, color: Colors.black87)))),
+              ),
             // Each bullet is its own block, with the bullet glyph in a
             // fixed-width column so a wrapped second line of text lines up
             // under the first word (not under the dot), and real spacing
@@ -1182,7 +1227,7 @@ List<Widget> aboutUsBodyWidgets(AboutUsContent c) {
                 padding: const EdgeInsets.only(bottom: 10),
                 child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
                   const SizedBox(width: 18, child: Text('•', style: TextStyle(color: _kGreen, fontWeight: FontWeight.bold, fontSize: 15))),
-                  Expanded(child: Text(b, style: const TextStyle(fontSize: 13.5, height: 1.45))),
+                  Expanded(child: RichText(text: TextSpan(children: parseAboutUsRichText(b, const TextStyle(fontSize: 13.5, height: 1.45, color: Colors.black87))))),
                 ]),
               ),
           ]),

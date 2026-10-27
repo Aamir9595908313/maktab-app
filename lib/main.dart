@@ -5997,6 +5997,83 @@ class EventHistoryView extends StatelessWidget {
 // screen (guest_tools.dart) reads, as structured sections (title +
 // paragraphs and/or bullets) rather than flat fields, matching the shape
 // of the organization's actual existing content instead of flattening it.
+
+// Swatches offered by the color-formatting button below. A short, fixed
+// list rather than a full color wheel - this is "pick a reasonable accent
+// color for this bit of text", not a design tool.
+const List<Color> _kAboutUsSwatches = [Colors.red, Colors.orange, Colors.amber, Colors.green, Colors.blue, Colors.purple, Colors.brown, Colors.black];
+
+// Wraps (or, with [wrap] stripping markup instead of adding it) the
+// currently-selected text inside [c] and keeps the cursor positioned right
+// after the (now-wrapped) selection, so Bold/Color can be tapped again on
+// the next bit of text without the user having to re-find their place.
+// Does nothing if nothing is selected - there's no "selected text" to
+// format - and [onNoSelection] tells the caller so it can show a hint.
+void _applyAboutUsMarkup(TextEditingController c, String Function(String) wrap, VoidCallback onChanged, {VoidCallback? onNoSelection}) {
+  final sel = c.selection;
+  if (!sel.isValid || sel.isCollapsed) {
+    onNoSelection?.call();
+    return;
+  }
+  final text = c.text;
+  final wrapped = wrap(text.substring(sel.start, sel.end));
+  c.value = TextEditingValue(text: text.replaceRange(sel.start, sel.end, wrapped), selection: TextSelection.collapsed(offset: sel.start + wrapped.length));
+  onChanged();
+}
+
+String _stripAboutUsMarkup(String t) => t.replaceAll('**', '').replaceAll(RegExp(r'\{\{color:#[0-9A-Fa-f]{6}\}\}'), '').replaceAll('{{/color}}', '');
+
+Future<void> _pickAboutUsColor(BuildContext context, TextEditingController c, VoidCallback onChanged) async {
+  final sel = c.selection;
+  if (!sel.isValid || sel.isCollapsed) {
+    toast(context, 'Select some text first, then tap the color swatch.');
+    return;
+  }
+  final color = await showDialog<Color>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      title: const Text('Text color'),
+      content: Wrap(
+        spacing: 10,
+        runSpacing: 10,
+        children: [for (final sw in _kAboutUsSwatches) GestureDetector(onTap: () => Navigator.pop(ctx, sw), child: CircleAvatar(backgroundColor: sw, radius: 18))],
+      ),
+      actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel'))],
+    ),
+  );
+  if (color == null) return;
+  final hex = '#${color.value.toRadixString(16).substring(2).padLeft(6, '0')}';
+  _applyAboutUsMarkup(c, (sel) => '{{color:$hex}}$sel{{/color}}', onChanged);
+}
+
+// Small Bold / Color / Clear formatting row shown under a paragraph or
+// bullet text field. [onChanged] is the enclosing setState, so the
+// Preview button always reflects the latest formatting.
+Widget _aboutUsFormatToolbar(BuildContext context, TextEditingController c, VoidCallback onChanged) => Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Row(children: [
+        const Text('Select text, then: ', style: TextStyle(fontSize: 11.5, color: Colors.black54)),
+        IconButton(
+          tooltip: 'Bold',
+          visualDensity: VisualDensity.compact,
+          icon: const Icon(Icons.format_bold, size: 19),
+          onPressed: () => _applyAboutUsMarkup(c, (sel) => '**$sel**', onChanged, onNoSelection: () => toast(context, 'Select some text first, then tap Bold.')),
+        ),
+        IconButton(
+          tooltip: 'Text color',
+          visualDensity: VisualDensity.compact,
+          icon: const Icon(Icons.format_color_text, size: 19),
+          onPressed: () => _pickAboutUsColor(context, c, onChanged),
+        ),
+        IconButton(
+          tooltip: 'Clear formatting on selection',
+          visualDensity: VisualDensity.compact,
+          icon: const Icon(Icons.format_clear, size: 19),
+          onPressed: () => _applyAboutUsMarkup(c, _stripAboutUsMarkup, onChanged, onNoSelection: () => toast(context, 'Select some text first, then tap Clear formatting.')),
+        ),
+      ]),
+    );
+
 class _EditSection {
   final TextEditingController title;
   final TextEditingController paras; // one paragraph per blank-line-separated block
@@ -6065,6 +6142,10 @@ class _AboutUsManagementViewState extends State<AboutUsManagementView> {
     return page([
       h('About Us Management', icon: Icons.info_outline),
       const Text('Shown on the no-login "About Us" screen and in the app drawer. Only a Super Admin can edit this.', style: TextStyle(color: Colors.black54, fontSize: 12.5)),
+      const Text(
+        'Tip: in a Paragraphs or Bullet points box, select some text with your finger, then tap Bold or the color icon just below it. Tap Preview to see exactly how it will look.',
+        style: TextStyle(color: Colors.black54, fontSize: 12.5),
+      ),
       field(heading, 'Heading'),
       field(subheading, 'Subheading (optional)'),
       const SizedBox(height: 8),
@@ -6081,7 +6162,9 @@ class _AboutUsManagementViewState extends State<AboutUsManagementView> {
               ]),
               field(s.title, 'Section title'),
               field(s.paras, 'Paragraphs (separate paragraphs with a blank line)', lines: 4),
+              _aboutUsFormatToolbar(context, s.paras, () => setState(() {})),
               field(s.bullets, 'Bullet points (one per line, optional)', lines: 3),
+              _aboutUsFormatToolbar(context, s.bullets, () => setState(() {})),
             ]),
           ),
         );
