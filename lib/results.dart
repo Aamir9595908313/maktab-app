@@ -998,7 +998,7 @@ class _StudentMyResultsScreenState extends State<StudentMyResultsScreen> {
         animation: st,
         builder: (context, _) => page([
           ..._notifBanners(st.resultNotifs.where((n) => !n.isRead)),
-          ..._resultsBody(rows, title: 'My Results'),
+          ...resultsBodyWidgets(rows, title: 'My Results'),
         ]),
       );
 }
@@ -1055,7 +1055,7 @@ class _ParentChildResultsScreenState extends State<ParentChildResultsScreen> {
           const SizedBox(height: 8),
         ],
         ..._notifBanners(st.resultNotifs.where((n) => !n.isRead && n.studentId == kidDbId)),
-        ..._resultsBody(rows, title: "My Child's Results"),
+        ...resultsBodyWidgets(rows, title: "My Child's Results"),
       ]),
     );
   }
@@ -1086,7 +1086,7 @@ List<Widget> _notifBanners(Iterable<ResultNotif> unread) => [
 // grouped by examination, published-only (loadMyResultsFor() only ever
 // returns rows RLS allows, which already excludes draft/unpublished and
 // deleted results).
-List<Widget> _resultsBody(List<Map<String, dynamic>>? rows, {required String title}) {
+List<Widget> resultsBodyWidgets(List<Map<String, dynamic>>? rows, {required String title}) {
   if (rows == null) return [h(title, icon: Icons.grading), const Center(child: CircularProgressIndicator())];
   if (rows.isEmpty) {
     return [h(title, icon: Icons.grading), const Text('No results have been published yet.', style: TextStyle(color: Colors.black54))];
@@ -1138,4 +1138,46 @@ List<Widget> _resultsBody(List<Map<String, dynamic>>? rows, {required String tit
     ));
   }
   return out;
+}
+
+// Reusable "Results" tab for StudentDetail (main.dart) - the screen a
+// Teacher/Admin/Super Admin/Committee member lands on from Search, "All
+// Students", "Students by Maktab", or Committee's branch list. Shows the
+// same published-only results a student/parent would see on their own
+// "My Results" screen. The caller (StudentDetail) is responsible for only
+// building this widget for an account that's actually allowed to see
+// marks (Super Admin, or has_screen_permission('Results View')) - this
+// widget itself does no permission check, since by the time it's on
+// screen that decision has already been made.
+class StudentResultsTab extends StatefulWidget {
+  final Student s;
+  const StudentResultsTab({super.key, required this.s});
+  @override
+  State<StudentResultsTab> createState() => _StudentResultsTabState();
+}
+
+class _StudentResultsTabState extends State<StudentResultsTab> {
+  List<Map<String, dynamic>>? rows;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    if (widget.s.dbId == null) {
+      if (mounted) setState(() => rows = []);
+      return;
+    }
+    final r = await loadMyResultsFor(widget.s.dbId!);
+    final published = r.where((row) {
+      final exam = ((row['exam_subjects'] as Map?)?['examinations'] as Map?) ?? {};
+      return exam['status'] == 'Published';
+    }).toList();
+    if (mounted) setState(() => rows = published);
+  }
+
+  @override
+  Widget build(BuildContext context) => page(resultsBodyWidgets(rows, title: 'Examination Results'));
 }

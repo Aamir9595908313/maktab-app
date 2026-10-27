@@ -4146,12 +4146,21 @@ class KidHome extends StatelessWidget {
         tile('Attendance Sep', '${st.attPct(k)}%'),
         tile('Syllabus', p.label ?? '${p.n} of ${p.total} (${p.pct}%)'),
         tile('Plan status', p.behind > 0 ? 'Behind ${p.behind} days' : 'On pace', color: p.behind > 0 ? Colors.red : Colors.green),
-        // There is no exam/marks feature anywhere in the app yet to source
-        // a real result from - showing a fixed "60/70 - rank 3" here would
-        // be exactly the kind of fabricated statistic flagged in testing.
-        // Being honest that this isn't wired up yet, rather than a fake
-        // number, until a real Exams/Results feature exists.
-        tile('Latest result', 'Not recorded yet'),
+        // Computing an actual "latest result" number here would need an
+        // async fetch this tile can't do synchronously - rather than a
+        // fabricated or stale number, this tile is a direct link into the
+        // real My Results / My Child's Results screen (Student Results
+        // Management module), which has the genuine published marks.
+        tile(
+          'Latest result',
+          'View in My Results',
+          onTap: () => Navigator.push(
+            context,
+            // Matches tabsFor()'s own choice: a parent in "view as student"
+            // mode gets the plain Student screen, same as the tab bar does.
+            MaterialPageRoute<void>(builder: (_) => (st.user!.role == 'parent' && !st.studentView) ? const ParentChildResultsScreen() : const StudentMyResultsScreen()),
+          ),
+        ),
       ]),
       if (st.showFees) h('Fees (month-wise)', icon: Icons.payments),
       if (st.showFees)
@@ -8169,6 +8178,12 @@ class StudentDetail extends StatelessWidget {
   Widget build(BuildContext context) {
     final cd = st.classDefs[s.cls]!;
     final p = progFor(s);
+    final u = st.user!;
+    // Section 10/spec: Teachers, Maktab Admins, Working Committee members
+    // must not automatically gain access to marks - only Super Admin, or
+    // someone a Super Admin has explicitly granted "Results View" to
+    // (works for any role, same check the Results module itself uses).
+    final canSeeResults = u.role == 'super' || userHasPerm(u, 'Results View');
     return DefaultTabController(
       length: 6,
       initialIndex: initialTab,
@@ -8214,10 +8229,22 @@ class StudentDetail extends StatelessWidget {
           // never drifts out of sync again.
           SyllabusBody(s: s, edit: true),
           page([AttendanceMonthReport(key: ValueKey(s.id), s: s)]),
-          page([
-            const Card(child: ListTile(title: Text('Exam results'), subtitle: Text('Not recorded yet - no exam/marks feature exists in the app yet'))),
-            const Text('Fees, teachers, phone numbers, address, Aadhaar and complaints are never shown to committee members.'),
-          ]),
+          canSeeResults
+              ? StudentResultsTab(key: ValueKey(s.id), s: s)
+              : page([
+                  Card(
+                    child: ListTile(
+                      title: const Text('Exam results'),
+                      subtitle: Text(
+                        u.role == 'committee'
+                            ? 'Not shown to committee members.'
+                            : 'Not shown for your role. Ask your Super Admin to grant the "Results View" permission if you need to see this.',
+                      ),
+                    ),
+                  ),
+                  if (u.role == 'committee')
+                    const Text('Fees, teachers, phone numbers, address, Aadhaar and complaints are never shown to committee members.'),
+                ]),
           CoursesTabBody(s: s),
         ])),
       ),
