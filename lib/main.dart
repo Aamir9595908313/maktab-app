@@ -10342,6 +10342,13 @@ Future<Uint8List> buildStudentHistoryPdf(Student s) async {
   // number, not a re-derivation.
   final monthRows = <List<String>>[];
   var totalPresent = 0, totalAbsent = 0, totalNotRecorded = 0, totalEligible = 0;
+  // Calendar-year rollup of the same numbers, for the "Year-wise Summary"
+  // table under Section E - a student with more than one year of history
+  // gets one attendance % per year, not only the full-history total.
+  final yearEligible = <int, int>{};
+  final yearPresent = <int, int>{};
+  final yearAbsent = <int, int>{};
+  final yearNotRecorded = <int, int>{};
   final admission = validDate(s.start) ? pd(s.start) : DateTime.now();
   var cursor = DateTime(admission.year, admission.month, 1);
   final now = DateTime.now();
@@ -10365,10 +10372,26 @@ Future<Uint8List> buildStudentHistoryPdf(Student s) async {
       totalAbsent += summary.absent;
       totalNotRecorded += summary.notRecorded;
       totalEligible += eligible;
+      final y = cursor.year;
+      yearEligible[y] = (yearEligible[y] ?? 0) + eligible;
+      yearPresent[y] = (yearPresent[y] ?? 0) + summary.present;
+      yearAbsent[y] = (yearAbsent[y] ?? 0) + summary.absent;
+      yearNotRecorded[y] = (yearNotRecorded[y] ?? 0) + summary.notRecorded;
     }
     cursor = DateTime(cursor.year, cursor.month + 1, 1);
   }
   final overallPct = totalEligible == 0 ? null : totalPresent * 100 / totalEligible;
+  final yearRows = <List<String>>[
+    for (final y in yearEligible.keys.toList()..sort())
+      [
+        '$y',
+        '${yearEligible[y]}',
+        '${yearPresent[y]}',
+        '${yearAbsent[y]}',
+        '${yearNotRecorded[y]}',
+        (yearEligible[y] ?? 0) == 0 ? 'N/A' : '${(yearPresent[y]! * 100 / yearEligible[y]!).toStringAsFixed(2)}%',
+      ],
+  ];
 
   // ---- Section F source data: every Published examination result for
   // this student, across every academic year and examination it has ever
@@ -10418,6 +10441,148 @@ Future<Uint8List> buildStudentHistoryPdf(Student s) async {
     ]);
   }
 
+  // Each section is only added here if this student actually has
+  // something to show for it - this report doubles as a result/
+  // certificate document now, so a section that would only ever say "No
+  // ... yet" shouldn't appear on it at all. Letters (A, B, C...) are
+  // assigned by position below, so they always stay consecutive no
+  // matter which sections a particular student ends up with.
+  final sections = <(String, List<pw.Widget>)>[
+    (
+      'Student Details',
+      [
+        _pdfKvGrid([
+          ('Student Name', s.name),
+          ('Student ID', s.key),
+          ('Date of Birth', s.dob == null ? '-' : fmtDate(s.dob)),
+          ('Gender', s.gender),
+          ('Admission Date', fmtDate(s.start)),
+          ('Status', s.status),
+          ('Maktab', s.madrasa),
+          ('Category', category ?? '-'),
+          ('Current Class', cd?.name ?? 'Class ${s.cls}'),
+          (s.guardianRelation == 'Husband' ? "Husband's Name" : "Father's Name", s.fatherName.isEmpty ? '-' : s.fatherName),
+          ('Parent Mobile Number', s.parentPhone.isEmpty ? '-' : s.parentPhone),
+        ]),
+      ],
+    ),
+    (
+      'Current Class Details',
+      [
+        pw.Text(
+          "Class progression isn't tracked as a dated history anywhere in this app yet (there is no class-history/promotions table), so only the current class is shown here - not invented prior classes.",
+          style: const pw.TextStyle(fontSize: 8, color: PdfColors.grey700),
+        ),
+        pw.SizedBox(height: 4),
+        _pdfKv('Class', cd?.name ?? 'Class ${s.cls}'),
+        _pdfKv('Syllabus Type', cd?.pageBased == true ? 'Page-based (e.g. Hafizi Quran)' : 'Chapter-based'),
+      ],
+    ),
+    if (prog.total > 0)
+      (
+        'Syllabus Progress',
+        [
+          _pdfKv('Progress', prog.label ?? '${prog.n} of ${prog.total}'),
+          _pdfKv('Completion %', '${prog.pct}%'),
+          _pdfKv('Pending Items', '${prog.total - prog.n}'),
+        ],
+      ),
+    if (completedCourseRows.isNotEmpty)
+      (
+        'Completed Courses',
+        [
+          pw.Table.fromTextArray(
+            headers: const ['Course', 'Completed On', 'Approved'],
+            data: [for (final r in completedCourseRows) [r[0], r[2], r[3]]],
+            cellStyle: const pw.TextStyle(fontSize: 8),
+            headerStyle: pw.TextStyle(fontSize: 8, fontWeight: pw.FontWeight.bold),
+            headerDecoration: const pw.BoxDecoration(color: PdfColors.green50),
+          ),
+        ],
+      ),
+    if (monthRows.isNotEmpty)
+      (
+        'Attendance Report',
+        [
+          pw.Table.fromTextArray(
+            headers: const ['Month', 'Eligible Sessions', 'Present', 'Absent', 'Attendance Not Submitted', 'Attendance %'],
+            data: monthRows,
+            cellStyle: const pw.TextStyle(fontSize: 8),
+            headerStyle: pw.TextStyle(fontSize: 8, fontWeight: pw.FontWeight.bold),
+            headerDecoration: const pw.BoxDecoration(color: PdfColors.green50),
+            cellDecoration: (colIndex, data, rowNum) {
+              if (rowNum > 0 && monthRowStyles.contains(rowNum - 1)) {
+                return const pw.BoxDecoration(color: PdfColors.red100);
+              }
+              return const pw.BoxDecoration();
+            },
+          ),
+          pw.SizedBox(height: 4),
+          pw.Text(
+            'Eligible sessions exclude Fridays (the Maktab\'s weekly off day) and recorded events/holidays. "Attendance Not Submitted" is tracked separately and is never counted as Absent.',
+            style: const pw.TextStyle(fontSize: 7, color: PdfColors.grey600),
+          ),
+          if (yearRows.length > 1) ...[
+            pw.SizedBox(height: 12),
+            pw.Text('Year-wise Summary', style: pw.TextStyle(fontSize: 10, fontWeight: pw.FontWeight.bold, color: PdfColors.green900)),
+            pw.SizedBox(height: 4),
+            pw.Table.fromTextArray(
+              headers: const ['Year', 'Eligible Sessions', 'Present', 'Absent', 'Attendance Not Submitted', 'Attendance %'],
+              data: yearRows,
+              cellStyle: const pw.TextStyle(fontSize: 8),
+              headerStyle: pw.TextStyle(fontSize: 8, fontWeight: pw.FontWeight.bold),
+              headerDecoration: const pw.BoxDecoration(color: PdfColors.green50),
+            ),
+          ],
+        ],
+      ),
+    if (examHistoryRows.isNotEmpty)
+      (
+        'Examination Results',
+        [
+          pw.Table.fromTextArray(
+            headers: const ['Examination', 'Academic Year', 'Subject', 'Max Marks', 'Marks Obtained', 'Percentage', 'Result'],
+            data: examHistoryRows,
+            cellStyle: const pw.TextStyle(fontSize: 8),
+            headerStyle: pw.TextStyle(fontSize: 8, fontWeight: pw.FontWeight.bold),
+            headerDecoration: const pw.BoxDecoration(color: PdfColors.green50),
+            cellDecoration: (colIndex, data, rowNum) {
+              if (rowNum > 0 && data.length > 6 && data[6] == 'Fail') return const pw.BoxDecoration(color: PdfColors.red100);
+              return const pw.BoxDecoration();
+            },
+          ),
+          pw.SizedBox(height: 4),
+          pw.Text(
+            'Only officially Published results are shown here - draft or under-review entries are never part of a student\'s official record.',
+            style: const pw.TextStyle(fontSize: 7, color: PdfColors.grey600),
+          ),
+        ],
+      ),
+    // "Additional Work, Achievements and Activities" is intentionally left
+    // out: there is no additional-work / homework / achievements / teacher-
+    // remarks module in this application with persisted records to report
+    // from (the only candidate, a local "Note" activity feed, is session-
+    // only and never saved to the backend, so it isn't a real history
+    // source). Disclosed in the implementation report instead of being
+    // shown here with invented or placeholder content.
+    (
+      'Overall Student Summary',
+      [
+        _pdfKvGrid([
+          ('Current Maktab / Class', '${s.madrasa} - ${cd?.name ?? 'Class ${s.cls}'}'),
+          ('Syllabus Completion', prog.total == 0 ? 'N/A' : '${prog.pct}%'),
+          ('Courses Completed', '$completedCourses'),
+          ('Courses Awaiting Approval', '$pendingApprovalCourses'),
+          ('Overall Attendance % (full history)', overallPct == null ? 'N/A' : '${overallPct.toStringAsFixed(2)}%'),
+          ('Total Eligible Sessions', '$totalEligible'),
+          ('Total Present / Absent', '$totalPresent / $totalAbsent'),
+          ('Total Not Submitted', '$totalNotRecorded'),
+          ('Published Examinations Passed / Failed', '$examsPassed / $examsFailed'),
+        ]),
+      ],
+    ),
+  ];
+
   final doc = pw.Document();
   doc.addPage(
     pw.MultiPage(
@@ -10449,116 +10614,10 @@ Future<Uint8List> buildStudentHistoryPdf(Student s) async {
         ]),
         pw.Divider(color: PdfColors.green200, thickness: 2),
 
-        _pdfSectionHeading('A. Student Details'),
-        _pdfKvGrid([
-          ('Student Name', s.name),
-          ('Student ID', s.key),
-          ('Date of Birth', s.dob == null ? '-' : fmtDate(s.dob)),
-          ('Gender', s.gender),
-          ('Admission Date', fmtDate(s.start)),
-          ('Status', s.status),
-          ('Maktab', s.madrasa),
-          ('Category', category ?? '-'),
-          ('Current Class', cd?.name ?? 'Class ${s.cls}'),
-          (s.guardianRelation == 'Husband' ? "Husband's Name" : "Father's Name", s.fatherName.isEmpty ? '-' : s.fatherName),
-          ('Parent Mobile Number', s.parentPhone.isEmpty ? '-' : s.parentPhone),
-        ]),
-
-        _pdfSectionHeading('B. Current Class Details'),
-        pw.Text(
-          "Class progression isn't tracked as a dated history anywhere in this app yet (there is no class-history/promotions table), so only the current class is shown here - not invented prior classes.",
-          style: const pw.TextStyle(fontSize: 8, color: PdfColors.grey700),
-        ),
-        pw.SizedBox(height: 4),
-        _pdfKv('Class', cd?.name ?? 'Class ${s.cls}'),
-        _pdfKv('Syllabus Type', cd?.pageBased == true ? 'Page-based (e.g. Hafizi Quran)' : 'Chapter-based'),
-
-        _pdfSectionHeading('C. Syllabus Progress'),
-        _pdfKv('Progress', prog.label ?? '${prog.n} of ${prog.total}'),
-        _pdfKv('Completion %', prog.total == 0 ? 'N/A' : '${prog.pct}%'),
-        _pdfKv('Pending Items', prog.total == 0 ? 'N/A' : '${prog.total - prog.n}'),
-
-        _pdfSectionHeading('D. Completed Courses'),
-        if (completedCourseRows.isEmpty) pw.Text('No completed add-on courses for this student yet.', style: const pw.TextStyle(fontSize: 9)),
-        if (completedCourseRows.isNotEmpty)
-          pw.Table.fromTextArray(
-            headers: const ['Course', 'Completed On', 'Approved'],
-            data: [for (final r in completedCourseRows) [r[0], r[2], r[3]]],
-            cellStyle: const pw.TextStyle(fontSize: 8),
-            headerStyle: pw.TextStyle(fontSize: 8, fontWeight: pw.FontWeight.bold),
-            headerDecoration: const pw.BoxDecoration(color: PdfColors.green50),
-          ),
-
-        _pdfSectionHeading('E. Month-Wise Attendance Report'),
-        if (monthRows.isEmpty) pw.Text('No attendance history recorded for this student yet.', style: const pw.TextStyle(fontSize: 9)),
-        if (monthRows.isNotEmpty)
-          pw.Table.fromTextArray(
-            headers: const ['Month', 'Eligible Sessions', 'Present', 'Absent', 'Attendance Not Submitted', 'Attendance %'],
-            data: monthRows,
-            cellStyle: const pw.TextStyle(fontSize: 8),
-            headerStyle: pw.TextStyle(fontSize: 8, fontWeight: pw.FontWeight.bold),
-            headerDecoration: const pw.BoxDecoration(color: PdfColors.green50),
-            cellDecoration: (colIndex, data, rowNum) {
-              if (rowNum > 0 && monthRowStyles.contains(rowNum - 1)) {
-                return const pw.BoxDecoration(color: PdfColors.red100);
-              }
-              return const pw.BoxDecoration();
-            },
-          ),
-        pw.SizedBox(height: 4),
-        pw.Text(
-          'Eligible sessions exclude Fridays (the Maktab\'s weekly off day) and recorded events/holidays. "Attendance Not Submitted" is tracked separately and is never counted as Absent.',
-          style: const pw.TextStyle(fontSize: 7, color: PdfColors.grey600),
-        ),
-
-        _pdfSectionHeading('F. Examination Results'),
-        if (examHistoryRows.isEmpty)
-          pw.Text(
-            s.dbId == null
-                ? 'This student record has not finished syncing to the database yet, so examination results cannot be fetched.'
-                : 'No published examination results for this student yet.',
-            style: const pw.TextStyle(fontSize: 9),
-          ),
-        if (examHistoryRows.isNotEmpty)
-          pw.Table.fromTextArray(
-            headers: const ['Examination', 'Academic Year', 'Subject', 'Max Marks', 'Marks Obtained', 'Percentage', 'Result'],
-            data: examHistoryRows,
-            cellStyle: const pw.TextStyle(fontSize: 8),
-            headerStyle: pw.TextStyle(fontSize: 8, fontWeight: pw.FontWeight.bold),
-            headerDecoration: const pw.BoxDecoration(color: PdfColors.green50),
-            cellDecoration: (colIndex, data, rowNum) {
-              if (rowNum > 0 && data.length > 6 && data[6] == 'Fail') return const pw.BoxDecoration(color: PdfColors.red100);
-              return const pw.BoxDecoration();
-            },
-          ),
-        pw.SizedBox(height: 4),
-        pw.Text(
-          'Only officially Published results are shown here - draft or under-review entries are never part of a student\'s official record.',
-          style: const pw.TextStyle(fontSize: 7, color: PdfColors.grey600),
-        ),
-
-        // "Additional Work, Achievements and Activities" is intentionally
-        // left out of the PDF: there is no additional-work / homework /
-        // achievements / teacher-remarks module in this application with
-        // persisted records to report from (the only candidate, a local
-        // "Note" activity feed, is session-only and never saved to the
-        // backend, so it isn't a real history source). Per the spec's own
-        // instruction, the missing capability is disclosed in the
-        // implementation report instead of being shown here with invented
-        // or placeholder content.
-
-        _pdfSectionHeading('G. Overall Student Summary'),
-        _pdfKvGrid([
-          ('Current Maktab / Class', '${s.madrasa} - ${cd?.name ?? 'Class ${s.cls}'}'),
-          ('Syllabus Completion', prog.total == 0 ? 'N/A' : '${prog.pct}%'),
-          ('Courses Completed', '$completedCourses'),
-          ('Courses Awaiting Approval', '$pendingApprovalCourses'),
-          ('Overall Attendance % (full history)', overallPct == null ? 'N/A' : '${overallPct.toStringAsFixed(2)}%'),
-          ('Total Eligible Sessions', '$totalEligible'),
-          ('Total Present / Absent', '$totalPresent / $totalAbsent'),
-          ('Total Not Submitted', '$totalNotRecorded'),
-          ('Published Examinations Passed / Failed', '$examsPassed / $examsFailed'),
-        ]),
+        for (var i = 0; i < sections.length; i++) ...[
+          _pdfSectionHeading('${String.fromCharCode(65 + i)}. ${sections[i].$1}'),
+          ...sections[i].$2,
+        ],
       ],
     ),
   );
