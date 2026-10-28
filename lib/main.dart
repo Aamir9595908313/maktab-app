@@ -426,9 +426,9 @@ Future<void> loadAttendanceSessions() async {
     final userIds = <String>{for (final r in (rows as List)) if (r['submitted_by'] != null) r['submitted_by'] as String};
     final nameByUser = <String, String>{};
     if (userIds.isNotEmpty) {
-      final profRows = await sb.from('user_profiles').select('id, name').inFilter('id', userIds.toList());
+      final profRows = await sb.from('user_profiles').select('id, full_name').inFilter('id', userIds.toList());
       for (final r in (profRows as List)) {
-        nameByUser[r['id'] as String] = (r['name'] as String?) ?? '';
+        nameByUser[r['id'] as String] = (r['full_name'] as String?) ?? '';
       }
     }
     final map = <String, AttendanceSessionMeta>{};
@@ -736,9 +736,9 @@ Future<void> loadEvents() async {
     final userIds = <String>{for (final r in (rows as List)) if (r['created_by'] != null) r['created_by'] as String};
     final nameByUser = <String, String>{};
     if (userIds.isNotEmpty) {
-      final profRows = await sb.from('user_profiles').select('id, name').inFilter('id', userIds.toList());
+      final profRows = await sb.from('user_profiles').select('id, full_name').inFilter('id', userIds.toList());
       for (final r in (profRows as List)) {
-        nameByUser[r['id'] as String] = (r['name'] as String?) ?? '';
+        nameByUser[r['id'] as String] = (r['full_name'] as String?) ?? '';
       }
     }
     st.setEventsFromDb([
@@ -846,9 +846,9 @@ Future<void> loadNotifTemplates() async {
     final userIds = <String>{for (final r in (rows as List)) if (r['updated_by'] != null) r['updated_by'] as String};
     final nameByUser = <String, String>{};
     if (userIds.isNotEmpty) {
-      final profRows = await sb.from('user_profiles').select('id, name').inFilter('id', userIds.toList());
+      final profRows = await sb.from('user_profiles').select('id, full_name').inFilter('id', userIds.toList());
       for (final r in (profRows as List)) {
-        nameByUser[r['id'] as String] = (r['name'] as String?) ?? '';
+        nameByUser[r['id'] as String] = (r['full_name'] as String?) ?? '';
       }
     }
     st.setNotifTemplatesFromDb([
@@ -902,9 +902,9 @@ Future<List<NotifTemplateVersion>> loadTemplateHistory(NotifTemplate t) async {
     final userIds = <String>{for (final r in (rows as List)) if (r['changed_by'] != null) r['changed_by'] as String};
     final nameByUser = <String, String>{};
     if (userIds.isNotEmpty) {
-      final profRows = await sb.from('user_profiles').select('id, name').inFilter('id', userIds.toList());
+      final profRows = await sb.from('user_profiles').select('id, full_name').inFilter('id', userIds.toList());
       for (final r in (profRows as List)) {
-        nameByUser[r['id'] as String] = (r['name'] as String?) ?? '';
+        nameByUser[r['id'] as String] = (r['full_name'] as String?) ?? '';
       }
     }
     return [
