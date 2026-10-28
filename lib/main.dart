@@ -3735,17 +3735,21 @@ class _GuestHomeState extends State<GuestHome> {
     return Scaffold(
       body: SafeArea(
         child: ListView(
-          padding: const EdgeInsets.all(20),
+          padding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
           children: [
-            const SizedBox(height: 10),
             Center(child: Image.asset('assets/logo.png', height: logoHeight)),
-            const SizedBox(height: 18),
+            const SizedBox(height: 14),
             const Text('Maktab-E-Tajushshriah', style: TextStyle(color: kGreen, fontSize: 23, fontWeight: FontWeight.bold), textAlign: TextAlign.center),
             const SizedBox(height: 4),
             const Text('Powered by Faiz-E-Raza Group Mehkar', style: TextStyle(color: Colors.black54, fontSize: 13), textAlign: TextAlign.center),
-            const SizedBox(height: 28),
+            const SizedBox(height: 22),
             if (!step2) ...[
-              field(phone, 'Mobile number', number: true, autofocus: true),
+              // autofocus here used to pop the keyboard (and, on some
+              // devices/browsers, a stray empty focus-outlined box) above
+              // the logo the instant this screen opened, before there was
+              // anything to type into yet - a tap now opens the keyboard
+              // the normal way, right where the field actually is.
+              field(phone, 'Mobile number', number: true),
               const SizedBox(height: 4),
               msgBox(err),
               SizedBox(
