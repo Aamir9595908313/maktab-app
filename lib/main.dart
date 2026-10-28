@@ -2843,6 +2843,21 @@ class _MaktabAppState extends State<MaktabApp> {
     return MaterialApp(
       title: 'Maktab-E-Tajushshriah',
       debugShowCheckedModeBanner: false,
+      // This app has no Urdu/Arabic localization of its own (every label,
+      // icon and layout is written assuming left-to-right), but without
+      // this, Flutter still picks text direction from the device's system
+      // language - so on a phone set to Urdu/Arabic, every multi-column
+      // layout (a GridView most visibly) silently mirrors right-to-left:
+      // item 1 renders on the right, item 2 on the left, and so on. That's
+      // what made the Dua'iya Kalimat gallery show a newer, higher-
+      // sequence item before an older, lower-sequence one even though the
+      // database and the query both had the correct ascending order the
+      // whole time - same class of bug as Android's Force Dark field
+      // below, where a device-level setting silently changed rendering
+      // nothing in this app's own code controlled. Forcing ltr here makes
+      // every screen's layout consistent regardless of the device's
+      // system language.
+      builder: (context, child) => Directionality(textDirection: TextDirection.ltr, child: child ?? const SizedBox.shrink()),
       // themeMode defaults to following the OS; without an explicit
       // darkTheme, Flutter would otherwise keep using this same light
       // theme either way, so this alone wasn't the "black field" cause -
