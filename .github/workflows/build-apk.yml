@@ -136,6 +136,115 @@ jobs:
           with open(path, "w") as f:
               f.write(src)
           PYEOF
+      - name: Decode release signing keystore (if configured)
+        # Play Store refuses an app signed with Flutter's public debug
+        # key, and every future update must be signed with the SAME key -
+        # so this has to be a real keystore kept outside the repo, fed in
+        # as a GitHub secret, not generated fresh on every run like the
+        # android/ folder itself. Until these secrets are added (repo
+        # Settings > Secrets and variables > Actions), this step is a
+        # no-op and every build stays exactly as it was before (debug-
+        # signed) - nothing here can break an existing build.
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 -d > android/app/upload-keystore.jks
+            cat > android/key.properties <<EOF
+          storePassword=$STORE_PASSWORD
+          keyPassword=$KEY_PASSWORD
+          keyAlias=$KEY_ALIAS
+          storeFile=upload-keystore.jks
+          EOF
+            echo "Release signing configured."
+          else
+            echo "No ANDROID_KEYSTORE_BASE64 secret set - building debug-signed as before."
+          fi
+      - name: Wire up release signing in Gradle (if configured)
+        run: |
+          python3 - <<'PYEOF'
+          import os
+
+          # Mirrors the guard in key.properties' own absence: if the
+          # secrets above weren't set, key.properties doesn't exist, and
+          # the release buildType keeps using the debug signingConfig
+          # (Flutter's scaffold default) exactly as every build before
+          # this did. Once key.properties exists, release builds (both
+          # the per-ABI APKs and the App Bundle) are signed with the real
+          # upload key instead.
+          kts_path = "android/app/build.gradle.kts"
+          groovy_path = "android/app/build.gradle"
+          path = kts_path if os.path.exists(kts_path) else groovy_path
+          is_kts = path == kts_path
+
+          with open(path) as f:
+              src = f.read()
+
+          if is_kts:
+              header = (
+                  'import java.util.Properties\n'
+                  'import java.io.FileInputStream\n\n'
+                  'val keystorePropertiesFile = rootProject.file("key.properties")\n'
+                  'val keystoreProperties = Properties()\n'
+                  'if (keystorePropertiesFile.exists()) {\n'
+                  '    keystoreProperties.load(FileInputStream(keystorePropertiesFile))\n'
+                  '}\n\n'
+              )
+              if "keystorePropertiesFile" not in src:
+                  src = header + src
+              if "signingConfigs {" not in src:
+                  src = src.replace(
+                      "android {",
+                      'android {\n    signingConfigs {\n        create("release") {\n'
+                      '            if (keystorePropertiesFile.exists()) {\n'
+                      '                keyAlias = keystoreProperties["keyAlias"] as String\n'
+                      '                keyPassword = keystoreProperties["keyPassword"] as String\n'
+                      '                storeFile = file(keystoreProperties["storeFile"] as String)\n'
+                      '                storePassword = keystoreProperties["storePassword"] as String\n'
+                      '            }\n        }\n    }',
+                      1,
+                  )
+              if "signingConfig = signingConfigs" not in src:
+                  src = src.replace(
+                      "release {",
+                      'release {\n            signingConfig = if (keystorePropertiesFile.exists()) signingConfigs.getByName("release") else signingConfigs.getByName("debug")',
+                      1,
+                  )
+          else:
+              header = (
+                  'def keystorePropertiesFile = rootProject.file("key.properties")\n'
+                  'def keystoreProperties = new Properties()\n'
+                  'if (keystorePropertiesFile.exists()) {\n'
+                  '    keystoreProperties.load(new FileInputStream(keystorePropertiesFile))\n'
+                  '}\n\n'
+              )
+              if "keystorePropertiesFile" not in src:
+                  src = header + src
+              if "signingConfigs {" not in src:
+                  src = src.replace(
+                      "android {",
+                      'android {\n    signingConfigs {\n        release {\n'
+                      '            if (keystorePropertiesFile.exists()) {\n'
+                      "                keyAlias keystoreProperties['keyAlias']\n"
+                      "                keyPassword keystoreProperties['keyPassword']\n"
+                      "                storeFile file(keystoreProperties['storeFile'])\n"
+                      "                storePassword keystoreProperties['storePassword']\n"
+                      '            }\n        }\n    }',
+                      1,
+                  )
+              if "signingConfig signingConfigs" not in src:
+                  src = src.replace(
+                      "release {",
+                      "release {\n            signingConfig keystorePropertiesFile.exists() ? signingConfigs.release : signingConfigs.debug",
+                      1,
+                  )
+
+          with open(path, "w") as f:
+              f.write(src)
+          PYEOF
       - name: Generate app launcher icon
         # The android/ folder above is freshly scaffolded on every run (it's
         # gitignored, not checked in), so it always starts with Flutter's
@@ -178,11 +287,39 @@ jobs:
         run: |
           set -o pipefail
           (flutter pub get && flutter build apk --release --split-per-abi --obfuscate --split-debug-info=build/app/outputs/symbols) 2>&1 | tee build-log.txt
+      - name: Build release App Bundle (.aab, for Play Store)
+        id: buildaab
+        if: steps.build.outcome == 'success'
+        continue-on-error: true
+        # Play Store requires an .aab for a new app, not the .apk files
+        # above (those stay as-is, for GitHub-release sideloading/testing).
+        # Not split-per-abi: Play itself splits a bundle by ABI/density/
+        # language per device at install time, so the bundle carries one
+        # copy of everything instead.
+        run: |
+          set -o pipefail
+          flutter build appbundle --release --obfuscate --split-debug-info=build/app/outputs/symbols 2>&1 | tee -a build-log.txt
       - uses: actions/upload-artifact@v4
         if: steps.build.outcome == 'success'
         with:
           name: maktab-app-apk
           path: build/app/outputs/flutter-apk/*.apk
+      - name: Publish App Bundle to a GitHub Release
+        # Same reasoning as the APK release below - a Release asset is
+        # reachable from anywhere, an Actions artifact isn't always.
+        # This is the file to actually upload to Play Console.
+        if: steps.buildaab.outcome == 'success'
+        run: |
+          gh release delete latest-aab --yes || true
+          git tag -f latest-aab
+          git push -f origin latest-aab
+          gh release create latest-aab \
+            build/app/outputs/bundle/release/app-release.aab \
+            --title "Maktab App (latest Play Store bundle)" \
+            --notes "Auto-built from commit ${{ github.sha }}. Upload app-release.aab to Play Console > Production/Testing > Create release." \
+            --latest
+        env:
+          GH_TOKEN: ${{ github.token }}
       - name: Publish APK to a GitHub Release
         # Build artifacts (actions/upload-artifact) are only downloadable
         # from Azure Blob Storage, which some networks/sandboxes can't
