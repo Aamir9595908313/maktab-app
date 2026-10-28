@@ -10299,6 +10299,54 @@ pw.Widget _pdfKvGrid(List<(String, String)> pairs) {
   );
 }
 
+const _pdfMonthNames = ['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+pw.Widget _pdfAttendanceMatrix(Map<int, Map<int, double?>> pctGrid, DateTime admission, DateTime endMonth) {
+  final years = pctGrid.keys.toList()..sort();
+  final headerRow = pw.TableRow(
+    decoration: const pw.BoxDecoration(color: PdfColors.green50),
+    children: [
+      pw.Padding(padding: const pw.EdgeInsets.all(4), child: pw.Text('Year', style: pw.TextStyle(fontSize: 8, fontWeight: pw.FontWeight.bold))),
+      for (var m = 1; m <= 12; m++)
+        pw.Padding(
+          padding: const pw.EdgeInsets.all(4),
+          child: pw.Text(_pdfMonthNames[m], style: pw.TextStyle(fontSize: 8, fontWeight: pw.FontWeight.bold), textAlign: pw.TextAlign.center),
+        ),
+    ],
+  );
+  final dataRows = <pw.TableRow>[];
+  for (final year in years) {
+    final rowCells = <pw.Widget>[
+      pw.Padding(padding: const pw.EdgeInsets.all(4), child: pw.Text('$year', style: pw.TextStyle(fontSize: 8, fontWeight: pw.FontWeight.bold))),
+    ];
+    for (var m = 1; m <= 12; m++) {
+      final monthDate = DateTime(year, m, 1);
+      final inRange = !monthDate.isBefore(DateTime(admission.year, admission.month, 1)) && !monthDate.isAfter(endMonth);
+      final pct = pctGrid[year]?[m];
+      String text;
+      PdfColor color = PdfColors.black;
+      if (!inRange) {
+        text = '';
+      } else if (pct == null) {
+        text = '-';
+      } else {
+        text = '${pct.toStringAsFixed(0)}%';
+        if (pct < 40.0) color = PdfColors.red;
+      }
+      rowCells.add(pw.Padding(
+        padding: const pw.EdgeInsets.all(4),
+        child: pw.Text(text, style: pw.TextStyle(fontSize: 8, color: color, fontWeight: color == PdfColors.red ? pw.FontWeight.bold : pw.FontWeight.normal), textAlign: pw.TextAlign.center),
+      ));
+    }
+    dataRows.add(pw.TableRow(children: rowCells));
+  }
+  return pw.Table(
+    border: pw.TableBorder.all(color: PdfColors.grey300, width: 0.5),
+    columnWidths: {0: const pw.FlexColumnWidth(1.1), for (var m = 1; m <= 12; m++) m: const pw.FlexColumnWidth(1)},
+    children: [headerRow, ...dataRows],
+  );
+}
+
 Future<Uint8List> buildStudentHistoryPdf(Student s) async {
   final logoBytes = (await rootBundle.load('assets/logo.png')).buffer.asUint8List();
   final logoImage = pw.MemoryImage(logoBytes);
@@ -10340,58 +10388,34 @@ Future<Uint8List> buildStudentHistoryPdf(Student s) async {
   // calendar month from admission to the current month - same function,
   // same eligible-session rules the rest of the app uses for this exact
   // number, not a re-derivation.
-  final monthRows = <List<String>>[];
   var totalPresent = 0, totalAbsent = 0, totalNotRecorded = 0, totalEligible = 0;
-  // Calendar-year rollup of the same numbers, for the "Year-wise Summary"
-  // table under Section E - a student with more than one year of history
-  // gets one attendance % per year, not only the full-history total.
-  final yearEligible = <int, int>{};
-  final yearPresent = <int, int>{};
-  final yearAbsent = <int, int>{};
-  final yearNotRecorded = <int, int>{};
+  var hasAnyAttendance = false;
+  // Year (row) x calendar month (column) attendance % grid, from the
+  // student's own admission year/month through the current month - the
+  // shape the report actually displays now. A missing month key means
+  // "outside the admission-to-now range" (rendered as "-"); a present key
+  // with a null value means "no eligible sessions that month" (also "-");
+  // anything else is a real percentage, shown in red under 40%.
+  final pctGrid = <int, Map<int, double?>>{};
   final admission = validDate(s.start) ? pd(s.start) : DateTime.now();
   var cursor = DateTime(admission.year, admission.month, 1);
   final now = DateTime.now();
   final end = DateTime(now.year, now.month, 1);
-  final monthRowStyles = <int>[]; // row index (within monthRows) to highlight
   while (!cursor.isAfter(end)) {
     final summary = await loadMonthAttendance(s, cursor.year, cursor.month);
+    final eligible = summary == null ? 0 : summary.present + summary.absent;
+    final pct = (summary == null || eligible == 0) ? null : summary.present * 100 / eligible;
+    (pctGrid[cursor.year] ??= {})[cursor.month] = pct;
     if (summary != null && (summary.present + summary.absent + summary.notRecorded) > 0) {
-      final eligible = summary.present + summary.absent;
-      final pct = eligible == 0 ? null : summary.present * 100 / eligible;
-      if (pct != null && pct < 40.0) monthRowStyles.add(monthRows.length);
-      monthRows.add([
-        '${kMonthNames[cursor.month - 1]} ${cursor.year}',
-        '$eligible',
-        '${summary.present}',
-        '${summary.absent}',
-        '${summary.notRecorded}',
-        pct == null ? 'N/A' : '${pct.toStringAsFixed(2)}%',
-      ]);
+      hasAnyAttendance = true;
       totalPresent += summary.present;
       totalAbsent += summary.absent;
       totalNotRecorded += summary.notRecorded;
       totalEligible += eligible;
-      final y = cursor.year;
-      yearEligible[y] = (yearEligible[y] ?? 0) + eligible;
-      yearPresent[y] = (yearPresent[y] ?? 0) + summary.present;
-      yearAbsent[y] = (yearAbsent[y] ?? 0) + summary.absent;
-      yearNotRecorded[y] = (yearNotRecorded[y] ?? 0) + summary.notRecorded;
     }
     cursor = DateTime(cursor.year, cursor.month + 1, 1);
   }
   final overallPct = totalEligible == 0 ? null : totalPresent * 100 / totalEligible;
-  final yearRows = <List<String>>[
-    for (final y in yearEligible.keys.toList()..sort())
-      [
-        '$y',
-        '${yearEligible[y]}',
-        '${yearPresent[y]}',
-        '${yearAbsent[y]}',
-        '${yearNotRecorded[y]}',
-        (yearEligible[y] ?? 0) == 0 ? 'N/A' : '${(yearPresent[y]! * 100 / yearEligible[y]!).toStringAsFixed(2)}%',
-      ],
-  ];
 
   // ---- Section F source data: every Published examination result for
   // this student, across every academic year and examination it has ever
@@ -10500,40 +10524,16 @@ Future<Uint8List> buildStudentHistoryPdf(Student s) async {
           ),
         ],
       ),
-    if (monthRows.isNotEmpty)
+    if (hasAnyAttendance)
       (
         'Attendance Report',
         [
-          pw.Table.fromTextArray(
-            headers: const ['Month', 'Eligible Sessions', 'Present', 'Absent', 'Attendance Not Submitted', 'Attendance %'],
-            data: monthRows,
-            cellStyle: const pw.TextStyle(fontSize: 8),
-            headerStyle: pw.TextStyle(fontSize: 8, fontWeight: pw.FontWeight.bold),
-            headerDecoration: const pw.BoxDecoration(color: PdfColors.green50),
-            cellDecoration: (colIndex, data, rowNum) {
-              if (rowNum > 0 && monthRowStyles.contains(rowNum - 1)) {
-                return const pw.BoxDecoration(color: PdfColors.red100);
-              }
-              return const pw.BoxDecoration();
-            },
-          ),
+          _pdfAttendanceMatrix(pctGrid, admission, end),
           pw.SizedBox(height: 4),
           pw.Text(
-            'Eligible sessions exclude Fridays (the Maktab\'s weekly off day) and recorded events/holidays. "Attendance Not Submitted" is tracked separately and is never counted as Absent.',
+            'Eligible sessions exclude Fridays (the Maktab\'s weekly off day) and recorded events/holidays. "-" means no eligible sessions that month (or outside the admission-to-date range). A month under 40% attendance is shown in red.',
             style: const pw.TextStyle(fontSize: 7, color: PdfColors.grey600),
           ),
-          if (yearRows.length > 1) ...[
-            pw.SizedBox(height: 12),
-            pw.Text('Year-wise Summary', style: pw.TextStyle(fontSize: 10, fontWeight: pw.FontWeight.bold, color: PdfColors.green900)),
-            pw.SizedBox(height: 4),
-            pw.Table.fromTextArray(
-              headers: const ['Year', 'Eligible Sessions', 'Present', 'Absent', 'Attendance Not Submitted', 'Attendance %'],
-              data: yearRows,
-              cellStyle: const pw.TextStyle(fontSize: 8),
-              headerStyle: pw.TextStyle(fontSize: 8, fontWeight: pw.FontWeight.bold),
-              headerDecoration: const pw.BoxDecoration(color: PdfColors.green50),
-            ),
-          ],
         ],
       ),
     if (examHistoryRows.isNotEmpty)
