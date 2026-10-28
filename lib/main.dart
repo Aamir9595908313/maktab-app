@@ -10617,10 +10617,19 @@ Future<Uint8List> buildStudentHistoryPdf(Student s) async {
         ]),
         pw.Divider(color: PdfColors.green200, thickness: 2),
 
-        for (var i = 0; i < sections.length; i++) ...[
-          _pdfSectionHeading('${String.fromCharCode(65 + i)}. ${sections[i].$1}'),
-          ...sections[i].$2,
-        ],
+        // Each section's heading is glued to its body in one non-splitting
+        // Column, so a heading never gets stranded alone at the bottom of a
+        // page with its content pushed to the next one - if the section
+        // doesn't fit in the remaining space, the whole thing (heading
+        // included) moves to a fresh page together.
+        for (var i = 0; i < sections.length; i++)
+          pw.Column(
+            crossAxisAlignment: pw.CrossAxisAlignment.start,
+            children: [
+              _pdfSectionHeading('${String.fromCharCode(65 + i)}. ${sections[i].$1}'),
+              ...sections[i].$2,
+            ],
+          ),
       ],
     ),
   );
