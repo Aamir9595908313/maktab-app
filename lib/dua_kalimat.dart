@@ -62,9 +62,13 @@ class DuaKalimatItem {
 }
 
 Future<List<DuaKalimatItem>> fetchDuaKalimatItems({bool includeInactive = false}) async {
+  // ascending: true is required here - this Supabase client defaults
+  // .order() to descending when the parameter is left out, which
+  // silently reversed both the sequence_order and the title tie-break
+  // (an item with sequence_order 2 showed before one with 1).
   final rows = includeInactive
-      ? await sb.from('dua_kalimat_items').select().order('sequence_order').order('title')
-      : await sb.from('dua_kalimat_items').select().eq('is_active', true).order('sequence_order').order('title');
+      ? await sb.from('dua_kalimat_items').select().order('sequence_order', ascending: true).order('title', ascending: true)
+      : await sb.from('dua_kalimat_items').select().eq('is_active', true).order('sequence_order', ascending: true).order('title', ascending: true);
   return [for (final r in (rows as List)) DuaKalimatItem.fromJson(r as Map<String, dynamic>)];
 }
 
