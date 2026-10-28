@@ -74,7 +74,7 @@ Future<String?> addMonthlyMemberRemote({
   String? address,
   String? remarks,
 }) async {
-  final n = name.trim();
+  final n = toTitleCase(name);
   if (n.isEmpty) return 'Enter the member\'s name';
   final p = digits(phone);
   if (p.length != 10) return 'Enter a 10-digit mobile number';
@@ -117,7 +117,7 @@ Future<String?> editMonthlyMemberRemote({
   String? address,
   String? remarks,
 }) async {
-  final n = name.trim();
+  final n = toTitleCase(name);
   if (n.isEmpty) return 'Enter the member\'s name';
   if (amount <= 0) return 'Enter a monthly contribution amount greater than 0';
   try {

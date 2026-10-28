@@ -55,6 +55,23 @@ bool validDate(String s) {
   }
 }
 
+// Normalizes a human/place/other-entity name to Init Cap (e.g.
+// "mohd  aamir shaikh" -> "Mohd Aamir Shaikh") as it's saved, so data is
+// stored consistently without the person having to type it that way or
+// seeing any hint/warning at entry time. Collapses repeated whitespace and
+// also capitalizes after a hyphen or apostrophe (e.g. "abdul-rahman" ->
+// "Abdul-Rahman", "o'brien" -> "O'Brien") so compound names read right.
+String toTitleCase(String input) {
+  final trimmed = input.trim().replaceAll(RegExp(r'\s+'), ' ');
+  if (trimmed.isEmpty) return trimmed;
+  String capSegment(String seg) => seg.isEmpty ? seg : seg[0].toUpperCase() + seg.substring(1).toLowerCase();
+  return trimmed.split(' ').map((word) {
+    return word.split('-').map((hyphenPart) {
+      return hyphenPart.split("'").map(capSegment).join("'");
+    }).join('-');
+  }).join(' ');
+}
+
 // ---------------- class / syllabus model ----------------
 class Chapter {
   String title;

@@ -1895,7 +1895,7 @@ Future<String?> setUserRoleRemote({
 }) async {
   final p = digits(phone);
   if (p.length != 10) return 'Enter a 10-digit mobile number';
-  final n = name.trim();
+  final n = toTitleCase(name);
   if (n.isEmpty) return 'Enter the name';
   final needsBranches = dbRole != 'super_admin';
   if (needsBranches && branches.isEmpty) return 'Choose at least one Maktab';
@@ -2082,7 +2082,7 @@ Future<void> loadTeachers() async {
 // with a real OTP), just with a different base_role and whether a
 // madrasa scope is required.
 Future<String?> addRoleInviteRemote({required String name, required String phone, required String dbRole, List<String> madrasaNames = const []}) async {
-  final n = name.trim();
+  final n = toTitleCase(name);
   if (n.isEmpty) return 'Enter the name';
   final p = digits(phone);
   if (p.length != 10) return 'Enter a 10-digit mobile number';
@@ -2114,7 +2114,7 @@ Future<String?> addRoleInviteRemote({required String name, required String phone
 // real, persisted account (and fully visible everywhere) the moment the
 // admin saves the form, while still requiring a real OTP for every login.
 Future<String?> addTeacherInviteRemote(String name, String phone, List<String> madrasaNames) async {
-  final n = name.trim();
+  final n = toTitleCase(name);
   if (n.isEmpty) return 'Enter the name';
   final p = digits(phone);
   if (p.length != 10) return 'Enter a 10-digit mobile number';
@@ -2194,7 +2194,7 @@ Future<String?> setTeacherActiveRemote(Account a, bool v) async {
 Future<String?> updateTeacherRemote(Account a, {required String name, required String phone, required List<String> madrasaNames}) async {
   if (st.user?.role != 'super') return 'Only a Super Admin can edit a teacher\'s details.';
   if (a.dbId == null) return "This teacher hasn't logged in yet - edit the pending invite instead.";
-  final n = name.trim();
+  final n = toTitleCase(name);
   if (n.isEmpty) return 'Enter the name';
   final p = digits(phone);
   if (p.length != 10) return 'Enter a 10-digit mobile number';
@@ -2224,7 +2224,7 @@ Future<String?> updateTeacherRemote(Account a, {required String name, required S
 // changing, the row has to move to the new key - delete-then-upsert so a
 // failed insert never leaves the invite silently deleted.
 Future<String?> updatePendingTeacherInviteRemote(Account a, {required String name, required String phone, required List<String> madrasaNames}) async {
-  final n = name.trim();
+  final n = toTitleCase(name);
   if (n.isEmpty) return 'Enter the name';
   final p = digits(phone);
   if (p.length != 10) return 'Enter a 10-digit mobile number';
@@ -2276,7 +2276,8 @@ Future<String?> addStudentRemote({
   bool confirmDuplicate = false,
 }) async {
   final relation = kGuardianRelations.contains(guardianRelation) ? guardianRelation : 'Father';
-  final n = name.trim();
+  final n = toTitleCase(name);
+  final fn = toTitleCase(fatherName);
   if (n.isEmpty) return 'Enter the student name';
   if (gender.isEmpty) return 'Select gender (Male or Female)';
   if (parentPhone.length != 10) return 'Parent mobile number is required (10 digits)';
@@ -2318,7 +2319,7 @@ Future<String?> addStudentRemote({
       'aadhaar_file_ref': 'uploaded_demo',
       'admission_date': start,
       'dob': (dob == null || dob.trim().isEmpty) ? null : dob.trim(),
-      'father_name': fatherName.trim().isEmpty ? null : fatherName.trim(),
+      'father_name': fn.isEmpty ? null : fn,
       'guardian_relation': relation,
       'batch': batch,
     }).select().single();
@@ -2334,7 +2335,7 @@ Future<String?> addStudentRemote({
       aadhaar: true,
       address: address.trim(),
       dob: (dob == null || dob.trim().isEmpty) ? null : dob.trim(),
-      fatherName: fatherName.trim(),
+      fatherName: fn,
       guardianRelation: relation,
       batch: batch,
       dbId: row['id'] as String?,
@@ -2446,7 +2447,9 @@ Future<String> promoteRemote(Student s) async {
 // changed. A return value starting with "DUPLICATE:" is the warning, not
 // an error - same confirm-and-retry pattern as addStudentRemote.
 Future<String?> editStudentRemote(Student s, {String? name, String? parentPhone, String? address, String? madrasa, int? cls, String? dob, String? fatherName, String? guardianRelation, String? batch, bool confirmDuplicate = false}) async {
-  final newName = (name != null && name.trim().isNotEmpty) ? name.trim() : s.name;
+  if (name != null) name = toTitleCase(name);
+  if (fatherName != null) fatherName = toTitleCase(fatherName);
+  final newName = (name != null && name.isNotEmpty) ? name : s.name;
   final newDob = dob != null ? (dob.trim().isEmpty ? null : dob.trim()) : s.dob;
   if (!confirmDuplicate && (newName != s.name || newDob != s.dob)) {
     final dup = st.findActiveDuplicate(newName, newDob, excludeId: s.id);
@@ -2455,14 +2458,14 @@ Future<String?> editStudentRemote(Student s, {String? name, String? parentPhone,
     }
   }
   final patch = <String, Object?>{};
-  if (name != null && name.trim().isNotEmpty) patch['name'] = name.trim();
+  if (name != null && name.isNotEmpty) patch['name'] = name;
   if (parentPhone != null && parentPhone.trim().isNotEmpty) {
     if (digits(parentPhone).length != 10) return 'Parent mobile must be 10 digits';
     patch['parent_phone'] = digits(parentPhone);
   }
   if (address != null) patch['address'] = address.trim().isEmpty ? null : address.trim();
   if (dob != null) patch['dob'] = dob.trim().isEmpty ? null : dob.trim();
-  if (fatherName != null) patch['father_name'] = fatherName.trim().isEmpty ? null : fatherName.trim();
+  if (fatherName != null) patch['father_name'] = fatherName.isEmpty ? null : fatherName;
   if (guardianRelation != null && kGuardianRelations.contains(guardianRelation)) patch['guardian_relation'] = guardianRelation;
   if (batch != null && batch.isNotEmpty) patch['batch'] = batch;
   if (madrasa != null) {
@@ -2496,7 +2499,7 @@ Future<String?> editStudentRemote(Student s, {String? name, String? parentPhone,
 // local list with its real database id attached. Returns null on success
 // or a short message to show the user on failure.
 Future<String?> addMadrasaRemote(String name, String? category) async {
-  final n = name.trim();
+  final n = toTitleCase(name);
   if (n.isEmpty) return 'Enter a Maktab name';
   if (category == null || !kMadrasaCategories.contains(category)) return 'Choose a Maktab Category (Boys, Girls, or Children)';
   if (st.madrasas.any((m) => m.name.toLowerCase() == n.toLowerCase())) return 'This Maktab already exists';
@@ -2531,7 +2534,7 @@ Future<String?> setMadrasaActiveRemote(MadrasaRec m, bool v) async {
 }
 
 Future<String?> renameMadrasaRemote(MadrasaRec m, String name) async {
-  final n = name.trim();
+  final n = toTitleCase(name);
   if (n.isEmpty) return 'Enter a Maktab name';
   if (m.dbId == null) return 'This Maktab was not saved to the database yet.';
   try {
@@ -2571,7 +2574,7 @@ Future<String?> setMadrasaCategoryRemote(MadrasaRec m, String category) async {
 // from classDefs[n] to classDefs[n+1], so classes must stay numbered in
 // order with no gaps).
 Future<String?> addClassRemote(String name, {required bool pageBased, String? bookName, int totalPages = 0}) async {
-  final n = name.trim();
+  final n = toTitleCase(name);
   if (n.isEmpty) return 'Enter a class name';
   final nextNo = (st.classDefs.keys.isEmpty ? 0 : st.classDefs.keys.reduce((a, b) => a > b ? a : b)) + 1;
   try {
@@ -2608,7 +2611,7 @@ Future<String?> setClassActiveRemote(ClassDef cd, bool v) async {
 }
 
 Future<String?> renameClassRemote(ClassDef cd, String name) async {
-  final n = name.trim();
+  final n = toTitleCase(name);
   if (n.isEmpty) return 'Enter a class name';
   if (cd.dbId == null) return 'This class was not saved to the database yet.';
   try {
@@ -2671,7 +2674,7 @@ Future<void> loadClassBooks() async {
 }
 
 Future<String?> addClassBookRemote(ClassDef cd, String name, String description, int totalPages, int sequenceOrder) async {
-  final n = name.trim();
+  final n = toTitleCase(name);
   if (n.isEmpty) return 'Enter a Book name';
   if (cd.dbId == null) return 'This class is not saved to the database yet.';
   try {
@@ -2698,12 +2701,12 @@ Future<String?> updateClassBookRemote(ClassBook b, {String? name, String? descri
   if (b.dbId == null) return 'This Book is not saved to the database yet.';
   try {
     final payload = <String, dynamic>{};
-    if (name != null) payload['name'] = name.trim();
+    if (name != null) payload['name'] = toTitleCase(name);
     if (description != null) payload['description'] = description.trim();
     if (totalPages != null) payload['total_pages'] = totalPages;
     if (sequenceOrder != null) payload['sequence_order'] = sequenceOrder;
     if (payload.isNotEmpty) await sb.from('class_books').update(payload).eq('id', b.dbId as Object);
-    st.updateClassBookLocal(b, name: name?.trim(), description: description?.trim(), totalPages: totalPages, sequenceOrder: sequenceOrder);
+    st.updateClassBookLocal(b, name: name == null ? null : toTitleCase(name), description: description?.trim(), totalPages: totalPages, sequenceOrder: sequenceOrder);
     return null;
   } on PostgrestException catch (e) {
     return 'Could not save: ${e.message}';
@@ -2779,7 +2782,7 @@ Future<String?> markBookPageCompleteRemote(Student s, ClassBook b, int pageNo, S
 
 // Same pattern as addMadrasaRemote, for public.courses.
 Future<String?> addCourseRemote(String name, String description, {String code = ''}) async {
-  final n = name.trim();
+  final n = toTitleCase(name);
   if (n.isEmpty) return 'Enter an Add-on Course name';
   try {
     final row = await sb.from('courses').insert({'name': n, 'description': description.trim(), 'course_code': code.trim()}).select().single();
@@ -2807,7 +2810,7 @@ Future<String?> setCourseActiveRemote(Course c, bool v) async {
 }
 
 Future<String?> renameCourseRemote(Course c, String name, String description, {String? code}) async {
-  final n = name.trim();
+  final n = toTitleCase(name);
   if (n.isEmpty) return 'Enter an Add-on Course name';
   if (c.dbId == null) return 'This Add-on Course was not saved to the database yet.';
   try {

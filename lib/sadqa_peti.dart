@@ -126,11 +126,11 @@ Future<String?> createSadqaPetiRemote({
 }) async {
   try {
     final row = await sb.rpc('create_sadqa_peti', params: {
-      'p_shopkeeper_name': name.trim(),
+      'p_shopkeeper_name': toTitleCase(name),
       'p_shopkeeper_phone': phone.trim(),
-      'p_shop_name': shop.trim(),
+      'p_shop_name': toTitleCase(shop),
       'p_shop_address': address,
-      'p_area': area,
+      'p_area': area == null ? null : toTitleCase(area),
       'p_box_given_date': _isoDate(givenDate),
       'p_box_number': boxNumber,
       'p_frequency_months': freqMonths,
@@ -159,23 +159,26 @@ Future<String?> updateSadqaPetiRemote(SadqaPeti p, {
   String? remarks,
 }) async {
   try {
+    final n = toTitleCase(name);
+    final sh = toTitleCase(shop);
+    final ar = area == null ? null : toTitleCase(area);
     await sb.from('sadqa_petis').update({
-      'shopkeeper_name': name.trim(),
+      'shopkeeper_name': n,
       'shopkeeper_phone': phone.trim(),
-      'shop_name': shop.trim(),
+      'shop_name': sh,
       'shop_address': address,
-      'area': area,
+      'area': ar,
       'box_number': boxNumber,
       'collection_frequency_months': freqMonths,
       'remarks': remarks,
       'updated_by': st.user?.dbId,
     }).eq('id', p.id);
     p
-      ..shopkeeperName = name.trim()
+      ..shopkeeperName = n
       ..shopkeeperPhone = phone.trim()
-      ..shopName = shop.trim()
+      ..shopName = sh
       ..shopAddress = address
-      ..area = area
+      ..area = ar
       ..boxNumber = boxNumber
       ..frequencyMonths = freqMonths
       ..remarks = remarks;
