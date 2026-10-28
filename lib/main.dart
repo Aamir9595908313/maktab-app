@@ -224,35 +224,54 @@ Future<void> loadMasterData() async {
         ),
     ]);
 
-    await loadTeachers();
-    await loadChapters();
-    await loadClassParas();
-    await loadClassBooks();
-    await loadClassCourseAssignments();
-    await loadAttendance();
-    await loadAttendanceSessions();
-    await loadEvents();
-    await loadNotifTemplates();
-    await loadAboutUsData();
-    await loadSyllabusProgress();
-    await loadBookProgress();
-    await loadCourseEnrollments();
-    await loadMyTeacherAttendance();
-    await loadAllTeacherAttendanceToday();
-    await loadComplaints();
-    await loadCustomRoles();
-    await loadCommitteeMembers();
-    await loadMaktabAdmins();
-    await loadFees();
-    await loadAnnouncements();
-    await loadLeaves();
-    await loadSadqaCollectors(); // needed first: decides whether this account can even see Sadqa Peti screens
-    await loadSadqaPetis();
-    await loadSadqaCollections();
-    await loadAdminNotifications();
-    await loadAcademicYears();
-    await loadExaminations();
-    await loadMyResultNotifs();
+    // These 24 loads only ever read the madrasas/courses/classes/students
+    // already loaded above - none of them reads another load*() call's
+    // result - so there's no reason to wait for them one at a time. Each
+    // future is individually caught so one failing endpoint can't abort
+    // the rest of the batch via Future.wait; previously a single failure
+    // here (via the outer try/catch) silently stopped every load after
+    // it, so this is at least as resilient as before, never less.
+    await Future.wait([
+      loadTeachers().catchError((_) {}),
+      loadChapters().catchError((_) {}),
+      loadClassParas().catchError((_) {}),
+      loadClassBooks().catchError((_) {}),
+      loadClassCourseAssignments().catchError((_) {}),
+      loadAttendance().catchError((_) {}),
+      loadAttendanceSessions().catchError((_) {}),
+      loadEvents().catchError((_) {}),
+      loadNotifTemplates().catchError((_) {}),
+      loadAboutUsData().catchError((_) {}),
+      loadCourseEnrollments().catchError((_) {}),
+      loadMyTeacherAttendance().catchError((_) {}),
+      loadComplaints().catchError((_) {}),
+      loadCustomRoles().catchError((_) {}),
+      loadCommitteeMembers().catchError((_) {}),
+      loadMaktabAdmins().catchError((_) {}),
+      loadFees().catchError((_) {}),
+      loadAnnouncements().catchError((_) {}),
+      loadLeaves().catchError((_) {}),
+      loadSadqaCollectors().catchError((_) {}), // must finish before the Sadqa Peti batch below
+      loadAdminNotifications().catchError((_) {}),
+      loadAcademicYears().catchError((_) {}),
+      loadExaminations().catchError((_) {}),
+      loadMyResultNotifs().catchError((_) {}),
+    ]);
+
+    // These read data the batch above just populated - loadSyllabusProgress
+    // needs st.chapters (loadChapters), loadBookProgress needs each class's
+    // book list (loadClassBooks), loadAllTeacherAttendanceToday needs
+    // st.teacherAccounts (loadTeachers), and the two Sadqa Peti loads keep
+    // running after loadSadqaCollectors per its existing comment above -
+    // but they don't depend on each other, so they still run in parallel
+    // rather than one-by-one.
+    await Future.wait([
+      loadSyllabusProgress().catchError((_) {}),
+      loadBookProgress().catchError((_) {}),
+      loadAllTeacherAttendanceToday().catchError((_) {}),
+      loadSadqaPetis().catchError((_) {}),
+      loadSadqaCollections().catchError((_) {}),
+    ]);
   } catch (_) {
     // Swallow - see note above. The Master Data screen still works off
     // whatever was already loaded; a retry happens next time this is
