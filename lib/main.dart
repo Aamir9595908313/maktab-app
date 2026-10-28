@@ -22,6 +22,7 @@ import 'prayer_notifications.dart';
 import 'monthly_members.dart';
 import 'results.dart';
 import 'help.dart';
+import 'dua_kalimat.dart';
 
 final AppState st = AppState();
 const Color kGreen = Color(0xFF054D00);
@@ -3785,6 +3786,7 @@ class _GuestHomeState extends State<GuestHome> {
               _bottomIcon(context, Icons.menu_book, 'Surah Yaseen', () => openTool(context, const SurahYaseenScreen())),
               _bottomIcon(context, Icons.menu_book, 'Durood e Taj', () => openTool(context, const DuroodTajScreen())),
               _bottomIcon(context, Icons.info_outline, 'About Us', () => openTool(context, const AboutUsScreen())),
+              _bottomIcon(context, Icons.auto_stories, "Dua'iya Kalimat", () => openTool(context, const DuaKalimatGalleryScreen())),
             ]),
           ],
         ),
@@ -4121,6 +4123,7 @@ class _ShellState extends State<Shell> {
             ListTile(leading: const Icon(Icons.menu_book), title: const Text('Surah Yaseen'), onTap: () { Navigator.pop(context); openTool(context, const SurahYaseenScreen()); }),
             ListTile(leading: const Icon(Icons.menu_book), title: const Text('Durood e Taj'), onTap: () { Navigator.pop(context); openTool(context, const DuroodTajScreen()); }),
             ListTile(leading: const Icon(Icons.info_outline), title: const Text('About Us'), onTap: () { Navigator.pop(context); openTool(context, const AboutUsScreen()); }),
+            ListTile(leading: const Icon(Icons.auto_stories), title: const Text("Dua'iya Kalimat"), onTap: () { Navigator.pop(context); openTool(context, const DuaKalimatGalleryScreen()); }),
             const Divider(),
             ListTile(
               leading: const Icon(Icons.logout),
@@ -8956,6 +8959,12 @@ class _MasterDataViewState extends State<MasterDataView> {
           label: const Text('Notification Template Management'),
           onPressed: () => pushPage(context, 'Notification Templates', const NotifTemplateListView()),
         ),
+        const SizedBox(height: 8),
+        OutlinedButton.icon(
+          icon: const Icon(Icons.auto_stories),
+          label: const Text("Dua'iya Kalimat Management"),
+          onPressed: () => pushPage(context, "Dua'iya Kalimat Management", const DuaKalimatManagementView()),
+        ),
       ], // end isSuper (Super Admin Tools)
       if (_show(MasterDataSection.classes)) ...[
       h('Classes', icon: Icons.menu_book),
@@ -9581,7 +9590,7 @@ class MasterDataDashboard extends StatelessWidget {
         if (canManageOrg) sectionTile('Committee Members', Icons.diversity_3, 'Invite', MasterDataSection.committee),
         if (canManageOrg) sectionTile('Users and Roles', Icons.admin_panel_settings, 'Permissions', MasterDataSection.usersRoles),
         if (canManageOrg) sectionTile('Add-on Courses', Icons.auto_stories, '${st.courses.length}', MasterDataSection.addonCourses),
-        if (isSuper) sectionTile('Super Admin Tools', Icons.settings_suggest, 'About Us, Notifications', MasterDataSection.superTools),
+        if (isSuper) sectionTile('Super Admin Tools', Icons.settings_suggest, "About Us, Notifications, Dua'iya Kalimat", MasterDataSection.superTools),
       ]),
     ]);
   }
