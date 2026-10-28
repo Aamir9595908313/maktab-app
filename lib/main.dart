@@ -10277,6 +10277,28 @@ pw.Widget _pdfSectionHeading(String text) => pw.Padding(
       ]),
     );
 
+// Two label:value pairs per row instead of _pdfKv's one - halves how much
+// vertical (blank) space a details section with many short fields takes
+// up on the page, which matters once this report is meant to double as a
+// printed result/certificate rather than just an internal record.
+pw.Widget _pdfKvGrid(List<(String, String)> pairs) {
+  final rows = <pw.TableRow>[];
+  for (var i = 0; i < pairs.length; i += 2) {
+    final a = pairs[i];
+    final b = i + 1 < pairs.length ? pairs[i + 1] : null;
+    rows.add(pw.TableRow(children: [
+      pw.Padding(padding: const pw.EdgeInsets.only(bottom: 6, right: 6), child: pw.Text(a.$1, style: pw.TextStyle(fontSize: 9, color: PdfColors.grey700))),
+      pw.Padding(padding: const pw.EdgeInsets.only(bottom: 6, right: 14), child: pw.Text(a.$2, style: const pw.TextStyle(fontSize: 9, fontWeight: pw.FontWeight.bold))),
+      pw.Padding(padding: const pw.EdgeInsets.only(bottom: 6, right: 6), child: pw.Text(b?.$1 ?? '', style: pw.TextStyle(fontSize: 9, color: PdfColors.grey700))),
+      pw.Padding(padding: const pw.EdgeInsets.only(bottom: 6), child: pw.Text(b?.$2 ?? '', style: const pw.TextStyle(fontSize: 9, fontWeight: pw.FontWeight.bold))),
+    ]));
+  }
+  return pw.Table(
+    columnWidths: const {0: pw.FlexColumnWidth(1), 1: pw.FlexColumnWidth(1.3), 2: pw.FlexColumnWidth(1), 3: pw.FlexColumnWidth(1.3)},
+    children: rows,
+  );
+}
+
 Future<Uint8List> buildStudentHistoryPdf(Student s) async {
   final logoBytes = (await rootBundle.load('assets/logo.png')).buffer.asUint8List();
   final logoImage = pw.MemoryImage(logoBytes);
@@ -10309,6 +10331,10 @@ Future<Uint8List> buildStudentHistoryPdf(Student s) async {
   }
   final completedCourses = courseRows.where((r) => r[1] == 'Completed/Approved').length;
   final pendingApprovalCourses = courseRows.where((r) => r[1] == 'Pending Approval').length;
+  // Section D shows completed courses only - a result/certificate document
+  // isn't the place to list courses a student hasn't finished yet. The
+  // full courseRows (every status) is kept above for the Section G counts.
+  final completedCourseRows = courseRows.where((r) => r[1] == 'Completed/Approved').toList();
 
   // ---- Section E source data: one real loadMonthAttendance call per
   // calendar month from admission to the current month - same function,
@@ -10405,33 +10431,38 @@ Future<Uint8List> buildStudentHistoryPdf(Student s) async {
         ]),
       ]),
       build: (ctx) => [
-        pw.Row(crossAxisAlignment: pw.CrossAxisAlignment.center, children: [
+        // Logo mirrored on both sides, title block centered between them -
+        // a certificate-style masthead now that this report also serves
+        // as a result/certificate document, not just an internal record.
+        pw.Row(crossAxisAlignment: pw.CrossAxisAlignment.center, mainAxisAlignment: pw.MainAxisAlignment.center, children: [
           pw.Image(logoImage, width: 54, height: 54),
-          pw.SizedBox(width: 12),
-          pw.Expanded(
-            child: pw.Column(crossAxisAlignment: pw.CrossAxisAlignment.start, children: [
-              pw.Text('Maktab-E-Tajushshriah', style: pw.TextStyle(fontSize: 18, fontWeight: pw.FontWeight.bold, color: PdfColors.green900)),
-              pw.Text('Faiz-E-Raza Group Mehkar', style: const pw.TextStyle(fontSize: 10, color: PdfColors.grey700)),
-              pw.SizedBox(height: 4),
-              pw.Text('Student Complete History Report', style: pw.TextStyle(fontSize: 13, fontWeight: pw.FontWeight.bold)),
-              pw.Text('Generated: $generatedOn  -  Period: Admission to date', style: const pw.TextStyle(fontSize: 8, color: PdfColors.grey700)),
-            ]),
-          ),
+          pw.SizedBox(width: 14),
+          pw.Column(mainAxisSize: pw.MainAxisSize.min, crossAxisAlignment: pw.CrossAxisAlignment.center, children: [
+            pw.Text('Maktab-E-Tajushshriah', style: pw.TextStyle(fontSize: 18, fontWeight: pw.FontWeight.bold, color: PdfColors.green900), textAlign: pw.TextAlign.center),
+            pw.Text('Faiz-E-Raza Group Mehkar', style: const pw.TextStyle(fontSize: 10, color: PdfColors.grey700), textAlign: pw.TextAlign.center),
+            pw.SizedBox(height: 4),
+            pw.Text('Student Complete History Report', style: pw.TextStyle(fontSize: 13, fontWeight: pw.FontWeight.bold), textAlign: pw.TextAlign.center),
+            pw.Text('Generated: $generatedOn  -  Period: Admission to date', style: const pw.TextStyle(fontSize: 8, color: PdfColors.grey700), textAlign: pw.TextAlign.center),
+          ]),
+          pw.SizedBox(width: 14),
+          pw.Image(logoImage, width: 54, height: 54),
         ]),
         pw.Divider(color: PdfColors.green200, thickness: 2),
 
         _pdfSectionHeading('A. Student Details'),
-        _pdfKv('Student Name', s.name),
-        _pdfKv('Student ID', s.key),
-        _pdfKv('Date of Birth', s.dob == null ? '-' : fmtDate(s.dob)),
-        _pdfKv('Gender', s.gender),
-        _pdfKv('Admission Date', fmtDate(s.start)),
-        _pdfKv('Status', s.status),
-        _pdfKv('Maktab', s.madrasa),
-        _pdfKv('Category', category ?? '-'),
-        _pdfKv('Current Class', cd?.name ?? 'Class ${s.cls}'),
-        _pdfKv(s.guardianRelation == 'Husband' ? "Husband's Name" : "Father's Name", s.fatherName.isEmpty ? '-' : s.fatherName),
-        _pdfKv('Parent Mobile Number', s.parentPhone.isEmpty ? '-' : s.parentPhone),
+        _pdfKvGrid([
+          ('Student Name', s.name),
+          ('Student ID', s.key),
+          ('Date of Birth', s.dob == null ? '-' : fmtDate(s.dob)),
+          ('Gender', s.gender),
+          ('Admission Date', fmtDate(s.start)),
+          ('Status', s.status),
+          ('Maktab', s.madrasa),
+          ('Category', category ?? '-'),
+          ('Current Class', cd?.name ?? 'Class ${s.cls}'),
+          (s.guardianRelation == 'Husband' ? "Husband's Name" : "Father's Name", s.fatherName.isEmpty ? '-' : s.fatherName),
+          ('Parent Mobile Number', s.parentPhone.isEmpty ? '-' : s.parentPhone),
+        ]),
 
         _pdfSectionHeading('B. Current Class Details'),
         pw.Text(
@@ -10447,12 +10478,12 @@ Future<Uint8List> buildStudentHistoryPdf(Student s) async {
         _pdfKv('Completion %', prog.total == 0 ? 'N/A' : '${prog.pct}%'),
         _pdfKv('Pending Items', prog.total == 0 ? 'N/A' : '${prog.total - prog.n}'),
 
-        _pdfSectionHeading('D. Course Completion History'),
-        if (courseRows.isEmpty) pw.Text('No add-on courses assigned to this student yet.', style: const pw.TextStyle(fontSize: 9)),
-        if (courseRows.isNotEmpty)
+        _pdfSectionHeading('D. Completed Courses'),
+        if (completedCourseRows.isEmpty) pw.Text('No completed add-on courses for this student yet.', style: const pw.TextStyle(fontSize: 9)),
+        if (completedCourseRows.isNotEmpty)
           pw.Table.fromTextArray(
-            headers: const ['Course', 'Status', 'Completed On', 'Approved'],
-            data: courseRows,
+            headers: const ['Course', 'Completed On', 'Approved'],
+            data: [for (final r in completedCourseRows) [r[0], r[2], r[3]]],
             cellStyle: const pw.TextStyle(fontSize: 8),
             headerStyle: pw.TextStyle(fontSize: 8, fontWeight: pw.FontWeight.bold),
             headerDecoration: const pw.BoxDecoration(color: PdfColors.green50),
@@ -10517,15 +10548,17 @@ Future<Uint8List> buildStudentHistoryPdf(Student s) async {
         // or placeholder content.
 
         _pdfSectionHeading('G. Overall Student Summary'),
-        _pdfKv('Current Maktab / Class', '${s.madrasa} - ${cd?.name ?? 'Class ${s.cls}'}'),
-        _pdfKv('Syllabus Completion', prog.total == 0 ? 'N/A' : '${prog.pct}%'),
-        _pdfKv('Courses Completed', '$completedCourses'),
-        _pdfKv('Courses Awaiting Approval', '$pendingApprovalCourses'),
-        _pdfKv('Overall Attendance % (full history)', overallPct == null ? 'N/A' : '${overallPct.toStringAsFixed(2)}%'),
-        _pdfKv('Total Eligible Sessions', '$totalEligible'),
-        _pdfKv('Total Present / Absent', '$totalPresent / $totalAbsent'),
-        _pdfKv('Total Not Submitted', '$totalNotRecorded'),
-        _pdfKv('Published Examinations Passed / Failed', '$examsPassed / $examsFailed'),
+        _pdfKvGrid([
+          ('Current Maktab / Class', '${s.madrasa} - ${cd?.name ?? 'Class ${s.cls}'}'),
+          ('Syllabus Completion', prog.total == 0 ? 'N/A' : '${prog.pct}%'),
+          ('Courses Completed', '$completedCourses'),
+          ('Courses Awaiting Approval', '$pendingApprovalCourses'),
+          ('Overall Attendance % (full history)', overallPct == null ? 'N/A' : '${overallPct.toStringAsFixed(2)}%'),
+          ('Total Eligible Sessions', '$totalEligible'),
+          ('Total Present / Absent', '$totalPresent / $totalAbsent'),
+          ('Total Not Submitted', '$totalNotRecorded'),
+          ('Published Examinations Passed / Failed', '$examsPassed / $examsFailed'),
+        ]),
       ],
     ),
   );
