@@ -10192,8 +10192,11 @@ class _StudentHistoryReportScreenState extends State<StudentHistoryReportScreen>
     });
     try {
       final bytes = await buildStudentHistoryPdf(s);
-      final safeId = s.key.replaceAll(RegExp(r'[^A-Za-z0-9]+'), '_');
-      await Printing.sharePdf(bytes: bytes, filename: 'Student_History_${safeId}_${fd(DateTime.now())}.pdf');
+      final safeName = s.name.trim().replaceAll(RegExp(r'[^A-Za-z0-9]+'), '_');
+      final safeBranch = s.madrasa.trim().replaceAll(RegExp(r'[^A-Za-z0-9]+'), '_');
+      final now = DateTime.now();
+      final shortDate = '${now.day.toString().padLeft(2, '0')}${now.month.toString().padLeft(2, '0')}${(now.year % 100).toString().padLeft(2, '0')}';
+      await Printing.sharePdf(bytes: bytes, filename: '${safeName}_${safeBranch}_$shortDate.pdf');
     } catch (_) {
       if (mounted) setState(() => error = 'Could not generate the report. Check your connection and try again.');
     } finally {
