@@ -257,6 +257,156 @@ const List<String> _gMonthsUr = ['جنوری', 'فروری', 'مارچ', 'اپر
 const List<String> _wdEn = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 const List<String> _wdUr = ['پیر', 'منگل', 'بدھ', 'جمعرات', 'جمعہ', 'ہفتہ', 'اتوار'];
 
+// A single recurring Islamic-calendar event: matched purely by its Hijri
+// (month, day) - the same pair every Hijri year, with no year/Gregorian
+// date stored at all, so recurrence is automatic (plain equality, not date
+// math) and nothing here needs updating year to year.
+class _IslamicEvent {
+  final int hijriMonth;
+  final int hijriDay;
+  final String name;
+  final String? place;
+  _IslamicEvent({required this.hijriMonth, required this.hijriDay, required this.name, this.place});
+}
+
+// Loaded once and cached at module scope (not per CalendarScreen instance),
+// so repeated visits to the Calendar screen - by a guest or a logged-in
+// user alike - reuse the same fetch instead of hitting Supabase again, per
+// the feature brief's "avoid unnecessary repeated database/API requests".
+// Fetched the same way _AboutUsScreenState does: directly via
+// Supabase.instance.client rather than through main.dart's `sb` getter,
+// because this file doesn't import main.dart and this screen is reachable
+// before login. The islamic_calendar_events_read_all RLS policy allows
+// anon + authenticated select, so this works identically for guest and
+// signed-in users.
+List<_IslamicEvent>? _islamicEventsCache;
+Future<List<_IslamicEvent>>? _islamicEventsFuture;
+
+Future<List<_IslamicEvent>> _loadIslamicEvents() {
+  final cached = _islamicEventsCache;
+  if (cached != null) return Future.value(cached);
+  return _islamicEventsFuture ??= Supabase.instance.client
+      .from('islamic_calendar_events')
+      .select('hijri_month, hijri_day, name, place')
+      .eq('is_active', true)
+      .then((rows) {
+        final list = (rows as List)
+            .map((r) => _IslamicEvent(
+                  hijriMonth: r['hijri_month'] as int,
+                  hijriDay: r['hijri_day'] as int,
+                  name: r['name'] as String,
+                  place: r['place'] as String?,
+                ))
+            .toList();
+        _islamicEventsCache = list;
+        return list;
+      })
+      .catchError((_) {
+        // Network/RLS failure: behave exactly as the calendar did before
+        // this feature existed - no popups, no today's-event banner -
+        // rather than breaking the rest of the screen. Not cached, so the
+        // next screen visit retries.
+        _islamicEventsFuture = null;
+        return <_IslamicEvent>[];
+      });
+}
+
+// A slow, smooth, pausable horizontal "running" banner for today's event
+// text. Built manually (AnimationController + SingleTickerProviderStateMixin,
+// the same pattern already used elsewhere in this app for _LoginSplash /
+// _AnnouncementBanner / _SpinningLogo in main.dart) rather than adding a new
+// marquee/ticker package dependency.
+class _EventMarquee extends StatefulWidget {
+  final String text;
+  final VoidCallback onTap;
+  const _EventMarquee({required this.text, required this.onTap});
+  @override
+  State<_EventMarquee> createState() => _EventMarqueeState();
+}
+
+class _EventMarqueeState extends State<_EventMarquee> with SingleTickerProviderStateMixin {
+  late AnimationController _c;
+  bool _paused = false;
+
+  Duration _durationFor(String text) => Duration(milliseconds: (text.length * 90).clamp(6000, 30000));
+
+  @override
+  void initState() {
+    super.initState();
+    _c = AnimationController(vsync: this, duration: _durationFor(widget.text))..repeat();
+  }
+
+  @override
+  void didUpdateWidget(covariant _EventMarquee old) {
+    super.didUpdateWidget(old);
+    if (old.text != widget.text) {
+      _c.duration = _durationFor(widget.text);
+      if (!_paused) _c.repeat();
+    }
+  }
+
+  void _togglePause() {
+    setState(() => _paused = !_paused);
+    if (_paused) {
+      _c.stop();
+    } else {
+      _c.repeat();
+    }
+  }
+
+  @override
+  void dispose() {
+    _c.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(children: [
+      Expanded(
+        child: LayoutBuilder(builder: (context, constraints) {
+          final tp = TextPainter(
+            text: TextSpan(text: widget.text, style: const TextStyle(fontSize: 15.5, fontWeight: FontWeight.w600, color: Colors.white)),
+            textDirection: TextDirection.ltr,
+            maxLines: 1,
+          )..layout();
+          final boxWidth = constraints.maxWidth;
+          final travel = tp.width + boxWidth;
+          return GestureDetector(
+            onTap: widget.onTap,
+            child: ClipRect(
+              child: SizedBox(
+                height: 24,
+                width: boxWidth,
+                child: AnimatedBuilder(
+                  animation: _c,
+                  builder: (context, _) {
+                    final dx = boxWidth - _c.value * travel;
+                    return Stack(clipBehavior: Clip.none, children: [
+                      Positioned(
+                        left: dx,
+                        top: 0,
+                        child: Text(widget.text, maxLines: 1, softWrap: false, style: const TextStyle(fontSize: 15.5, fontWeight: FontWeight.w600, color: Colors.white)),
+                      ),
+                    ]);
+                  },
+                ),
+              ),
+            ),
+          );
+        }),
+      ),
+      IconButton(
+        onPressed: _togglePause,
+        icon: Icon(_paused ? Icons.play_arrow : Icons.pause, color: Colors.white70, size: 20),
+        tooltip: _paused ? 'Resume' : 'Pause',
+        padding: EdgeInsets.zero,
+        constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+      ),
+    ]);
+  }
+}
+
 class CalendarScreen extends StatefulWidget {
   const CalendarScreen({super.key});
   @override
@@ -278,10 +428,16 @@ class _CalendarScreenState extends State<CalendarScreen> {
   // applies for everyone until changed again.
   int hijriOffset = 0;
 
+  // Islamic events loaded once (via the module-level cache above) and
+  // indexed by 'hijriMonth-hijriDay' for O(1) lookup per calendar cell and
+  // for today's date, both below.
+  Map<String, List<_IslamicEvent>> _eventsByDate = {};
+
   @override
   void initState() {
     super.initState();
     _loadOffset();
+    _loadEvents();
   }
 
   Future<void> _loadOffset() async {
@@ -294,6 +450,70 @@ class _CalendarScreenState extends State<CalendarScreen> {
     setState(() => hijriOffset = v);
     final prefs = await SharedPreferences.getInstance();
     await prefs.setInt('hijri_offset_days', v);
+  }
+
+  Future<void> _loadEvents() async {
+    final events = await _loadIslamicEvents();
+    if (!mounted) return;
+    final map = <String, List<_IslamicEvent>>{};
+    for (final e in events) {
+      map.putIfAbsent('${e.hijriMonth}-${e.hijriDay}', () => []).add(e);
+    }
+    setState(() => _eventsByDate = map);
+  }
+
+  List<_IslamicEvent> _eventsOn(int hMonth, int hDay) => _eventsByDate['$hMonth-$hDay'] ?? const [];
+
+  void _showEventPopup(List<_IslamicEvent> events, int hMonth, int hDay, int hYear) {
+    final months = urdu ? _hijriMonthsUr : _hijriMonthsEn;
+    final dateLabel = '$hDay ${months[hMonth - 1]} $hYear ${urdu ? 'ہجری' : 'AH'}';
+    showDialog(
+      context: context,
+      builder: (dialogContext) => Dialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 440),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(18, 16, 10, 16),
+            child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Row(children: [
+                const Icon(Icons.event, color: _kGreen),
+                const SizedBox(width: 8),
+                Expanded(child: Text(dateLabel, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: _kGreen))),
+                IconButton(
+                  onPressed: () => Navigator.of(dialogContext).pop(),
+                  icon: const Icon(Icons.close),
+                  tooltip: urdu ? 'بند کریں' : 'Close',
+                ),
+              ]),
+              const Divider(height: 18),
+              ConstrainedBox(
+                constraints: BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.5),
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.only(right: 8),
+                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    for (final e in events) ...[
+                      Text(e.name, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
+                      if (e.place != null && e.place!.isNotEmpty)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 3, bottom: 12),
+                          child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                            const Icon(Icons.location_on, size: 14, color: Colors.black45),
+                            const SizedBox(width: 4),
+                            Expanded(child: Text(e.place!, style: const TextStyle(fontSize: 12.5, color: Colors.black54))),
+                          ]),
+                        )
+                      else
+                        const SizedBox(height: 12),
+                    ],
+                  ]),
+                ),
+              ),
+            ]),
+          ),
+        ),
+      ),
+    );
   }
 
   @override
@@ -326,6 +546,44 @@ class _CalendarScreenState extends State<CalendarScreen> {
               ]),
             ),
           ),
+          // Today's Islamic Event: fully hidden when nothing matches today's
+          // Hijri (month, day) - no card, no space reserved - and otherwise a
+          // single non-intrusive running banner (never an auto-opened
+          // popup), covering every matching event in one scrolling line.
+          // Tapping it opens the same detail popup a calendar-cell tap would.
+          Builder(builder: (context) {
+            final todayEvents = _eventsOn(hToday[1], hToday[2]);
+            if (todayEvents.isEmpty) return const SizedBox.shrink();
+            final text = todayEvents.map((e) {
+              final place = e.place;
+              return (place != null && place.isNotEmpty) ? '${e.name} — $place' : e.name;
+            }).join('     •     ');
+            return Column(children: [
+              const SizedBox(height: 10),
+              Material(
+                color: _kGreen,
+                borderRadius: BorderRadius.circular(10),
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(10),
+                  onTap: () => _showEventPopup(todayEvents, hToday[1], hToday[2], hToday[0]),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    child: Row(children: [
+                      const Icon(Icons.campaign, color: _kGold, size: 22),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
+                          Text(urdu ? 'آج کا اسلامی دن' : "Today's Islamic Event", style: const TextStyle(color: Colors.white70, fontSize: 10.5, fontWeight: FontWeight.bold)),
+                          const SizedBox(height: 2),
+                          _EventMarquee(text: text, onTap: () => _showEventPopup(todayEvents, hToday[1], hToday[2], hToday[0])),
+                        ]),
+                      ),
+                    ]),
+                  ),
+                ),
+              ),
+            ]);
+          }),
           const SizedBox(height: 8),
           Row(mainAxisAlignment: MainAxisAlignment.center, children: [
             Text(
@@ -394,21 +652,35 @@ class _CalendarScreenState extends State<CalendarScreen> {
                   // Both dates in the one box - the Gregorian day large on
                   // top, the Hijri day (same month shown in the header
                   // above, so just the day number here) small underneath,
-                  // same pairing a printed Razvi calendar box shows.
-                  final hDay = _gregorianToHijri(date.add(Duration(days: hijriOffset)))[2];
-                  return Container(
-                    margin: const EdgeInsets.all(1.5),
-                    decoration: BoxDecoration(
-                      color: isToday ? _kGreen : (isFriday ? const Color(0xFFFFF3CF) : const Color(0xFFFAFAF5)),
-                      borderRadius: BorderRadius.circular(6),
-                      border: Border.all(color: isToday ? _kGreen : const Color(0xFFE3E0D0), width: 1),
+                  // same pairing a printed Razvi calendar box shows. Needs
+                  // the full (month, day) pair - not just the day - to look
+                  // up events correctly, since a Gregorian month view can
+                  // span two different Hijri months.
+                  final hDate = _gregorianToHijri(date.add(Duration(days: hijriOffset)));
+                  final hMonth = hDate[1];
+                  final hDay = hDate[2];
+                  final hYear = hDate[0];
+                  final matches = _eventsOn(hMonth, hDay);
+                  return GestureDetector(
+                    onTap: matches.isEmpty ? null : () => _showEventPopup(matches, hMonth, hDay, hYear),
+                    child: Container(
+                      margin: const EdgeInsets.all(1.5),
+                      decoration: BoxDecoration(
+                        color: isToday ? _kGreen : (isFriday ? const Color(0xFFFFF3CF) : const Color(0xFFFAFAF5)),
+                        borderRadius: BorderRadius.circular(6),
+                        border: Border.all(color: isToday ? _kGreen : const Color(0xFFE3E0D0), width: 1),
+                      ),
+                      alignment: Alignment.center,
+                      child: Column(mainAxisAlignment: MainAxisAlignment.center, mainAxisSize: MainAxisSize.min, children: [
+                        Text('$d', style: TextStyle(color: isToday ? Colors.white : Colors.black87, fontWeight: isFriday || isToday ? FontWeight.bold : FontWeight.normal, fontSize: 24)),
+                        const SizedBox(height: 2),
+                        Text('$hDay', style: TextStyle(color: isToday ? Colors.white70 : const Color(0xFFC62828), fontSize: 14, fontWeight: FontWeight.w600)),
+                        if (matches.isNotEmpty) ...[
+                          const SizedBox(height: 1),
+                          Container(width: 5, height: 5, decoration: BoxDecoration(shape: BoxShape.circle, color: isToday ? Colors.white : _kGold)),
+                        ],
+                      ]),
                     ),
-                    alignment: Alignment.center,
-                    child: Column(mainAxisAlignment: MainAxisAlignment.center, mainAxisSize: MainAxisSize.min, children: [
-                      Text('$d', style: TextStyle(color: isToday ? Colors.white : Colors.black87, fontWeight: isFriday || isToday ? FontWeight.bold : FontWeight.normal, fontSize: 24)),
-                      const SizedBox(height: 2),
-                      Text('$hDay', style: TextStyle(color: isToday ? Colors.white70 : const Color(0xFFC62828), fontSize: 14, fontWeight: FontWeight.w600)),
-                    ]),
                   );
                 }),
             ],
@@ -419,8 +691,8 @@ class _CalendarScreenState extends State<CalendarScreen> {
               padding: const EdgeInsets.all(12),
               child: Text(
                 urdu
-                    ? 'جمعہ کا دن نمایاں ہے۔ لاگ ان کرنے کے بعد آپ کے مدرسے کی تعطیلات اور تقریبات بھی یہاں نظر آئیں گی۔'
-                    : "Fridays are highlighted. Once you log in, your madrasa's holidays and events also appear here.",
+                    ? 'جمعہ کا دن نمایاں ہے۔ سنہری نشان والی تاریخ پر کسی اسلامی واقعہ کی تفصیل دیکھنے کے لیے ٹیپ کریں۔'
+                    : 'Fridays are highlighted. Tap a date with a gold dot to see its Islamic event.',
                 style: const TextStyle(fontSize: 12.5, color: Colors.black54),
               ),
             ),
