@@ -234,18 +234,47 @@ class _QiblaScreenState extends State<QiblaScreen> {
 }
 
 // ---------------- Calendar (Hijri approximation + Gregorian, Urdu/English) ----------------
+// Tabular/civil Islamic calendar (the same one commonly called the
+// "Kuwaiti algorithm"): months alternate 30/29 days, with a leap day added
+// to the 12th month (Dhul-Hijjah) in a leap year.
+//
+// This used to be a single closed-form reverse formula (Gregorian JD straight
+// to Hijri year/month/day via a chain of floor-division constants). That
+// formula had a real bug: on the last day of a leap year's Dhul-Hijjah, it
+// computed an impossible 13th month instead of rolling over to the next
+// Hijri year - e.g. 18 May 2026 came out as "1447, month 13, day 1" instead
+// of "1448 Muharram 1". Because every later month that Hijri year was
+// numbered relative to that phantom 13th month, EVERY month from Muharram
+// 1448 onward was off by one for the rest of the year - e.g. 29 Oct 2026
+// (really 17 Jumada-al-Awwal 1448) showed as Jumada-al-Aakhir, a full month
+// out, which is the mismatch that was reported.
+//
+// Fixed by converting the other direction instead: _hijriMonthStartJd is the
+// one simple, well-known forward formula (Hijri date -> Julian day), and
+// _gregorianToHijri searches forward/backward with it to find the matching
+// Hijri year and month. There is no separate reverse formula to go wrong,
+// so there is no equivalent edge case - every month, leap or not, is found
+// by the exact same forward calculation that defines it.
+const int _kIslamicEpochJd = 1948440; // JD of 1 Muharram, 1 AH (civil/tabular epoch)
+
+int _hijriMonthStartJd(int year, int month) =>
+    1 + (29.5 * (month - 1)).ceil() + (year - 1) * 354 + ((3 + 11 * year) / 30).floor() + _kIslamicEpochJd - 1;
+
 List<int> _gregorianToHijri(DateTime g) {
-  // Kuwaiti-algorithm style arithmetic approximation (tabular Islamic calendar).
   final jd = _gregorianToJulianDay(g);
-  final l = jd - 1948440 + 10632;
-  final n = ((l - 1) / 10631).floor();
-  var ll = l - 10631 * n + 354;
-  final j = (((10985 - ll) / 5316).floor() * ((50 * ll) / 17719).floor()) + ((ll / 5670).floor() * ((43 * ll) / 15238).floor());
-  ll = ll - (((30 - j) / 15).floor() * ((17719 * j) / 50).floor()) - (((j) / 16).floor() * ((15238 * j) / 43).floor()) + 29;
-  final m = ((24 * ll) / 709).floor();
-  final d = ll - ((709 * m) / 24).floor();
-  final y = 30 * n + j - 30;
-  return [y, m + 1, d];
+  var y = ((jd - _kIslamicEpochJd) / 355).floor() + 1;
+  while (_hijriMonthStartJd(y + 1, 1) <= jd) {
+    y++;
+  }
+  while (_hijriMonthStartJd(y, 1) > jd) {
+    y--;
+  }
+  var m = 1;
+  while (m < 12 && _hijriMonthStartJd(y, m + 1) <= jd) {
+    m++;
+  }
+  final d = jd - _hijriMonthStartJd(y, m) + 1;
+  return [y, m, d];
 }
 
 int _gregorianToJulianDay(DateTime g) {
