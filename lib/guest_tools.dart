@@ -20,6 +20,11 @@ const Color _kGreen = Color(0xFF054D00);
 // page for a consistent look between the two Arabic reading screens.
 const Color _kArabicReaderBg = Color(0xFFCFE6D0);
 const Color _kGold = Color(0xFFD4A72C);
+// Solid purple fill for a calendar day that has an Islamic event, so it
+// reads clearly at a glance (white text on top, same treatment as the
+// solid-green "today" box) rather than a small dot easy to miss.
+const Color _kEventPurple = Color(0xFF7B1FA2);
+const Color _kEventPurpleBorder = Color(0xFF6A1B9A);
 
 const double _kaabaLat = 21.4225;
 const double _kaabaLng = 39.8262;
@@ -328,7 +333,9 @@ class _EventMarqueeState extends State<_EventMarquee> with SingleTickerProviderS
   late AnimationController _c;
   bool _paused = false;
 
-  Duration _durationFor(String text) => Duration(milliseconds: (text.length * 90).clamp(6000, 30000));
+  // Slowed down considerably from the first pass (90ms/char, 6-30s) - that
+  // read as too fast to follow. This is ~3x slower end to end.
+  Duration _durationFor(String text) => Duration(milliseconds: (text.length * 260).clamp(14000, 60000));
 
   @override
   void initState() {
@@ -666,19 +673,19 @@ class _CalendarScreenState extends State<CalendarScreen> {
                     child: Container(
                       margin: const EdgeInsets.all(1.5),
                       decoration: BoxDecoration(
-                        color: isToday ? _kGreen : (isFriday ? const Color(0xFFFFF3CF) : const Color(0xFFFAFAF5)),
+                        // An event date is shown by coloring the whole box
+                        // purple rather than a small dot, so it reads clearly
+                        // at a glance. "Today" still wins over that (green),
+                        // same as it already won over the Friday highlight.
+                        color: isToday ? _kGreen : (matches.isNotEmpty ? _kEventPurple : (isFriday ? const Color(0xFFFFF3CF) : const Color(0xFFFAFAF5))),
                         borderRadius: BorderRadius.circular(6),
-                        border: Border.all(color: isToday ? _kGreen : const Color(0xFFE3E0D0), width: 1),
+                        border: Border.all(color: isToday ? _kGreen : (matches.isNotEmpty ? _kEventPurpleBorder : const Color(0xFFE3E0D0)), width: 1),
                       ),
                       alignment: Alignment.center,
                       child: Column(mainAxisAlignment: MainAxisAlignment.center, mainAxisSize: MainAxisSize.min, children: [
-                        Text('$d', style: TextStyle(color: isToday ? Colors.white : Colors.black87, fontWeight: isFriday || isToday ? FontWeight.bold : FontWeight.normal, fontSize: 24)),
+                        Text('$d', style: TextStyle(color: isToday ? Colors.white : (matches.isNotEmpty ? Colors.white : Colors.black87), fontWeight: isFriday || isToday || matches.isNotEmpty ? FontWeight.bold : FontWeight.normal, fontSize: 24)),
                         const SizedBox(height: 2),
-                        Text('$hDay', style: TextStyle(color: isToday ? Colors.white70 : const Color(0xFFC62828), fontSize: 14, fontWeight: FontWeight.w600)),
-                        if (matches.isNotEmpty) ...[
-                          const SizedBox(height: 1),
-                          Container(width: 5, height: 5, decoration: BoxDecoration(shape: BoxShape.circle, color: isToday ? Colors.white : _kGold)),
-                        ],
+                        Text('$hDay', style: TextStyle(color: isToday ? Colors.white70 : (matches.isNotEmpty ? Colors.white70 : const Color(0xFFC62828)), fontSize: 14, fontWeight: FontWeight.w600)),
                       ]),
                     ),
                   );
