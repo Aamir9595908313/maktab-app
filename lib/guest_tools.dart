@@ -255,23 +255,46 @@ int _gregorianToJulianDay(DateTime g) {
   return g.day + ((153 * m + 2) / 5).floor() + 365 * y + (y / 4).floor() - (y / 100).floor() + (y / 400).floor() - 32045;
 }
 
-const List<String> _hijriMonthsEn = ['Muharram', 'Safar', "Rabi-ul-Awwal", 'Rabi-ul-Aakhir', 'Jumada-al-Awwal', 'Jumada-al-Aakhir', 'Rajab', "Sha'ban", 'Ramadan', 'Shawwal', "Dhul-Qa'dah", 'Dhul-Hijjah'];
-const List<String> _hijriMonthsUr = ['محرم', 'صفر', 'ربیع الاول', 'ربیع الثانی', 'جمادی الاول', 'جمادی الثانی', 'رجب', 'شعبان', 'رمضان', 'شوال', 'ذوالقعدہ', 'ذوالحجہ'];
+// Public (not file-private) so the Super Admin Islamic Event Management
+// screen (islamic_calendar_admin.dart) can build its Hijri-month dropdown
+// from this exact same list, instead of a second hardcoded copy that could
+// drift out of sync with the one the calendar itself uses.
+const List<String> hijriMonthsEn = ['Muharram', 'Safar', "Rabi-ul-Awwal", 'Rabi-ul-Aakhir', 'Jumada-al-Awwal', 'Jumada-al-Aakhir', 'Rajab', "Sha'ban", 'Ramadan', 'Shawwal', "Dhul-Qa'dah", 'Dhul-Hijjah'];
+const List<String> hijriMonthsUr = ['محرم', 'صفر', 'ربیع الاول', 'ربیع الثانی', 'جمادی الاول', 'جمادی الثانی', 'رجب', 'شعبان', 'رمضان', 'شوال', 'ذوالقعدہ', 'ذوالحجہ'];
 const List<String> _gMonthsEn = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 const List<String> _gMonthsUr = ['جنوری', 'فروری', 'مارچ', 'اپریل', 'مئی', 'جون', 'جولائی', 'اگست', 'ستمبر', 'اکتوبر', 'نومبر', 'دسمبر'];
 const List<String> _wdEn = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 const List<String> _wdUr = ['پیر', 'منگل', 'بدھ', 'جمعرات', 'جمعہ', 'ہفتہ', 'اتوار'];
 
-// A single recurring Islamic-calendar event: matched purely by its Hijri
-// (month, day) - the same pair every Hijri year, with no year/Gregorian
-// date stored at all, so recurrence is automatic (plain equality, not date
-// math) and nothing here needs updating year to year.
+// A single recurring Islamic-calendar event, matched by its Hijri (month,
+// day) plus a recurrence rule set by the Super Admin (Islamic Event
+// Management, in islamic_calendar_admin.dart):
+//  - 'permanent': recurs every Hijri year on this (month, day) - the same
+//    pair every year, with no year stored, so recurrence is automatic
+//    (plain equality, not date math).
+//  - 'this_year_only': matches only when the current adjusted Hijri year
+//    also equals [hijriYear] - it does not carry forward into the next
+//    Hijri year on its own.
 class _IslamicEvent {
   final int hijriMonth;
   final int hijriDay;
   final String name;
   final String? place;
-  _IslamicEvent({required this.hijriMonth, required this.hijriDay, required this.name, this.place});
+  final String recurrenceType; // 'permanent' | 'this_year_only'
+  final int? hijriYear; // set only for 'this_year_only'
+  _IslamicEvent({
+    required this.hijriMonth,
+    required this.hijriDay,
+    required this.name,
+    this.place,
+    this.recurrenceType = 'permanent',
+    this.hijriYear,
+  });
+
+  // Whether this event is live for the given adjusted Hijri (month, day,
+  // year) - callers have already matched (month, day) via the map lookup
+  // below, so this only needs to apply the year rule on top of that.
+  bool matchesYear(int hYear) => recurrenceType == 'permanent' || hijriYear == hYear;
 }
 
 // Loaded once and cached at module scope (not per CalendarScreen instance),
@@ -292,7 +315,7 @@ Future<List<_IslamicEvent>> _loadIslamicEvents() {
   if (cached != null) return Future.value(cached);
   return _islamicEventsFuture ??= Supabase.instance.client
       .from('islamic_calendar_events')
-      .select('hijri_month, hijri_day, name, place')
+      .select('hijri_month, hijri_day, name, place, recurrence_type, hijri_year')
       .eq('is_active', true)
       .then((rows) {
         final list = (rows as List)
@@ -301,6 +324,8 @@ Future<List<_IslamicEvent>> _loadIslamicEvents() {
                   hijriDay: r['hijri_day'] as int,
                   name: r['name'] as String,
                   place: r['place'] as String?,
+                  recurrenceType: (r['recurrence_type'] as String?) ?? 'permanent',
+                  hijriYear: r['hijri_year'] as int?,
                 ))
             .toList();
         _islamicEventsCache = list;
@@ -314,6 +339,45 @@ Future<List<_IslamicEvent>> _loadIslamicEvents() {
         _islamicEventsFuture = null;
         return <_IslamicEvent>[];
       });
+}
+
+// The single shared Hijri calendar adjustment (public.calendar_settings,
+// id=1), set only by Super Admin via Calendar Adjustment management in
+// islamic_calendar_admin.dart. Cached the same way as the events above -
+// loaded once, reused across visits - rather than the old per-device
+// SharedPreferences value, so every user sees the same adjusted calendar
+// after a refresh, never a device-specific one.
+int? _hijriOffsetCache;
+Future<int>? _hijriOffsetFuture;
+
+Future<int> loadHijriOffsetDays() {
+  final cached = _hijriOffsetCache;
+  if (cached != null) return Future.value(cached);
+  return _hijriOffsetFuture ??= Supabase.instance.client
+      .from('calendar_settings')
+      .select('hijri_offset_days')
+      .eq('id', 1)
+      .maybeSingle()
+      .then((row) {
+        final v = (row?['hijri_offset_days'] as int?) ?? 0;
+        _hijriOffsetCache = v;
+        return v;
+      })
+      .catchError((_) {
+        _hijriOffsetFuture = null;
+        return 0; // same as "no adjustment", the old default
+      });
+}
+
+// Called by the Super Admin management screens right after saving a new
+// calendar adjustment, or adding/editing/deleting an Islamic event, so
+// every CalendarScreen already open (and the next one opened) picks up the
+// change immediately rather than only on the next cold app start.
+void invalidateIslamicCalendarCache() {
+  _islamicEventsCache = null;
+  _islamicEventsFuture = null;
+  _hijriOffsetCache = null;
+  _hijriOffsetFuture = null;
 }
 
 // A slow, smooth, pausable horizontal "running" banner for today's event
@@ -430,9 +494,11 @@ class _CalendarScreenState extends State<CalendarScreen> {
   // No arithmetic Hijri calendar (this one included) can know in advance
   // what a local moon-sighting committee will actually announce - India's
   // observed Islamic date can legitimately differ by a day from any
-  // calculated one. This lets whoever maintains the app nudge the shown
-  // Hijri date to match that day's real announcement, persisted so it
-  // applies for everyone until changed again.
+  // calculated one. This used to be a per-device SharedPreferences value
+  // anyone could nudge from this screen; it is now a single shared setting
+  // a Super Admin sets once (Calendar Adjustment, under Super Admin Tools
+  // in islamic_calendar_admin.dart) so every user sees the same adjusted
+  // Hijri calendar - loaded read-only here, same as the events below.
   int hijriOffset = 0;
 
   // Islamic events loaded once (via the module-level cache above) and
@@ -443,20 +509,13 @@ class _CalendarScreenState extends State<CalendarScreen> {
   @override
   void initState() {
     super.initState();
-    _loadOffset();
+    _loadHijriOffsetSetting();
     _loadEvents();
   }
 
-  Future<void> _loadOffset() async {
-    final prefs = await SharedPreferences.getInstance();
-    final v = prefs.getInt('hijri_offset_days') ?? 0;
+  Future<void> _loadHijriOffsetSetting() async {
+    final v = await loadHijriOffsetDays();
     if (mounted) setState(() => hijriOffset = v);
-  }
-
-  Future<void> _setOffset(int v) async {
-    setState(() => hijriOffset = v);
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setInt('hijri_offset_days', v);
   }
 
   Future<void> _loadEvents() async {
@@ -469,10 +528,14 @@ class _CalendarScreenState extends State<CalendarScreen> {
     setState(() => _eventsByDate = map);
   }
 
-  List<_IslamicEvent> _eventsOn(int hMonth, int hDay) => _eventsByDate['$hMonth-$hDay'] ?? const [];
+  // Matches by (month, day) first, then applies each event's own recurrence
+  // rule against the given adjusted Hijri year - a Permanent Annual Event
+  // always passes; a This Year Only event only matches its saved year.
+  List<_IslamicEvent> _eventsOn(int hMonth, int hDay, int hYear) =>
+      (_eventsByDate['$hMonth-$hDay'] ?? const []).where((e) => e.matchesYear(hYear)).toList();
 
   void _showEventPopup(List<_IslamicEvent> events, int hMonth, int hDay, int hYear) {
-    final months = urdu ? _hijriMonthsUr : _hijriMonthsEn;
+    final months = urdu ? hijriMonthsUr : hijriMonthsEn;
     final dateLabel = '$hDay ${months[hMonth - 1]} $hYear ${urdu ? 'ہجری' : 'AH'}';
     showDialog(
       context: context,
@@ -549,7 +612,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
               child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                 Text(urdu ? 'آج' : "Today", style: const TextStyle(color: Colors.black54, fontSize: 12)),
                 Text('${today.day} ${urdu ? _gMonthsUr[today.month - 1] : _gMonthsEn[today.month - 1]} ${today.year}', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-                Text('${hToday[2]} ${urdu ? _hijriMonthsUr[hToday[1] - 1] : _hijriMonthsEn[hToday[1] - 1]} ${hToday[0]} ${urdu ? 'ہجری' : 'AH'}', style: const TextStyle(fontSize: 15, color: _kGreen, fontWeight: FontWeight.w600)),
+                Text('${hToday[2]} ${urdu ? hijriMonthsUr[hToday[1] - 1] : hijriMonthsEn[hToday[1] - 1]} ${hToday[0]} ${urdu ? 'ہجری' : 'AH'}', style: const TextStyle(fontSize: 15, color: _kGreen, fontWeight: FontWeight.w600)),
               ]),
             ),
           ),
@@ -559,7 +622,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
           // popup), covering every matching event in one scrolling line.
           // Tapping it opens the same detail popup a calendar-cell tap would.
           Builder(builder: (context) {
-            final todayEvents = _eventsOn(hToday[1], hToday[2]);
+            final todayEvents = _eventsOn(hToday[1], hToday[2], hToday[0]);
             if (todayEvents.isEmpty) return const SizedBox.shrink();
             final text = todayEvents.map((e) {
               final place = e.place;
@@ -591,36 +654,10 @@ class _CalendarScreenState extends State<CalendarScreen> {
               ),
             ]);
           }),
-          const SizedBox(height: 8),
-          Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-            Text(
-              urdu ? 'اگر مقامی اعلان سے ایک دن آگے پیچھے ہو:' : 'If this is a day off from the local announcement:',
-              style: const TextStyle(fontSize: 11.5, color: Colors.black54),
-            ),
-          ]),
-          Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-            IconButton(onPressed: () => _setOffset(hijriOffset - 1), icon: const Icon(Icons.remove_circle_outline, size: 20)),
-            Text(hijriOffset == 0 ? (urdu ? 'درست' : 'No adjustment') : '${hijriOffset > 0 ? '+' : ''}$hijriOffset ${urdu ? 'دن' : 'day(s)'}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12.5)),
-            IconButton(onPressed: () => _setOffset(hijriOffset + 1), icon: const Icon(Icons.add_circle_outline, size: 20)),
-          ]),
-          // This same +/- adjustment is the general-purpose way to align the
-          // shown Hijri date to ANY specific moon-sighting source (a local
-          // committee's announcement, or a particular named calendar such as
-          // a Razwi one) - it is not limited to "the local announcement"
-          // wording above. Nobody has supplied an actual Razwi calendar
-          // source/dates to calibrate against yet, so there is nothing
-          // Razwi-specific to encode here; once a source is provided, the
-          // correct offset for it can be set the same way.
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 8),
-            child: Text(
-              urdu
-                  ? 'نوٹ: یہی ایڈجسٹمنٹ کسی بھی مخصوص کیلنڈر (مثلاً رضوی کیلنڈر) سے ملانے کے لیے بھی استعمال کی جا سکتی ہے۔ فی الحال رضوی کیلنڈر کا کوئی مصدر فراہم نہیں کیا گیا، اس لیے کوئی علیحدہ ایڈجسٹمنٹ سیٹ نہیں کی گئی۔'
-                  : 'Note: this same adjustment can be used to match any specific calendar (e.g. a Razwi calendar) once a source for it is provided - no Razwi-specific source has been supplied yet, so no separate adjustment has been set.',
-              textAlign: TextAlign.center,
-              style: const TextStyle(fontSize: 10.5, color: Colors.black45, fontStyle: FontStyle.italic),
-            ),
-          ),
+          // The +/- adjustment control that used to live here is now Super
+          // Admin-only (Calendar Adjustment, under Super Admin Tools) and
+          // applies globally - see the note on `hijriOffset` above. This
+          // screen only displays the resulting adjusted calendar now.
           const SizedBox(height: 14),
           Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
             IconButton(onPressed: () => setState(() => shown = DateTime(shown.year, shown.month - 1, 1)), icon: const Icon(Icons.chevron_left)),
@@ -634,7 +671,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
               Builder(builder: (context) {
                 final hijriFirst = _gregorianToHijri(DateTime(shown.year, shown.month, 1).add(Duration(days: hijriOffset)));
                 final hijriLast = _gregorianToHijri(DateTime(shown.year, shown.month, daysInMonth).add(Duration(days: hijriOffset)));
-                final names = urdu ? _hijriMonthsUr : _hijriMonthsEn;
+                final names = urdu ? hijriMonthsUr : hijriMonthsEn;
                 final label = hijriFirst[1] == hijriLast[1] ? names[hijriFirst[1] - 1] : '${names[hijriFirst[1] - 1]} - ${names[hijriLast[1] - 1]}';
                 final yearLabel = hijriFirst[0] == hijriLast[0] ? '${hijriFirst[0]}' : '${hijriFirst[0]}-${hijriLast[0]}';
                 return Text('$label $yearLabel${urdu ? ' ہجری' : ' AH'}', style: const TextStyle(fontSize: 12, color: _kGreen, fontWeight: FontWeight.w600));
@@ -667,7 +704,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
                   final hMonth = hDate[1];
                   final hDay = hDate[2];
                   final hYear = hDate[0];
-                  final matches = _eventsOn(hMonth, hDay);
+                  final matches = _eventsOn(hMonth, hDay, hYear);
                   return GestureDetector(
                     onTap: matches.isEmpty ? null : () => _showEventPopup(matches, hMonth, hDay, hYear),
                     child: Container(

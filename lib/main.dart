@@ -23,6 +23,7 @@ import 'monthly_members.dart';
 import 'results.dart';
 import 'help.dart';
 import 'dua_kalimat.dart';
+import 'islamic_calendar_admin.dart';
 
 final AppState st = AppState();
 const Color kGreen = Color(0xFF054D00);
@@ -9005,6 +9006,18 @@ class _MasterDataViewState extends State<MasterDataView> {
           icon: const Icon(Icons.auto_stories),
           label: const Text("Dua'iya Kalimat Management"),
           onPressed: () => pushPage(context, "Dua'iya Kalimat Management", const DuaKalimatManagementView()),
+        ),
+        const SizedBox(height: 8),
+        OutlinedButton.icon(
+          icon: const Icon(Icons.tune),
+          label: const Text('Calendar Adjustment'),
+          onPressed: () => pushPage(context, 'Calendar Adjustment', const CalendarAdjustmentView()),
+        ),
+        const SizedBox(height: 8),
+        OutlinedButton.icon(
+          icon: const Icon(Icons.event_note),
+          label: const Text('Islamic Event Management'),
+          onPressed: () => pushPage(context, 'Islamic Event Management', const IslamicEventManagementView()),
         ),
       ], // end isSuper (Super Admin Tools)
       if (_show(MasterDataSection.classes)) ...[
