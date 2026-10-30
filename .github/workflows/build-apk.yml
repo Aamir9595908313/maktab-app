@@ -74,6 +74,24 @@ jobs:
           if "forceDarkAllowed" not in xml:
               xml = xml.replace("<application", '<application\n        android:forceDarkAllowed="false"', 1)
 
+          # flutter_local_notifications: scheduled reminders are delivered by
+          # these receivers. If they are missing from the final manifest the
+          # alarm fires but nothing posts to the notification bar. Declared
+          # explicitly (identical names merge cleanly with the plugin's own).
+          if "ScheduledNotificationReceiver" not in xml:
+              receivers = (
+                  '    <receiver android:exported="false" android:name="com.dexterous.flutterlocalnotifications.ScheduledNotificationReceiver"/>\n'
+                  '    <receiver android:exported="false" android:name="com.dexterous.flutterlocalnotifications.ScheduledNotificationBootReceiver">\n'
+                  '        <intent-filter>\n'
+                  '            <action android:name="android.intent.action.BOOT_COMPLETED"/>\n'
+                  '            <action android:name="android.intent.action.MY_PACKAGE_REPLACED"/>\n'
+                  '            <action android:name="android.intent.action.QUICKBOOT_POWERON"/>\n'
+                  '            <action android:name="com.htc.intent.action.QUICKBOOT_POWERON"/>\n'
+                  '        </intent-filter>\n'
+                  '    </receiver>\n'
+              )
+              xml = xml.replace("</application>", receivers + "    </application>", 1)
+
           with open(path, "w") as f:
               f.write(xml)
           PYEOF
@@ -118,18 +136,39 @@ jobs:
           # ...) already ships its own consumer proguard rules, so turning
           # this on is the normal, low-risk default - not something those
           # plugins need extra rules written for.
+          # flutter_local_notifications (prayer-time reminders) stores each
+          # scheduled alarm as JSON via Gson and reads it back, via reflection,
+          # when the alarm fires. With R8 on and no keep rules, R8 strips the
+          # generic type info Gson needs, so the alarm receiver crashes
+          # ("Missing type parameter") and the notification never reaches the
+          # notification bar - in release builds only. These are the plugin's
+          # own documented release-build rules; the plugin does not apply
+          # them to the host app automatically.
+          with open("android/app/proguard-rules.pro", "w") as f:
+              f.write(
+                  "-keep class com.dexterous.** { *; }\n"
+                  "-keepattributes Signature\n"
+                  "-keepattributes *Annotation*\n"
+                  "-keep class com.google.gson.** { *; }\n"
+                  "-keep class * extends com.google.gson.TypeAdapter\n"
+                  "-keep class * implements com.google.gson.TypeAdapterFactory\n"
+                  "-keep class * implements com.google.gson.JsonSerializer\n"
+                  "-keep class * implements com.google.gson.JsonDeserializer\n"
+                  "-keep,allowobfuscation,allowshrinking class com.google.gson.reflect.TypeToken\n"
+                  "-keep,allowobfuscation,allowshrinking class * extends com.google.gson.reflect.TypeToken\n"
+              )
           if is_kts:
               if "isMinifyEnabled" not in src:
                   src = src.replace(
                       "release {",
-                      "release {\n            isMinifyEnabled = true\n            isShrinkResources = true\n            proguardFiles(getDefaultProguardFile(\"proguard-android-optimize.txt\"))",
+                      "release {\n            isMinifyEnabled = true\n            isShrinkResources = true\n            proguardFiles(getDefaultProguardFile(\"proguard-android-optimize.txt\"), \"proguard-rules.pro\")",
                       1,
                   )
           else:
               if "minifyEnabled" not in src:
                   src = src.replace(
                       "release {",
-                      "release {\n            minifyEnabled true\n            shrinkResources true\n            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt')",
+                      "release {\n            minifyEnabled true\n            shrinkResources true\n            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'",
                       1,
                   )
 

@@ -999,7 +999,7 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
       // reminders should never hold up showing the prayer times themselves.
       unawaited(_reverseGeocode(pos.latitude, pos.longitude));
       if (notifEnabled) {
-        unawaited(PrayerNotificationService.scheduleUpcoming(latitude: pos.latitude, longitude: pos.longitude));
+        unawaited(PrayerNotificationService.scheduleUpcoming(latitude: pos.latitude, longitude: pos.longitude).catchError((_) {}));
       }
     } catch (_) {
       if (!mounted) return;
@@ -1019,7 +1019,15 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
         ));
       }
       if (lat != null && lng != null) {
-        await PrayerNotificationService.scheduleUpcoming(latitude: lat!, longitude: lng!);
+        try {
+          await PrayerNotificationService.scheduleUpcoming(latitude: lat!, longitude: lng!);
+        } catch (_) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+              content: Text("Couldn't schedule prayer reminders. Please allow notifications and \"Alarms & reminders\" for this app in device settings, then try again."),
+            ));
+          }
+        }
       }
     } else {
       await PrayerNotificationService.setEnabled(false);
