@@ -93,23 +93,6 @@ class _QiblaScreenState extends State<QiblaScreen> {
     super.dispose();
   }
 
-  // Re-reads the phone's live GPS position, recalculates every prayer time
-  // for that place, re-arms the reminders for it, and confirms with a
-  // message naming the place the times now belong to.
-  Future<void> _updateToCurrentLocation() async {
-    final messenger = ScaffoldMessenger.of(context);
-    await _init();
-    if (!mounted || status != _PrayerStatus.ready) return;
-    // The place name resolves in the background just after the times show.
-    for (var i = 0; i < 20 && placeLoading; i++) {
-      await Future.delayed(const Duration(milliseconds: 250));
-    }
-    if (!mounted) return;
-    messenger.showSnackBar(SnackBar(
-      content: Text('Prayer times updated for ${placeName ?? '${lat!.toStringAsFixed(3)}, ${lng!.toStringAsFixed(3)}'}.'),
-    ));
-  }
-
   Future<void> _init() async {
     setState(() => status = _QiblaStatus.loading);
 
@@ -994,6 +977,23 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
       if (!mounted) return;
       setState(() => placeLoading = false);
     }
+  }
+
+  // Re-reads the phone's live GPS position, recalculates every prayer time
+  // for that place, re-arms the reminders for it, and confirms with a
+  // message naming the place the times now belong to.
+  Future<void> _updateToCurrentLocation() async {
+    final messenger = ScaffoldMessenger.of(context);
+    await _init();
+    if (!mounted || status != _PrayerStatus.ready) return;
+    // The place name resolves in the background just after the times show.
+    for (var i = 0; i < 20 && placeLoading; i++) {
+      await Future.delayed(const Duration(milliseconds: 250));
+    }
+    if (!mounted) return;
+    messenger.showSnackBar(SnackBar(
+      content: Text('Prayer times updated for ${placeName ?? '${lat!.toStringAsFixed(3)}, ${lng!.toStringAsFixed(3)}'}.'),
+    ));
   }
 
   Future<void> _init() async {
