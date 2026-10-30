@@ -6,6 +6,7 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:csv/csv.dart';
 import 'package:excel/excel.dart' as xl;
@@ -4010,11 +4011,68 @@ class Shell extends StatefulWidget {
 
 class _ShellState extends State<Shell> {
   int idx = 0;
+  bool _absenceChecked = false;
+
+  // Parent-role popup: once per app session, after the child's attendance
+  // history has loaded, lists any absences the parent hasn't been shown yet
+  // (last 30 days only). "Shown" is remembered per child on this device as
+  // the newest absent date already displayed, so the popup only reappears
+  // when there is a NEW absence - never repeatedly for the same ones.
+  Future<void> _checkChildAbsences() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final cutoff = DateTime.now().subtract(const Duration(days: 30));
+      String fmt(DateTime d) => '${d.year.toString().padLeft(4, '0')}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
+      final cutoffStr = fmt(cutoff);
+      final newestByKey = <String, String>{};
+      final lines = <MapEntry<String, List<String>>>[];
+      for (final k in st.kids()) {
+        final ack = prefs.getString('absence_ack_${k.key}') ?? '';
+        final fresh = k.absent.where((d) => d.compareTo(cutoffStr) >= 0 && d.compareTo(ack) > 0).toList()..sort();
+        if (fresh.isEmpty) continue;
+        lines.add(MapEntry(k.name, fresh));
+        newestByKey[k.key] = fresh.last;
+      }
+      if (lines.isEmpty || !mounted) return;
+      await showDialog<void>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Row(children: [
+            Icon(Icons.event_busy, color: Colors.redAccent),
+            SizedBox(width: 8),
+            Expanded(child: Text('Absence Alert')),
+          ]),
+          content: SingleChildScrollView(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
+              for (final e in lines) ...[
+                Text(e.key, style: const TextStyle(fontWeight: FontWeight.bold)),
+                const SizedBox(height: 2),
+                Text('Marked absent on: ${e.value.join(', ')}', style: const TextStyle(fontSize: 13)),
+                const SizedBox(height: 10),
+              ],
+              const Text('Please contact the Maktab if you need any clarification.', style: TextStyle(fontSize: 12, color: Colors.black54)),
+            ]),
+          ),
+          actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('OK'))],
+        ),
+      );
+      for (final e in newestByKey.entries) {
+        await prefs.setString('absence_ack_${e.key}', e.value);
+      }
+    } catch (_) {
+      // Best-effort: a failed popup must never break the home screen.
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return AnimatedBuilder(animation: st, builder: (context, _) {
       final u = st.user;
       if (u == null) return const SizedBox.shrink();
+      if (!_absenceChecked && u.role == 'parent' && st.dataLoaded && st.kids().isNotEmpty) {
+        _absenceChecked = true;
+        WidgetsBinding.instance.addPostFrameCallback((_) => _checkChildAbsences());
+      }
       final tabs = tabsFor(u);
       if (idx >= tabs.length) idx = 0;
       final isMultiMadrasaTeacher = u.role == 'teacher' && u.teachMadrasas.length > 1;

@@ -121,6 +121,35 @@ class PrayerNotificationService {
     return granted;
   }
 
+  // One-time self-check for the user: posts one notification right now
+  // (proves the notification bar + permission work) and schedules a second
+  // one ~60 seconds out through the same exact-alarm path the real prayer
+  // reminders use (proves scheduled delivery works with the app closed).
+  // Uses ids 9001/9002, which scheduleUpcoming's cancelAll() clears later.
+  static Future<void> sendTestNotifications() async {
+    await initialize();
+    const details = NotificationDetails(
+      android: AndroidNotificationDetails(
+        _channelId,
+        _channelName,
+        channelDescription: _channelDesc,
+        importance: Importance.max,
+        priority: Priority.high,
+      ),
+      iOS: DarwinNotificationDetails(),
+    );
+    await _plugin.show(9001, 'Test notification', 'Instant check: notifications are showing on this phone.', details);
+    await _plugin.zonedSchedule(
+      9002,
+      'Scheduled test notification',
+      'Scheduled check: prayer-time reminders can reach this phone while the app is closed.',
+      tz.TZDateTime.now(tz.local).add(const Duration(seconds: 60)),
+      details,
+      androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
+      uiLocalNotificationDateInterpretation: UILocalNotificationDateInterpretation.absoluteTime,
+    );
+  }
+
   // Fetches this month's (and next month's, if the 7-day window crosses a
   // month boundary) prayer-time calendar for (latitude, longitude) from the
   // same Aladhan API the Prayer Times screen itself uses (method=1

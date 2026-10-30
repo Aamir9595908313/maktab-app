@@ -1007,6 +1007,25 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
     }
   }
 
+  // One-time self-check: an instant notification plus one scheduled ~1 minute
+  // out, so the user can confirm both display and scheduled delivery work.
+  Future<void> _sendTestNotification() async {
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final granted = await PrayerNotificationService.requestPermissions();
+      await PrayerNotificationService.sendTestNotifications();
+      messenger.showSnackBar(SnackBar(
+        content: Text(granted
+            ? 'Test sent. Check your notification bar now - a second one arrives in about 1 minute (try closing the app to confirm).'
+            : "Test sent, but a notification permission wasn't granted, so it may not appear. Allow Notifications and Alarms & reminders in device settings."),
+      ));
+    } catch (_) {
+      messenger.showSnackBar(const SnackBar(
+        content: Text("Couldn't send the test notification. Please allow Notifications and \"Alarms & reminders\" for this app in device settings."),
+      ));
+    }
+  }
+
   Future<void> _onToggleNotif(bool value) async {
     setState(() => notifBusy = true);
     if (value) {
@@ -1132,7 +1151,15 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
             ),
           ),
         ),
-        const SizedBox(height: 10),
+        Align(
+          alignment: Alignment.centerRight,
+          child: TextButton.icon(
+            onPressed: notifBusy ? null : _sendTestNotification,
+            icon: const Icon(Icons.notifications_active_outlined, size: 16),
+            label: const Text('Send test notification', style: TextStyle(fontSize: 12)),
+          ),
+        ),
+        const SizedBox(height: 6),
         for (final r in rows)
           Card(
             child: ListTile(
