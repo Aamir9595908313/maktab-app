@@ -943,6 +943,7 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
     final enabled = await PrayerNotificationService.isEnabled();
     if (!mounted) return;
     setState(() => notifEnabled = enabled);
+    _refreshNotifSummary();
   }
 
   // Reverse-geocodes (lat, lng) to a human place name via OpenStreetMap's
@@ -1020,7 +1021,7 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
       // reminders should never hold up showing the prayer times themselves.
       unawaited(_reverseGeocode(pos.latitude, pos.longitude));
       if (notifEnabled) {
-        unawaited(PrayerNotificationService.scheduleUpcoming(latitude: pos.latitude, longitude: pos.longitude).catchError((_) {}));
+        unawaited(PrayerNotificationService.scheduleUpcoming(latitude: pos.latitude, longitude: pos.longitude).catchError((_) {}).whenComplete(_refreshNotifSummary));
       }
     } catch (_) {
       if (!mounted) return;
@@ -1030,11 +1031,19 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
 
   // One-time self-check: an instant notification plus one scheduled ~1 minute
   // out, so the user can confirm both display and scheduled delivery work.
+  String notifSummary = '';
+
+  Future<void> _refreshNotifSummary() async {
+    final v = await PrayerNotificationService.pendingSummary();
+    if (mounted) setState(() => notifSummary = v);
+  }
+
   Future<void> _sendTestNotification() async {
     final messenger = ScaffoldMessenger.of(context);
     try {
       final granted = await PrayerNotificationService.requestPermissions();
       await PrayerNotificationService.sendTestNotifications();
+      unawaited(_refreshNotifSummary());
       messenger.showSnackBar(SnackBar(
         content: Text(granted
             ? 'Test sent. Check your notification bar now - a second one arrives in about 1 minute (try closing the app to confirm).'
@@ -1077,6 +1086,7 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
       notifEnabled = value;
       notifBusy = false;
     });
+    _refreshNotifSummary();
   }
 
   @override
@@ -1172,6 +1182,11 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
             ),
           ),
         ),
+        if (notifEnabled && notifSummary.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 4),
+            child: Text(notifSummary, style: const TextStyle(fontSize: 11.5, color: Colors.black54)),
+          ),
         Align(
           alignment: Alignment.centerRight,
           child: TextButton.icon(

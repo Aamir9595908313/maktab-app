@@ -39,7 +39,7 @@ void main() {
   // on. Deliberately not awaited - this must never delay the first screen,
   // and it does no network I/O of its own (that only happens when
   // PrayerNotificationService.scheduleUpcoming() is actually called).
-  unawaited(PrayerNotificationService.initialize());
+  unawaited(PrayerNotificationService.initialize().then((_) => PrayerNotificationService.rescheduleFromSaved()));
   // Connecting to Supabase must never block the app from showing a screen:
   // if it's awaited directly in main() and the connection is slow, blocked,
   // or the device has no network yet, the app sits on a blank screen with

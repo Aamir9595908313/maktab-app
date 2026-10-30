@@ -121,6 +121,35 @@ class PrayerNotificationService {
     return granted;
   }
 
+  // Called at app launch: tops the 7-day window back up using the last
+  // location the Prayer Times screen saw. No-op if reminders are off or no
+  // location was ever saved. Never throws.
+  static Future<void> rescheduleFromSaved() async {
+    try {
+      if (!await isEnabled()) return;
+      final prefs = await SharedPreferences.getInstance();
+      final lat = prefs.getDouble('prayer_last_lat');
+      final lng = prefs.getDouble('prayer_last_lng');
+      if (lat == null || lng == null) return;
+      await scheduleUpcoming(latitude: lat, longitude: lng);
+    } catch (_) {}
+  }
+
+  // Human-readable status for the Prayer Times screen, e.g.
+  // "35 reminders scheduled. Next: Maghrib time". Lets the user see whether
+  // anything is actually armed on this phone.
+  static Future<String> pendingSummary() async {
+    try {
+      await initialize();
+      final pending = (await _plugin.pendingNotificationRequests()).where((r) => r.id >= 1000).toList()
+        ..sort((a, b) => a.id.compareTo(b.id));
+      if (pending.isEmpty) return 'No prayer reminders are scheduled on this phone yet.';
+      return '${pending.length} reminders scheduled. Next: ${pending.first.title ?? 'prayer'}';
+    } catch (_) {
+      return '';
+    }
+  }
+
   // One-time self-check for the user: posts one notification right now
   // (proves the notification bar + permission work) and schedules a second
   // one ~60 seconds out through the same exact-alarm path the real prayer
@@ -161,6 +190,11 @@ class PrayerNotificationService {
   static Future<void> scheduleUpcoming({required double latitude, required double longitude}) async {
     if (!await isEnabled()) return;
     await initialize();
+    // Remember the last known location so reminders can be refreshed at every
+    // app launch (rescheduleFromSaved) without opening the Prayer Times screen.
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setDouble('prayer_last_lat', latitude);
+    await prefs.setDouble('prayer_last_lng', longitude);
     await _plugin.cancelAll();
 
     final today = DateTime.now();
