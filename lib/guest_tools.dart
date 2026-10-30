@@ -93,6 +93,23 @@ class _QiblaScreenState extends State<QiblaScreen> {
     super.dispose();
   }
 
+  // Re-reads the phone's live GPS position, recalculates every prayer time
+  // for that place, re-arms the reminders for it, and confirms with a
+  // message naming the place the times now belong to.
+  Future<void> _updateToCurrentLocation() async {
+    final messenger = ScaffoldMessenger.of(context);
+    await _init();
+    if (!mounted || status != _PrayerStatus.ready) return;
+    // The place name resolves in the background just after the times show.
+    for (var i = 0; i < 20 && placeLoading; i++) {
+      await Future.delayed(const Duration(milliseconds: 250));
+    }
+    if (!mounted) return;
+    messenger.showSnackBar(SnackBar(
+      content: Text('Prayer times updated for ${placeName ?? '${lat!.toStringAsFixed(3)}, ${lng!.toStringAsFixed(3)}'}.'),
+    ));
+  }
+
   Future<void> _init() async {
     setState(() => status = _QiblaStatus.loading);
 
@@ -118,8 +135,8 @@ class _QiblaScreenState extends State<QiblaScreen> {
 
     try {
       final pos = await Geolocator.getCurrentPosition(
-        locationSettings: const LocationSettings(accuracy: LocationAccuracy.medium),
-      ).timeout(const Duration(seconds: 15));
+        locationSettings: const LocationSettings(accuracy: LocationAccuracy.high),
+      ).timeout(const Duration(seconds: 20));
       if (!mounted) return;
       setState(() {
         lat = pos.latitude;
@@ -1164,10 +1181,13 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
         const SizedBox(height: 2),
         Text('${lat!.toStringAsFixed(3)}, ${lng!.toStringAsFixed(3)}', style: const TextStyle(color: Colors.black38, fontSize: 11), textAlign: TextAlign.center),
         const SizedBox(height: 4),
-        TextButton.icon(
-          onPressed: status == _PrayerStatus.loading ? null : _init,
-          icon: const Icon(Icons.my_location, size: 16),
-          label: const Text('Update to my current location', style: TextStyle(fontSize: 12)),
+        Center(
+          child: OutlinedButton.icon(
+            onPressed: status == _PrayerStatus.loading ? null : _updateToCurrentLocation,
+            icon: const Icon(Icons.my_location, size: 18),
+            label: const Text('Update current location'),
+            style: OutlinedButton.styleFrom(foregroundColor: _kGreen, side: const BorderSide(color: _kGreen)),
+          ),
         ),
         const SizedBox(height: 8),
         Card(
