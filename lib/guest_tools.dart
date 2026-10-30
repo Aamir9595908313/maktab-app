@@ -402,6 +402,12 @@ Future<int> loadHijriOffsetDays() {
 // calendar adjustment, or adding/editing/deleting an Islamic event, so
 // every CalendarScreen already open (and the next one opened) picks up the
 // change immediately rather than only on the next cold app start.
+Future<void> prefetchIslamicCalendarData() async {
+  try {
+    await Future.wait([loadHijriOffsetDays(), _loadIslamicEvents()]);
+  } catch (_) {}
+}
+
 void invalidateIslamicCalendarCache() {
   _islamicEventsCache = null;
   _islamicEventsFuture = null;
@@ -535,16 +541,25 @@ class _CalendarScreenState extends State<CalendarScreen> {
   // for today's date, both below.
   Map<String, List<_IslamicEvent>> _eventsByDate = {};
 
+  // False until BOTH the global Hijri adjustment and the events are known,
+  // so the screen never flashes the unadjusted (old) calendar first and then
+  // jumps to the corrected one a few seconds later.
+  bool _dataReady = false;
+
   @override
   void initState() {
     super.initState();
-    _loadHijriOffsetSetting();
-    _loadEvents();
+    _loadCalendarData();
+  }
+
+  Future<void> _loadCalendarData() async {
+    await Future.wait([_loadHijriOffsetSetting(), _loadEvents()]);
+    if (mounted) setState(() => _dataReady = true);
   }
 
   Future<void> _loadHijriOffsetSetting() async {
     final v = await loadHijriOffsetDays();
-    if (mounted) setState(() => hijriOffset = v);
+    if (mounted) hijriOffset = v;
   }
 
   Future<void> _loadEvents() async {
@@ -554,7 +569,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
     for (final e in events) {
       map.putIfAbsent('${e.hijriMonth}-${e.hijriDay}', () => []).add(e);
     }
-    setState(() => _eventsByDate = map);
+    _eventsByDate = map;
   }
 
   // Matches by (month, day) first, then applies each event's own recurrence
@@ -622,6 +637,12 @@ class _CalendarScreenState extends State<CalendarScreen> {
     final daysInMonth = DateTime(shown.year, shown.month + 1, 0).day;
     final leading = (firstOfMonth.weekday - 1) % 7; // Monday = 0
 
+    if (!_dataReady) {
+      return Scaffold(
+        appBar: guestAppBar(context, urdu ? 'کیلنڈر' : 'Calendar'),
+        body: const Center(child: CircularProgressIndicator(color: _kGreen)),
+      );
+    }
     return Scaffold(
       appBar: guestAppBar(context, urdu ? 'کیلنڈر' : 'Calendar'),
       body: ListView(

@@ -50,8 +50,12 @@ void main() {
   runApp(const MaktabApp());
 }
 
-Future<void> _connectSupabase() =>
-    Supabase.initialize(url: SupabaseConfig.url, anonKey: SupabaseConfig.anonKey).timeout(const Duration(seconds: 12));
+Future<void> _connectSupabase() async {
+  await Supabase.initialize(url: SupabaseConfig.url, anonKey: SupabaseConfig.anonKey).timeout(const Duration(seconds: 12));
+  // Warm the Calendar's shared data (Hijri adjustment + Islamic events) in
+  // the background so the Calendar screen opens already correct.
+  unawaited(prefetchIslamicCalendarData());
+}
 
 // Maps the Supabase schema's role names to the names the rest of this app
 // already uses everywhere (tabsFor, roleLabel, etc.) - only 'super_admin'
