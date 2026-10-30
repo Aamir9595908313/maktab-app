@@ -174,7 +174,8 @@ class Student {
   String start;
   String parentPhone;
   String studentPhone;
-  bool aadhaar;
+  bool aadhaar; // true when a valid 12-digit aadhaarNumber is on file
+  String aadhaarNumber; // 12 digits, or '' for older records not yet filled in
   String address;
   String status;
   String? dob; // yyyy-MM-dd, matches public.students.dob
@@ -221,6 +222,7 @@ class Student {
     this.madrasa = 'Hanfi',
     this.studentPhone = '',
     this.aadhaar = true,
+    this.aadhaarNumber = '',
     this.address = '',
     this.status = 'Active',
     this.dob,
@@ -1198,7 +1200,11 @@ class AppState extends ChangeNotifier {
     return '${s.name} reactivated.';
   }
 
-  void editStudent(Student s, {String? name, String? parentPhone, String? address, String? madrasa, int? cls, String? dob, String? fatherName, String? guardianRelation, String? batch}) {
+  void editStudent(Student s, {String? name, String? parentPhone, String? address, String? madrasa, int? cls, String? dob, String? fatherName, String? guardianRelation, String? batch, String? aadhaarNumber}) {
+    if (aadhaarNumber != null && RegExp(r'^[0-9]{12}$').hasMatch(aadhaarNumber)) {
+      s.aadhaarNumber = aadhaarNumber;
+      s.aadhaar = true;
+    }
     if (name != null && name.trim().isNotEmpty) s.name = name.trim();
     if (parentPhone != null && parentPhone.trim().isNotEmpty) s.parentPhone = parentPhone.trim();
     if (address != null) s.address = address.trim();
@@ -1816,6 +1822,7 @@ class AppState extends ChangeNotifier {
     required String parentPhone,
     String studentPhone = '',
     bool aadhaar = true,
+    String aadhaarNumber = '',
     String address = '',
     String? dob,
     String fatherName = '',
@@ -1835,6 +1842,7 @@ class AppState extends ChangeNotifier {
         parentPhone: parentPhone,
         studentPhone: studentPhone,
         aadhaar: aadhaar,
+        aadhaarNumber: aadhaarNumber,
         address: address,
         dob: dob,
         fatherName: fatherName,

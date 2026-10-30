@@ -219,7 +219,8 @@ Future<void> loadMasterData() async {
           start: (r['admission_date'] as String?) ?? kToday,
           parentPhone: (r['parent_phone'] as String?) ?? '',
           studentPhone: (r['student_phone'] as String?) ?? '',
-          aadhaar: (r['aadhaar_file_ref'] as String?) != null && r['aadhaar_file_ref'] != 'not_uploaded',
+          aadhaar: RegExp(r'^[0-9]{12}$').hasMatch((r['aadhaar_number'] as String?) ?? ''),
+          aadhaarNumber: (r['aadhaar_number'] as String?) ?? '',
           address: (r['address'] as String?) ?? '',
           status: (r['is_active'] as bool?) ?? true ? 'Active' : 'Inactive',
           dob: r['dob'] as String?,
@@ -2285,13 +2286,22 @@ Future<String?> updatePendingTeacherInviteRemote(Account a, {required String nam
 // Section 3.2.3 warning. The caller shows it as a confirm dialog and, if
 // the person confirms, calls this again with confirmDuplicate: true to
 // actually save.
+// Aadhaar number is mandatory for every student: exactly 12 digits, nothing
+// else (spaces/dashes are stripped by the caller via digits()).
+String? validateAadhaarNumber(String v) {
+  if (v.isEmpty) return 'Aadhaar number is required';
+  if (!RegExp(r'^[0-9]+$').hasMatch(v)) return 'Aadhaar number must contain digits only';
+  if (v.length != 12) return 'Aadhaar number must be exactly 12 digits (you entered ${v.length})';
+  return null;
+}
+
 Future<String?> addStudentRemote({
   required String name,
   required String gender,
   required int cls,
   required String parentPhone,
   String studentPhone = '',
-  required bool aadhaar,
+  required String aadhaarNumber,
   String address = '',
   required String madrasa,
   String? dob,
@@ -2306,7 +2316,8 @@ Future<String?> addStudentRemote({
   if (n.isEmpty) return 'Enter the student name';
   if (gender.isEmpty) return 'Select gender (Male or Female)';
   if (parentPhone.length != 10) return 'Parent mobile number is required (10 digits)';
-  if (!aadhaar) return 'Aadhaar card is required';
+  final aadhaarErr = validateAadhaarNumber(aadhaarNumber);
+  if (aadhaarErr != null) return aadhaarErr;
   if (studentPhone.isNotEmpty) {
     if (studentPhone.length != 10) return 'Student mobile must be 10 digits, or leave it blank';
     if (studentPhone == parentPhone) return 'Student mobile must differ from the parent mobile';
@@ -2341,7 +2352,8 @@ Future<String?> addStudentRemote({
       'parent_phone': parentPhone,
       'student_phone': studentPhone.isEmpty ? null : studentPhone,
       'address': address.trim().isEmpty ? null : address.trim(),
-      'aadhaar_file_ref': 'uploaded_demo',
+      'aadhaar_file_ref': 'not_required',
+      'aadhaar_number': aadhaarNumber,
       'admission_date': start,
       'dob': (dob == null || dob.trim().isEmpty) ? null : dob.trim(),
       'father_name': fn.isEmpty ? null : fn,
@@ -2358,6 +2370,7 @@ Future<String?> addStudentRemote({
       parentPhone: parentPhone,
       studentPhone: studentPhone,
       aadhaar: true,
+      aadhaarNumber: aadhaarNumber,
       address: address.trim(),
       dob: (dob == null || dob.trim().isEmpty) ? null : dob.trim(),
       fatherName: fn,
@@ -2471,7 +2484,11 @@ Future<String> promoteRemote(Student s) async {
 // Section 3.2.3/5: re-runs the active-duplicate check if name or DOB
 // changed. A return value starting with "DUPLICATE:" is the warning, not
 // an error - same confirm-and-retry pattern as addStudentRemote.
-Future<String?> editStudentRemote(Student s, {String? name, String? parentPhone, String? address, String? madrasa, int? cls, String? dob, String? fatherName, String? guardianRelation, String? batch, bool confirmDuplicate = false}) async {
+Future<String?> editStudentRemote(Student s, {String? name, String? parentPhone, String? address, String? madrasa, int? cls, String? dob, String? fatherName, String? guardianRelation, String? batch, String? aadhaarNumber, bool confirmDuplicate = false}) async {
+  if (aadhaarNumber != null) {
+    final aErr = validateAadhaarNumber(aadhaarNumber);
+    if (aErr != null) return aErr;
+  }
   if (name != null) name = toTitleCase(name);
   if (fatherName != null) fatherName = toTitleCase(fatherName);
   final newName = (name != null && name.isNotEmpty) ? name : s.name;
@@ -2488,6 +2505,7 @@ Future<String?> editStudentRemote(Student s, {String? name, String? parentPhone,
     if (digits(parentPhone).length != 10) return 'Parent mobile must be 10 digits';
     patch['parent_phone'] = digits(parentPhone);
   }
+  if (aadhaarNumber != null) patch['aadhaar_number'] = aadhaarNumber;
   if (address != null) patch['address'] = address.trim().isEmpty ? null : address.trim();
   if (dob != null) patch['dob'] = dob.trim().isEmpty ? null : dob.trim();
   if (fatherName != null) patch['father_name'] = fatherName.isEmpty ? null : fatherName;
@@ -2516,7 +2534,7 @@ Future<String?> editStudentRemote(Student s, {String? name, String? parentPhone,
       return 'Could not save. Check your internet connection and try again.';
     }
   }
-  st.editStudent(s, name: name, parentPhone: parentPhone == null ? null : digits(parentPhone), address: address, madrasa: madrasa, cls: cls, dob: dob, fatherName: fatherName, guardianRelation: guardianRelation, batch: batch);
+  st.editStudent(s, name: name, parentPhone: parentPhone == null ? null : digits(parentPhone), address: address, madrasa: madrasa, cls: cls, dob: dob, fatherName: fatherName, guardianRelation: guardianRelation, batch: batch, aadhaarNumber: aadhaarNumber);
   return null;
 }
 
@@ -3414,6 +3432,8 @@ Future<void> editStudentDialog(BuildContext context, Student s) async {
   final address = TextEditingController(text: s.address);
   final fatherName = TextEditingController(text: s.fatherName);
   final dob = TextEditingController(text: s.dob ?? '');
+  final aadhaarCtl = TextEditingController(text: s.aadhaarNumber);
+  String? aadhaarErr;
   String madrasa = s.madrasa;
   int cls = s.cls;
   String batch = kBatches.contains(s.batch) ? s.batch : 'Morning';
@@ -3457,6 +3477,14 @@ Future<void> editStudentDialog(BuildContext context, Student s) async {
             const SizedBox(height: 8),
             TextField(controller: parent, decoration: const InputDecoration(labelText: 'Parent mobile number'), keyboardType: TextInputType.phone),
             const SizedBox(height: 8),
+            TextField(
+              controller: aadhaarCtl,
+              keyboardType: TextInputType.number,
+              maxLength: 12,
+              inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+              decoration: InputDecoration(labelText: 'Aadhaar number * (12 digits)', errorText: aadhaarErr, counterText: ''),
+            ),
+            const SizedBox(height: 8),
             TextField(controller: address, decoration: const InputDecoration(labelText: 'Address')),
             const SizedBox(height: 8),
             DropdownButtonFormField<String>(
@@ -3493,13 +3521,23 @@ Future<void> editStudentDialog(BuildContext context, Student s) async {
         ),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
-          ElevatedButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Save')),
+          ElevatedButton(
+            onPressed: () {
+              final err = validateAadhaarNumber(digits(aadhaarCtl.text));
+              if (err != null) {
+                setD(() => aadhaarErr = err);
+                return;
+              }
+              Navigator.pop(ctx, true);
+            },
+            child: const Text('Save'),
+          ),
         ],
       ),
     ),
   );
   if (result != true) return;
-  var e = await editStudentRemote(s, name: name.text, parentPhone: parent.text, address: address.text, madrasa: madrasa, cls: cls, dob: dob.text, fatherName: fatherName.text, guardianRelation: guardianRelation, batch: batch);
+  var e = await editStudentRemote(s, aadhaarNumber: digits(aadhaarCtl.text), name: name.text, parentPhone: parent.text, address: address.text, madrasa: madrasa, cls: cls, dob: dob.text, fatherName: fatherName.text, guardianRelation: guardianRelation, batch: batch);
   if (e != null && e.startsWith('DUPLICATE:')) {
     if (!context.mounted) return;
     final proceed = await showDialog<bool>(
@@ -3515,7 +3553,7 @@ Future<void> editStudentDialog(BuildContext context, Student s) async {
     );
     if (proceed != true) return;
     if (!context.mounted) return;
-    e = await editStudentRemote(s, name: name.text, parentPhone: parent.text, address: address.text, madrasa: madrasa, cls: cls, dob: dob.text, fatherName: fatherName.text, guardianRelation: guardianRelation, batch: batch, confirmDuplicate: true);
+    e = await editStudentRemote(s, aadhaarNumber: digits(aadhaarCtl.text), name: name.text, parentPhone: parent.text, address: address.text, madrasa: madrasa, cls: cls, dob: dob.text, fatherName: fatherName.text, guardianRelation: guardianRelation, batch: batch, confirmDuplicate: true);
   }
   if (context.mounted) toast(context, e ?? 'Student updated.');
 }
@@ -4952,7 +4990,7 @@ class KidDocs extends StatelessWidget {
             child: ListTile(
               leading: const Icon(Icons.badge),
               title: Text(k.name),
-              subtitle: Text('Aadhaar card uploaded: ${k.aadhaar ? 'Yes' : 'No'} - Address: ${k.address.isEmpty ? 'not given (optional)' : k.address}'),
+              subtitle: Text('Aadhaar added: ${k.aadhaar ? 'Yes' : 'No'} - Address: ${k.address.isEmpty ? 'not given (optional)' : k.address}'),
               trailing: TextButton(onPressed: () => toast(context, 'Demo: file picker opens here'), child: const Text('Replace')),
             ),
           )),
@@ -5491,13 +5529,14 @@ class _ImportRow {
   final String studentPhone;
   final String address;
   final int cls;
+  final String aadhaarNumber;
   String? error; // non-null => this row is skipped
   bool duplicate = false;
-  _ImportRow(this.rowNo, this.name, this.gender, this.dob, this.fatherName, this.guardianRelation, this.parentPhone, this.studentPhone, this.address, this.cls);
+  _ImportRow(this.rowNo, this.name, this.gender, this.dob, this.fatherName, this.guardianRelation, this.parentPhone, this.studentPhone, this.address, this.cls, this.aadhaarNumber);
 }
 
-const String kImportTemplateCsv = 'name,gender,class,dob,father_name,guardian_relation,parent_phone,student_phone,address\n'
-    'Ahmed Khan,Male,1,2017-05-12,Imran Khan,Father,9800000111,,House 12 Station Road\n';
+const String kImportTemplateCsv = 'name,gender,class,dob,father_name,guardian_relation,parent_phone,student_phone,address,aadhaar_number\n'
+    'Ahmed Khan,Male,1,2017-05-12,Imran Khan,Father,9800000111,,House 12 Station Road,123456789012\n';
 
 class BulkImportStudents extends StatefulWidget {
   final List<String> pickableMadrasas;
@@ -5544,10 +5583,10 @@ class _BulkImportStudentsState extends State<BulkImportStudents> {
       return;
     }
     final header = table.first.map((h) => h.toString().trim().toLowerCase()).toList();
-    const expected = ['name', 'gender', 'class', 'dob', 'father_name', 'guardian_relation', 'parent_phone', 'student_phone', 'address'];
+    const expected = ['name', 'gender', 'class', 'dob', 'father_name', 'guardian_relation', 'parent_phone', 'student_phone', 'address', 'aadhaar_number'];
     final colIndex = {for (final c in expected) c: header.indexOf(c)};
-    if (colIndex['name'] == -1 || colIndex['gender'] == -1 || colIndex['class'] == -1 || colIndex['parent_phone'] == -1) {
-      setState(() => parseError = 'The header row must include at least: name, gender, class, parent_phone. Download the sample template below and use it as a starting point.');
+    if (colIndex['name'] == -1 || colIndex['gender'] == -1 || colIndex['class'] == -1 || colIndex['parent_phone'] == -1 || colIndex['aadhaar_number'] == -1) {
+      setState(() => parseError = 'The header row must include at least: name, gender, class, parent_phone, aadhaar_number. Download the sample template below and use it as a starting point.');
       return;
     }
     String cell(List<dynamic> r, String col) {
@@ -5574,6 +5613,7 @@ class _BulkImportStudentsState extends State<BulkImportStudents> {
         digits(cell(r, 'student_phone')),
         cell(r, 'address'),
         cls,
+        digits(cell(r, 'aadhaar_number')),
       );
       if (row.name.isEmpty) {
         row.error = 'Name is required';
@@ -5583,6 +5623,8 @@ class _BulkImportStudentsState extends State<BulkImportStudents> {
         row.error = 'Unknown class "$clsText"';
       } else if (row.parentPhone.length != 10) {
         row.error = 'Parent mobile number must be 10 digits';
+      } else if (validateAadhaarNumber(row.aadhaarNumber) != null) {
+        row.error = validateAadhaarNumber(row.aadhaarNumber);
       } else {
         // Duplicate check: against existing active students, and against
         // earlier rows already queued in this same file.
@@ -5627,7 +5669,7 @@ class _BulkImportStudentsState extends State<BulkImportStudents> {
         cls: r.cls,
         parentPhone: r.parentPhone,
         studentPhone: r.studentPhone,
-        aadhaar: true, // bulk import: Aadhaar is uploaded/verified separately per Section 3.2, not blocked per-row here
+        aadhaarNumber: r.aadhaarNumber,
         address: r.address,
         madrasa: madrasa!,
         dob: r.dob,
@@ -6862,7 +6904,7 @@ class _StudentsViewState extends State<StudentsView> {
   int cls = 1;
   String batch = 'Morning';
   String guardianRelation = 'Father';
-  bool aadhaar = false;
+  final aadhaarNo = TextEditingController();
   bool busy = false;
   String? regMadrasa;
 
@@ -6972,10 +7014,15 @@ class _StudentsViewState extends State<StudentsView> {
         ),
       ),
       field(address, 'Address (optional)', lines: 2),
-      OutlinedButton.icon(
-        onPressed: () => setState(() => aadhaar = true),
-        icon: Icon(aadhaar ? Icons.check_circle : Icons.upload_file, color: aadhaar ? Colors.green : null),
-        label: Text(aadhaar ? 'Aadhaar card attached (demo file)' : 'Upload Aadhaar card * (required)'),
+      Padding(
+        padding: const EdgeInsets.only(bottom: 8),
+        child: TextField(
+          controller: aadhaarNo,
+          keyboardType: TextInputType.number,
+          maxLength: 12,
+          inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+          decoration: const InputDecoration(labelText: 'Aadhaar number * (mandatory, 12 digits)', border: OutlineInputBorder()),
+        ),
       ),
       const SizedBox(height: 8),
       ElevatedButton(
@@ -6990,7 +7037,7 @@ class _StudentsViewState extends State<StudentsView> {
                   cls: cls,
                   parentPhone: digits(parent.text),
                   studentPhone: digits(stuPhone.text),
-                  aadhaar: aadhaar,
+                  aadhaarNumber: digits(aadhaarNo.text),
                   address: address.text,
                   madrasa: madrasaToUse,
                   dob: dob.text,
@@ -7021,7 +7068,7 @@ class _StudentsViewState extends State<StudentsView> {
                     cls: cls,
                     parentPhone: digits(parent.text),
                     studentPhone: digits(stuPhone.text),
-                    aadhaar: aadhaar,
+                    aadhaarNumber: digits(aadhaarNo.text),
                     address: address.text,
                     madrasa: madrasaToUse,
                     dob: dob.text,
@@ -7041,9 +7088,9 @@ class _StudentsViewState extends State<StudentsView> {
                   address.clear();
                   fatherName.clear();
                   dob.clear();
+                  aadhaarNo.clear();
                   setState(() {
                     gender = '';
-                    aadhaar = false;
                     guardianRelation = 'Father';
                   });
                 }
@@ -7124,14 +7171,13 @@ class _StudentsViewState extends State<StudentsView> {
               child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                 ListTile(
                   title: Text('${s.name} (${s.gender})'),
-                  subtitle: Text('${s.key} - ${st.className(s.cls)} - ${s.status}\nAadhaar uploaded: ${s.aadhaar ? 'Yes' : 'No'}${canSeeAadhaar ? '' : ' (teachers see only Yes or No)'}'),
+                  subtitle: Text('${s.key} - ${st.className(s.cls)} - ${s.status}\nAadhaar: ${canSeeAadhaar ? (s.aadhaarNumber.isEmpty ? 'not added yet' : s.aadhaarNumber) : (s.aadhaar ? 'Added' : 'Not added yet')}${canSeeAadhaar ? '' : ' (teachers see only Added or Not added)'}'),
                   isThreeLine: true,
                 ),
                 Padding(
                   padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
                   child: Wrap(alignment: WrapAlignment.end, spacing: 4, children: [
                     if (canEdit) TextButton(onPressed: () => editStudentDialog(context, s), child: const Text('Edit')),
-                    if (canSeeAadhaar) TextButton(onPressed: () => toast(context, 'Demo: Aadhaar card opens here (view is logged)'), child: const Text('View Aadhaar')),
                     if (canDeactivate && s.status == 'Active')
                       TextButton(
                         onPressed: () async {
@@ -7187,7 +7233,7 @@ class ApprovalsView extends StatelessWidget {
         Card(
           child: ListTile(
             title: Text('${st.pending[i].name} (${st.pending[i].gender})'),
-            subtitle: Text('${st.className(st.pending[i].cls)} - parent ${st.pending[i].parentPhone}\nAadhaar uploaded: ${st.pending[i].aadhaar ? 'Yes' : 'No - cannot approve'}'),
+            subtitle: Text('${st.className(st.pending[i].cls)} - parent ${st.pending[i].parentPhone}\nAadhaar added: ${st.pending[i].aadhaar ? 'Yes' : 'No - cannot approve'}'),
             isThreeLine: true,
             trailing: Row(mainAxisSize: MainAxisSize.min, children: [
               TextButton(onPressed: () => toast(context, st.approve(i)), child: const Text('Approve')),

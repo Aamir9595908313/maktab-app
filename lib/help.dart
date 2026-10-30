@@ -125,7 +125,7 @@ final List<HelpTopic> kHelpTopics = [
     title: 'Adding a new student',
     category: 'Students',
     keywords: ['admit', 'add student', 'new student', 'registration', 'enrol'],
-    body: 'Fill in name, Maktab, gender, class, batch, and a 10-digit parent mobile number (mandatory) - everything else is optional. Aadhaar upload is required before saving. '
+    body: 'Fill in name, Maktab, gender, class, batch, and a 10-digit parent mobile number (mandatory) - everything else is optional. A 12-digit Aadhaar number is mandatory before saving. '
         'Pick "Father" or "Husband" under Guardian relation before typing the name there - it decides whether that field is treated as the student\'s father\'s or husband\'s name everywhere it is shown, including reports.',
     roles: _allStaff,
     customPerm: 'Students',
