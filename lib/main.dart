@@ -5530,13 +5530,15 @@ class _ImportRow {
   final String address;
   final int cls;
   final String aadhaarNumber;
+  final String maktab; // '' => use the Maktab picked above the file chooser
+  final String batch; // 'Morning' / 'Afternoon' / 'Evening'
   String? error; // non-null => this row is skipped
   bool duplicate = false;
-  _ImportRow(this.rowNo, this.name, this.gender, this.dob, this.fatherName, this.guardianRelation, this.parentPhone, this.studentPhone, this.address, this.cls, this.aadhaarNumber);
+  _ImportRow(this.rowNo, this.name, this.gender, this.dob, this.fatherName, this.guardianRelation, this.parentPhone, this.studentPhone, this.address, this.cls, this.aadhaarNumber, this.maktab, this.batch);
 }
 
-const String kImportTemplateCsv = 'name,gender,class,dob,father_name,guardian_relation,parent_phone,student_phone,address,aadhaar_number\n'
-    'Ahmed Khan,Male,1,2017-05-12,Imran Khan,Father,9800000111,,House 12 Station Road,123456789012\n';
+const String kImportTemplateCsv = 'name,gender,class,dob,father_name,guardian_relation,parent_phone,student_phone,address,aadhaar_number,maktab,batch\n'
+    'Ahmed Khan,Male,1,2017-05-12,Imran Khan,Father,9800000111,,House 12 Station Road,123456789012,Jama Masjid Boys,Morning\n';
 
 class BulkImportStudents extends StatefulWidget {
   final List<String> pickableMadrasas;
@@ -5583,7 +5585,7 @@ class _BulkImportStudentsState extends State<BulkImportStudents> {
       return;
     }
     final header = table.first.map((h) => h.toString().trim().toLowerCase()).toList();
-    const expected = ['name', 'gender', 'class', 'dob', 'father_name', 'guardian_relation', 'parent_phone', 'student_phone', 'address', 'aadhaar_number'];
+    const expected = ['name', 'gender', 'class', 'dob', 'father_name', 'guardian_relation', 'parent_phone', 'student_phone', 'address', 'aadhaar_number', 'maktab', 'batch'];
     final colIndex = {for (final c in expected) c: header.indexOf(c)};
     if (colIndex['name'] == -1 || colIndex['gender'] == -1 || colIndex['class'] == -1 || colIndex['parent_phone'] == -1 || colIndex['aadhaar_number'] == -1) {
       setState(() => parseError = 'The header row must include at least: name, gender, class, parent_phone, aadhaar_number. Download the sample template below and use it as a starting point.');
@@ -5614,6 +5616,25 @@ class _BulkImportStudentsState extends State<BulkImportStudents> {
         cell(r, 'address'),
         cls,
         digits(cell(r, 'aadhaar_number')),
+        // Maktab (branch) and Batch (timing) are optional columns: blank
+        // falls back to the Maktab picked above and Morning. A value that
+        // doesn't match the app's lists is flagged below, never guessed.
+        () {
+          final v = cell(r, 'maktab').toLowerCase();
+          if (v.isEmpty) return '';
+          for (final m in widget.pickableMadrasas) {
+            if (m.toLowerCase() == v) return m;
+          }
+          return '?${cell(r, 'maktab')}';
+        }(),
+        () {
+          final v = cell(r, 'batch').toLowerCase();
+          if (v.isEmpty) return 'Morning';
+          for (final b in kBatches) {
+            if (b.toLowerCase() == v) return b;
+          }
+          return '?${cell(r, 'batch')}';
+        }(),
       );
       if (row.name.isEmpty) {
         row.error = 'Name is required';
@@ -5623,6 +5644,10 @@ class _BulkImportStudentsState extends State<BulkImportStudents> {
         row.error = 'Unknown class "$clsText"';
       } else if (row.parentPhone.length != 10) {
         row.error = 'Parent mobile number must be 10 digits';
+      } else if (row.maktab.startsWith('?')) {
+        row.error = 'Unknown Maktab "${row.maktab.substring(1)}" - use one of: ${widget.pickableMadrasas.join(', ')}';
+      } else if (row.batch.startsWith('?')) {
+        row.error = 'Unknown batch "${row.batch.substring(1)}" - use Morning, Afternoon or Evening';
       } else if (validateAadhaarNumber(row.aadhaarNumber) != null) {
         row.error = validateAadhaarNumber(row.aadhaarNumber);
       } else {
@@ -5671,10 +5696,11 @@ class _BulkImportStudentsState extends State<BulkImportStudents> {
         studentPhone: r.studentPhone,
         aadhaarNumber: r.aadhaarNumber,
         address: r.address,
-        madrasa: madrasa!,
+        madrasa: r.maktab.isEmpty ? madrasa! : r.maktab,
         dob: r.dob,
         fatherName: r.fatherName,
         guardianRelation: r.guardianRelation,
+        batch: r.batch,
         confirmDuplicate: true, // already shown and accepted in the preview step
       );
       if (!mounted) return;
