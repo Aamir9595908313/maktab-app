@@ -5239,11 +5239,14 @@ class _StaffHomeState extends State<StaffHome> {
           menuTile('Committee members', icon: Icons.diversity_3, badge: st.committeeAccounts.where((m) => !m.pending).length, onTap: () => pushPage(context, 'Committee', const CommitteeAdmin())),
           menuTile('Monthly Members', icon: Icons.volunteer_activism, badge: st.monthlyMembers.where((m) => m.isActive).length, onTap: () => pushPage(context, 'Monthly Members', const MonthlyMembersDashboard())),
           menuTile('Results', icon: Icons.grading, badge: st.examinations.length, onTap: () => pushPage(context, 'Results', const ResultsHub())),
+          // The Notifications bell stays in the top bar only (see the
+          // AppBar actions); this slot now opens the pending Add-on Course
+          // completions waiting for the Super Admin to approve or reject.
           menuTile(
-            'Notifications',
-            icon: Icons.notifications,
-            badge: st.unreadAdminNotifCount,
-            onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const AdminNotificationsScreen())),
+            'Add-on Course Approvals',
+            icon: Icons.verified,
+            badge: st.students.where((x) => x.status == 'Active').fold<int>(0, (n, x) => n + st.enrollmentsFor(x).where((e) => e.status == 'awaiting_approval').length),
+            onTap: () => pushPage(context, 'Add-on Course Approvals', const CourseApprovalsView()),
           ),
         ]),
         h('Post common announcement (all Makatib, all roles)'),
