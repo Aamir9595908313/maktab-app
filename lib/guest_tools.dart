@@ -642,19 +642,21 @@ class _CalendarScreenState extends State<CalendarScreen> {
   // with its Sehri End / Iftar times, each on its own line. A time the
   // Super Admin hasn't entered is simply not shown; with neither entered
   // nothing at all is shown (no placeholder, card looks as it always did).
-  Widget _timingsPanel() {
+  SehriIftarTiming? _selectedTiming() {
     final h = _gregorianToHijri(selected.add(Duration(days: hijriOffset)));
     final t = _timings['${h[0]}-${h[1]}-${h[2]}'];
+    return (t?.sehri == null && t?.iftar == null) ? null : t;
+  }
+
+  Widget _timingsPanel() {
+    final t = _selectedTiming();
     final sehri = t?.sehri;
     final iftar = t?.iftar;
     if (sehri == null && iftar == null) return const SizedBox.shrink();
-    final months = urdu ? hijriMonthsUr : hijriMonthsEn;
     const label = TextStyle(color: Colors.black54, fontSize: 12);
     const value = TextStyle(color: _kGreen, fontSize: 17, fontWeight: FontWeight.bold);
     return Column(crossAxisAlignment: CrossAxisAlignment.end, mainAxisSize: MainAxisSize.min, children: [
-      Text('${urdu ? 'عربی تاریخ' : 'Arabic Date'}: ${h[2]} ${months[h[1] - 1]} ${h[0]}', textAlign: TextAlign.end, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
       if (sehri != null) ...[
-        const SizedBox(height: 6),
         Text('${urdu ? 'سحری ختم' : 'Sehri End Time'}:', style: label),
         Text(formatTime12(sehri), style: value),
       ],
@@ -780,6 +782,15 @@ class _CalendarScreenState extends State<CalendarScreen> {
                     Text(urdu ? 'آج' : "Today", style: const TextStyle(color: Colors.black54, fontSize: 12)),
                     Text('${today.day} ${urdu ? _gMonthsUr[today.month - 1] : _gMonthsEn[today.month - 1]} ${today.year}', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
                     Text('${hToday[2]} ${urdu ? hijriMonthsUr[hToday[1] - 1] : hijriMonthsEn[hToday[1] - 1]} ${hToday[0]} ${urdu ? 'ہجری' : 'AH'}', style: const TextStyle(fontSize: 15, color: _kGreen, fontWeight: FontWeight.w600)),
+                    // One-line notice, shown only while timings are displayed.
+                    if (_selectedTiming() != null)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 8),
+                        child: Text(
+                          urdu ? '⚠️ سحری اور افطار کے اوقات صرف مہکر کے لیے ہیں۔' : '⚠️ Sehri & Iftar timings are for Mehkar only.',
+                          style: const TextStyle(fontSize: 11.5, color: Colors.black54),
+                        ),
+                      ),
                   ]),
                 ),
                 Expanded(flex: 4, child: Align(alignment: Alignment.topRight, child: _timingsPanel())),
