@@ -1418,23 +1418,29 @@ Future<String?> submitCourseCompletionRemote(CourseEnrollment e) async {
 }
 
 Future<String?> decideCourseCompletionRemote(Student s, CourseEnrollment e, bool approve, {String reason = ''}) async {
-  st.decideCourseCompletion(s, e, approve, reason: reason);
-  if (e.dbId == null) return 'This Add-on Course enrollment was not saved to the database yet.';
+  if (e.dbId == null) {
+    st.decideCourseCompletion(s, e, approve, reason: reason);
+    return 'This Add-on Course enrollment was not saved to the database yet.';
+  }
   try {
-    if (approve) {
-      await sb.from('course_enrollments').update({
-        'status': 'completed',
-        'completed_at': DateTime.now().toIso8601String(),
-        'approved_by': sb.auth.currentUser?.id,
-        'approved_at': DateTime.now().toIso8601String(),
-      }).eq('id', e.dbId as Object);
-      await sb.from('course_approval_log').insert({'enrollment_id': e.dbId, 'action': 'approved', 'actor_id': sb.auth.currentUser?.id});
-    } else {
-      await sb.from('course_enrollments').update({'status': 'in_progress', 'reject_reason': reason}).eq('id', e.dbId as Object);
-      await sb
-          .from('course_approval_log')
-          .insert({'enrollment_id': e.dbId, 'action': 'rejected', 'actor_id': sb.auth.currentUser?.id, 'remark': reason});
+    // Saved to the database FIRST and only then reflected on screen, and a
+    // save that changed no row (blocked by access rules, or the record no
+    // longer awaiting approval) is reported instead of looking successful.
+    final changed = approve
+        ? await sb.from('course_enrollments').update({
+            'status': 'completed',
+            'completed_at': DateTime.now().toIso8601String(),
+            'approved_by': sb.auth.currentUser?.id,
+            'approved_at': DateTime.now().toIso8601String(),
+          }).eq('id', e.dbId as Object).eq('status', 'awaiting_approval').select()
+        : await sb.from('course_enrollments').update({'status': 'in_progress', 'reject_reason': reason}).eq('id', e.dbId as Object).eq('status', 'awaiting_approval').select();
+    if ((changed as List).isEmpty) {
+      return 'Could not ${approve ? 'approve' : 'reject'} - it may already have been decided, or you do not have access. Pull to refresh and try again.';
     }
+    st.decideCourseCompletion(s, e, approve, reason: reason);
+    await sb
+        .from('course_approval_log')
+        .insert({'enrollment_id': e.dbId, 'action': approve ? 'approved' : 'rejected', 'actor_id': sb.auth.currentUser?.id, if (!approve) 'remark': reason});
     return null;
   } on PostgrestException catch (ex) {
     // The class-completion-guard trigger lives on `students`, not here, but
@@ -8947,8 +8953,10 @@ class CoursesTabBody extends StatelessWidget {
                   child: Row(children: [
                     ElevatedButton(
                       onPressed: () async {
+                        final ok = await confirmDialog(context, 'Approve this course completion?', 'Confirm that ${s.name} has completed "${c?.name ?? 'this Add-on Course'}". The student will show a green "Completed" badge.', confirmLabel: 'Approve', danger: false);
+                        if (!ok || !context.mounted) return;
                         final msg = await decideCourseCompletionRemote(s, e, true);
-                        if (context.mounted && msg != null) toast(context, msg);
+                        if (context.mounted) toast(context, msg ?? 'Approved.');
                       },
                       child: const Text('Approve'),
                     ),
@@ -9788,17 +9796,56 @@ class MasterDataDashboard extends StatelessWidget {
 }
 
 // ---------------- Course completion approvals (Teacher / Admin / Super Admin) ----------------
-class CourseApprovalsView extends StatelessWidget {
+class CourseApprovalsView extends StatefulWidget {
   const CourseApprovalsView({super.key});
   @override
+  State<CourseApprovalsView> createState() => _CourseApprovalsViewState();
+}
+
+class _CourseApprovalsViewState extends State<CourseApprovalsView> {
+  // Requests approved while this screen is open stay listed with a green
+  // "Approved" button (instead of vanishing) until the screen is left.
+  final Set<String> _approved = {};
+  final Set<String> _busy = {};
+
+  String _key(Student s, CourseEnrollment e) => '${s.id}-${e.courseId}';
+
+  Future<void> _approve(Student s, CourseEnrollment e, String courseName) async {
+    final k = _key(s, e);
+    final ok = await confirmDialog(
+      context,
+      'Approve this course completion?',
+      'Confirm that ${s.name} has completed "$courseName". The student will show a green "Completed" badge.',
+      confirmLabel: 'Approve',
+      danger: false,
+    );
+    if (!ok || !mounted) return;
+    setState(() => _busy.add(k));
+    final msg = await decideCourseCompletionRemote(s, e, true);
+    if (!mounted) return;
+    setState(() {
+      _busy.remove(k);
+      if (msg == null) _approved.add(k);
+    });
+    toast(context, msg ?? '${s.name} - $courseName approved.');
+  }
+
+  @override
   Widget build(BuildContext context) {
+    return AnimatedBuilder(animation: st, builder: (context, _) => _body(context));
+  }
+
+  Widget _body(BuildContext context) {
     final u = st.user!;
     final canDecide = u.role == 'admin' || u.role == 'super';
     final rows = <Widget>[];
     for (final s in st.students.where((s) => s.status == 'Active')) {
-      final pending = st.enrollmentsFor(s).where((e) => e.status == 'awaiting_approval').toList();
-      for (final e in pending) {
+      final list = st.enrollmentsFor(s).where((e) => e.status == 'awaiting_approval' || _approved.contains(_key(s, e))).toList();
+      for (final e in list) {
         final c = st.courseById(e.courseId);
+        final k = _key(s, e);
+        final done = _approved.contains(k);
+        final busy = _busy.contains(k);
         rows.add(Card(
           child: Padding(
             padding: const EdgeInsets.all(12),
@@ -9809,23 +9856,31 @@ class CourseApprovalsView extends StatelessWidget {
                 Padding(
                   padding: const EdgeInsets.only(top: 8),
                   child: Row(children: [
-                    ElevatedButton(
-                      onPressed: () async {
-                        final msg = await decideCourseCompletionRemote(s, e, true);
-                        if (context.mounted && msg != null) toast(context, msg);
-                      },
-                      child: const Text('Approve'),
-                    ),
-                    const SizedBox(width: 8),
-                    OutlinedButton(
-                      onPressed: () async {
-                        final r = await askText(context, 'Reason for rejection');
-                        if (r == null) return;
-                        final msg = await decideCourseCompletionRemote(s, e, false, reason: r);
-                        if (context.mounted && msg != null) toast(context, msg);
-                      },
-                      child: const Text('Reject'),
-                    ),
+                    if (done)
+                      ElevatedButton.icon(
+                        onPressed: () {},
+                        icon: const Icon(Icons.check_circle, size: 18),
+                        label: const Text('Approved'),
+                        style: ElevatedButton.styleFrom(backgroundColor: Colors.green, foregroundColor: Colors.white),
+                      )
+                    else ...[
+                      ElevatedButton(
+                        onPressed: busy ? null : () => _approve(s, e, c?.name ?? 'Add-on Course'),
+                        child: busy ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2)) : const Text('Approve'),
+                      ),
+                      const SizedBox(width: 8),
+                      OutlinedButton(
+                        onPressed: busy
+                            ? null
+                            : () async {
+                                final r = await askText(context, 'Reason for rejection');
+                                if (r == null) return;
+                                final msg = await decideCourseCompletionRemote(s, e, false, reason: r);
+                                if (context.mounted && msg != null) toast(context, msg);
+                              },
+                        child: const Text('Reject'),
+                      ),
+                    ],
                   ]),
                 )
               else
