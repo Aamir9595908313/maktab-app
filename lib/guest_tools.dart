@@ -402,6 +402,58 @@ Future<int> loadHijriOffsetDays() {
 // calendar adjustment, or adding/editing/deleting an Islamic event, so
 // every CalendarScreen already open (and the next one opened) picks up the
 // change immediately rather than only on the next cold app start.
+// ---------------- Sehri / Iftar timetable (public.sehri_iftar_timings) ----------------
+// One row per Hijri date, entered ONLY by a Super Admin (never calculated
+// here). Fetched fresh each time the Calendar opens (plus a live
+// subscription while it is open) so a change shows up for everyone without
+// an app restart.
+class SehriIftarTiming {
+  final String id;
+  final int hijriYear;
+  final int hijriMonth;
+  final int hijriDay;
+  final String? sehri; // 'HH:MM:SS' (24h) or null = not entered
+  final String? iftar;
+  const SehriIftarTiming({required this.id, required this.hijriYear, required this.hijriMonth, required this.hijriDay, this.sehri, this.iftar});
+
+  factory SehriIftarTiming.fromJson(Map<String, dynamic> r) => SehriIftarTiming(
+        id: r['id'] as String,
+        hijriYear: r['hijri_year'] as int,
+        hijriMonth: r['hijri_month'] as int,
+        hijriDay: r['hijri_day'] as int,
+        sehri: r['sehri_end_time'] as String?,
+        iftar: r['iftar_time'] as String?,
+      );
+
+  String get key => '$hijriYear-$hijriMonth-$hijriDay';
+}
+
+// '05:12:00' -> '05:12 AM', '18:24:00' -> '06:24 PM'
+String formatTime12(String t) {
+  final parts = t.split(':');
+  final h = int.tryParse(parts[0]) ?? 0;
+  final m = parts.length > 1 ? (int.tryParse(parts[1]) ?? 0) : 0;
+  final h12 = h % 12 == 0 ? 12 : h % 12;
+  return '${h12.toString().padLeft(2, '0')}:${m.toString().padLeft(2, '0')} ${h >= 12 ? 'PM' : 'AM'}';
+}
+
+Future<Map<String, SehriIftarTiming>> loadSehriIftarTimings() async {
+  try {
+    final rows = await Supabase.instance.client.from('sehri_iftar_timings').select();
+    final list = [for (final r in (rows as List)) SehriIftarTiming.fromJson(r as Map<String, dynamic>)];
+    return {for (final t in list) t.key: t};
+  } catch (_) {
+    return {}; // offline/failed: calendar looks exactly as it did before
+  }
+}
+
+// Today's Hijri [year, month, day] with the global Super Admin adjustment
+// applied - used by the timetable management screen to default its date.
+Future<List<int>> hijriTodayParts() async {
+  final off = await loadHijriOffsetDays();
+  return _gregorianToHijri(DateTime.now().add(Duration(days: off)));
+}
+
 Future<void> prefetchIslamicCalendarData() async {
   try {
     await Future.wait([loadHijriOffsetDays(), _loadIslamicEvents()]);
@@ -546,10 +598,72 @@ class _CalendarScreenState extends State<CalendarScreen> {
   // jumps to the corrected one a few seconds later.
   bool _dataReady = false;
 
+  // The date whose Sehri/Iftar timings the card at the top shows: today until
+  // the user taps another date in the grid.
+  DateTime selected = DateTime.now();
+  Map<String, SehriIftarTiming> _timings = {};
+  RealtimeChannel? _timingsChannel;
+
   @override
   void initState() {
     super.initState();
     _loadCalendarData();
+    _refreshTimings();
+    try {
+      _timingsChannel = Supabase.instance.client
+          .channel('calendar-sehri-iftar')
+          .onPostgresChanges(
+            event: PostgresChangeEvent.all,
+            schema: 'public',
+            table: 'sehri_iftar_timings',
+            callback: (_) => _refreshTimings(),
+          )
+          .subscribe();
+    } catch (_) {}
+  }
+
+  @override
+  void dispose() {
+    final ch = _timingsChannel;
+    if (ch != null) {
+      try {
+        Supabase.instance.client.removeChannel(ch);
+      } catch (_) {}
+    }
+    super.dispose();
+  }
+
+  Future<void> _refreshTimings() async {
+    final m = await loadSehriIftarTimings();
+    if (mounted) setState(() => _timings = m);
+  }
+
+  // Right-hand side of the Today card: the Arabic date of the selected day
+  // with its Sehri End / Iftar times, each on its own line. A time the
+  // Super Admin hasn't entered is simply not shown; with neither entered
+  // nothing at all is shown (no placeholder, card looks as it always did).
+  Widget _timingsPanel() {
+    final h = _gregorianToHijri(selected.add(Duration(days: hijriOffset)));
+    final t = _timings['${h[0]}-${h[1]}-${h[2]}'];
+    final sehri = t?.sehri;
+    final iftar = t?.iftar;
+    if (sehri == null && iftar == null) return const SizedBox.shrink();
+    final months = urdu ? hijriMonthsUr : hijriMonthsEn;
+    const label = TextStyle(color: Colors.black54, fontSize: 12);
+    const value = TextStyle(color: _kGreen, fontSize: 17, fontWeight: FontWeight.bold);
+    return Column(crossAxisAlignment: CrossAxisAlignment.end, mainAxisSize: MainAxisSize.min, children: [
+      Text('${urdu ? 'عربی تاریخ' : 'Arabic Date'}: ${h[2]} ${months[h[1] - 1]} ${h[0]}', textAlign: TextAlign.end, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
+      if (sehri != null) ...[
+        const SizedBox(height: 6),
+        Text('${urdu ? 'سحری ختم' : 'Sehri End Time'}:', style: label),
+        Text(formatTime12(sehri), style: value),
+      ],
+      if (iftar != null) ...[
+        const SizedBox(height: 6),
+        Text('${urdu ? 'افطار کا وقت' : 'Iftar Time'}:', style: label),
+        Text(formatTime12(iftar), style: value),
+      ],
+    ]);
   }
 
   Future<void> _loadCalendarData() async {
@@ -659,10 +773,16 @@ class _CalendarScreenState extends State<CalendarScreen> {
             color: const Color(0xFFEEF4E8),
             child: Padding(
               padding: const EdgeInsets.all(14),
-              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text(urdu ? 'آج' : "Today", style: const TextStyle(color: Colors.black54, fontSize: 12)),
-                Text('${today.day} ${urdu ? _gMonthsUr[today.month - 1] : _gMonthsEn[today.month - 1]} ${today.year}', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-                Text('${hToday[2]} ${urdu ? hijriMonthsUr[hToday[1] - 1] : hijriMonthsEn[hToday[1] - 1]} ${hToday[0]} ${urdu ? 'ہجری' : 'AH'}', style: const TextStyle(fontSize: 15, color: _kGreen, fontWeight: FontWeight.w600)),
+              child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Expanded(
+                  flex: 5,
+                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    Text(urdu ? 'آج' : "Today", style: const TextStyle(color: Colors.black54, fontSize: 12)),
+                    Text('${today.day} ${urdu ? _gMonthsUr[today.month - 1] : _gMonthsEn[today.month - 1]} ${today.year}', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                    Text('${hToday[2]} ${urdu ? hijriMonthsUr[hToday[1] - 1] : hijriMonthsEn[hToday[1] - 1]} ${hToday[0]} ${urdu ? 'ہجری' : 'AH'}', style: const TextStyle(fontSize: 15, color: _kGreen, fontWeight: FontWeight.w600)),
+                  ]),
+                ),
+                Expanded(flex: 4, child: Align(alignment: Alignment.topRight, child: _timingsPanel())),
               ]),
             ),
           ),
@@ -755,8 +875,12 @@ class _CalendarScreenState extends State<CalendarScreen> {
                   final hDay = hDate[2];
                   final hYear = hDate[0];
                   final matches = _eventsOn(hMonth, hDay, hYear);
+                  final isSelected = date.year == selected.year && date.month == selected.month && date.day == selected.day;
                   return GestureDetector(
-                    onTap: matches.isEmpty ? null : () => _showEventPopup(matches, hMonth, hDay, hYear),
+                    onTap: () {
+                      setState(() => selected = date);
+                      if (matches.isNotEmpty) _showEventPopup(matches, hMonth, hDay, hYear);
+                    },
                     child: Container(
                       margin: const EdgeInsets.all(1.5),
                       decoration: BoxDecoration(
@@ -766,7 +890,9 @@ class _CalendarScreenState extends State<CalendarScreen> {
                         // same as it already won over the Friday highlight.
                         color: isToday ? _kGreen : (matches.isNotEmpty ? _kEventPurple : (isFriday ? const Color(0xFFFFF3CF) : const Color(0xFFFAFAF5))),
                         borderRadius: BorderRadius.circular(6),
-                        border: Border.all(color: isToday ? _kGreen : (matches.isNotEmpty ? _kEventPurpleBorder : const Color(0xFFE3E0D0)), width: 1),
+                        border: isSelected
+                            ? Border.all(color: Colors.black87, width: 2.2)
+                            : Border.all(color: isToday ? _kGreen : (matches.isNotEmpty ? _kEventPurpleBorder : const Color(0xFFE3E0D0)), width: 1),
                       ),
                       alignment: Alignment.center,
                       child: Column(mainAxisAlignment: MainAxisAlignment.center, mainAxisSize: MainAxisSize.min, children: [
@@ -785,8 +911,8 @@ class _CalendarScreenState extends State<CalendarScreen> {
               padding: const EdgeInsets.all(12),
               child: Text(
                 urdu
-                    ? 'جمعہ کا دن نمایاں ہے۔ سنہری نشان والی تاریخ پر کسی اسلامی واقعہ کی تفصیل دیکھنے کے لیے ٹیپ کریں۔'
-                    : 'Fridays are highlighted. Tap a date with a gold dot to see its Islamic event.',
+                    ? 'جمعہ کا دن نمایاں ہے۔ کسی تاریخ پر ٹیپ کر کے اس کی سحری/افطار کا وقت دیکھیں؛ جامنی تاریخ پر اسلامی واقعہ کی تفصیل بھی کھلتی ہے۔'
+                    : 'Fridays are highlighted. Tap a date to see its Sehri/Iftar timings; a purple date also opens its Islamic event.',
                 style: const TextStyle(fontSize: 12.5, color: Colors.black54),
               ),
             ),

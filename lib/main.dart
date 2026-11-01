@@ -25,6 +25,7 @@ import 'results.dart';
 import 'help.dart';
 import 'dua_kalimat.dart';
 import 'islamic_calendar_admin.dart';
+import 'timetable_admin.dart';
 
 final AppState st = AppState();
 const Color kGreen = Color(0xFF054D00);
@@ -9163,6 +9164,12 @@ class _MasterDataViewState extends State<MasterDataView> {
           icon: const Icon(Icons.event_note),
           label: const Text('Islamic Event Management'),
           onPressed: () => pushPage(context, 'Islamic Event Management', const IslamicEventManagementView()),
+        ),
+        const SizedBox(height: 8),
+        OutlinedButton.icon(
+          icon: const Icon(Icons.schedule),
+          label: const Text('Timetable Management (Sehri / Iftar)'),
+          onPressed: () => pushPage(context, 'Timetable Management', const TimetableManagementView()),
         ),
       ], // end isSuper (Super Admin Tools)
       if (_show(MasterDataSection.classes)) ...[
