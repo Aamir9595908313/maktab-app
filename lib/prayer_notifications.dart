@@ -187,7 +187,7 @@ class PrayerNotificationService {
   // prayer in the next 7 days. Safe to call repeatedly - it clears any
   // previously scheduled prayer notifications first so times never
   // double-fire or go stale after the user moves to a new location.
-  static Future<void> scheduleUpcoming({required double latitude, required double longitude}) async {
+  static Future<void> scheduleUpcoming({required double latitude, required double longitude, String? placeName}) async {
     if (!await isEnabled()) return;
     await initialize();
     // Remember the last known location so reminders can be refreshed at every
@@ -195,6 +195,9 @@ class PrayerNotificationService {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setDouble('prayer_last_lat', latitude);
     await prefs.setDouble('prayer_last_lng', longitude);
+    if (placeName != null && placeName.trim().isNotEmpty) await prefs.setString('prayer_last_place', placeName.trim());
+    final place = (prefs.getString('prayer_last_place') ?? '').trim();
+    final city = place.split(',').first.trim(); // 'Mehkar, Maharashtra' -> 'Mehkar'
     await _plugin.cancelAll();
 
     final today = DateTime.now();
@@ -246,8 +249,8 @@ class PrayerNotificationService {
         if (!scheduled.isAfter(now)) continue; // never schedule a time already past
         await _plugin.zonedSchedule(
           id++,
-          '${p.label} time',
-          "It's time for ${p.label} prayer.",
+          city.isEmpty ? '${p.label} time' : '${p.label} time in $city',
+          place.isEmpty ? "It's time for ${p.label} prayer." : "It's time for ${p.label} prayer in $place.",
           scheduled,
           const NotificationDetails(
             android: AndroidNotificationDetails(

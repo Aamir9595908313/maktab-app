@@ -1036,10 +1036,18 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
       });
       // Best-effort, non-blocking: the place name and any scheduled
       // reminders should never hold up showing the prayer times themselves.
-      unawaited(_reverseGeocode(pos.latitude, pos.longitude));
-      if (notifEnabled) {
-        unawaited(PrayerNotificationService.scheduleUpcoming(latitude: pos.latitude, longitude: pos.longitude).catchError((_) {}).whenComplete(_refreshNotifSummary));
-      }
+      // Reminders are scheduled only after the place name resolves, so each
+      // notification can say where the time is for ("Asr time in Mehkar").
+      // If the name can't be found, they are still scheduled, just without it.
+      unawaited(() async {
+        await _reverseGeocode(pos.latitude, pos.longitude);
+        if (notifEnabled) {
+          try {
+            await PrayerNotificationService.scheduleUpcoming(latitude: pos.latitude, longitude: pos.longitude, placeName: placeName);
+          } catch (_) {}
+          await _refreshNotifSummary();
+        }
+      }());
     } catch (_) {
       if (!mounted) return;
       setState(() => status = _PrayerStatus.networkError);
@@ -1086,7 +1094,7 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
       }
       if (lat != null && lng != null) {
         try {
-          await PrayerNotificationService.scheduleUpcoming(latitude: lat!, longitude: lng!);
+          await PrayerNotificationService.scheduleUpcoming(latitude: lat!, longitude: lng!, placeName: placeName);
         } catch (_) {
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
