@@ -26,6 +26,7 @@ import 'help.dart';
 import 'dua_kalimat.dart';
 import 'islamic_calendar_admin.dart';
 import 'timetable_admin.dart';
+import 'holiday_admin.dart';
 
 final AppState st = AppState();
 const Color kGreen = Color(0xFF054D00);
@@ -9170,6 +9171,12 @@ class _MasterDataViewState extends State<MasterDataView> {
           icon: const Icon(Icons.schedule),
           label: const Text('Timetable Management (Sehri / Iftar)'),
           onPressed: () => pushPage(context, 'Timetable Management', const TimetableManagementView()),
+        ),
+        const SizedBox(height: 8),
+        OutlinedButton.icon(
+          icon: const Icon(Icons.beach_access),
+          label: const Text('Declare Holiday'),
+          onPressed: () => pushPage(context, 'Declare Holiday', const HolidayDeclarationView()),
         ),
       ], // end isSuper (Super Admin Tools)
       if (_show(MasterDataSection.classes)) ...[
