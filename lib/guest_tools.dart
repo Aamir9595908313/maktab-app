@@ -571,6 +571,46 @@ class CalendarScreen extends StatefulWidget {
   State<CalendarScreen> createState() => _CalendarScreenState();
 }
 
+// Highlighted one-line notice that gently zooms in and out (a slow pulse)
+// so it draws the eye without being a distracting animation.
+class _PulseNotice extends StatefulWidget {
+  final String text;
+  const _PulseNotice({required this.text});
+  @override
+  State<_PulseNotice> createState() => _PulseNoticeState();
+}
+
+class _PulseNoticeState extends State<_PulseNotice> with SingleTickerProviderStateMixin {
+  late final AnimationController _c = AnimationController(vsync: this, duration: const Duration(milliseconds: 1100))..repeat(reverse: true);
+  late final Animation<double> _scale = Tween<double>(begin: 0.96, end: 1.06).animate(CurvedAnimation(parent: _c, curve: Curves.easeInOut));
+
+  @override
+  void dispose() {
+    _c.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ScaleTransition(
+      scale: _scale,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+        decoration: BoxDecoration(
+          color: const Color(0xFFFFF3CF),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: const Color(0xFFE0A800), width: 1),
+        ),
+        child: Text(
+          widget.text,
+          textAlign: TextAlign.center,
+          style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold, color: Color(0xFF8A2C0D)),
+        ),
+      ),
+    );
+  }
+}
+
 class _CalendarScreenState extends State<CalendarScreen> {
   bool urdu = false;
   // Was hardcoded to a fixed sample date (2026-09-19) regardless of the
@@ -648,23 +688,39 @@ class _CalendarScreenState extends State<CalendarScreen> {
     return (t?.sehri == null && t?.iftar == null) ? null : t;
   }
 
+  // Right side of the Today card, top to bottom: the highlighted "for Mehkar
+  // only" notice (pulsing zoom in/out), then the Sehri/Iftar labels in one
+  // column beside their times in another, row for row. A time the Super
+  // Admin hasn't entered drops its whole row; with neither entered nothing
+  // is shown and the card looks as it did before the timetable existed.
   Widget _timingsPanel() {
     final t = _selectedTiming();
     final sehri = t?.sehri;
     final iftar = t?.iftar;
     if (sehri == null && iftar == null) return const SizedBox.shrink();
-    const label = TextStyle(color: Colors.black54, fontSize: 12);
-    const value = TextStyle(color: _kGreen, fontSize: 17, fontWeight: FontWeight.bold);
-    return Column(crossAxisAlignment: CrossAxisAlignment.end, mainAxisSize: MainAxisSize.min, children: [
-      if (sehri != null) ...[
-        Text('${urdu ? 'سحری ختم' : 'Sehri End Time'}:', style: label),
-        Text(formatTime12(sehri), style: value),
-      ],
-      if (iftar != null) ...[
-        const SizedBox(height: 6),
-        Text('${urdu ? 'افطار کا وقت' : 'Iftar Time'}:', style: label),
-        Text(formatTime12(iftar), style: value),
-      ],
+    const label = TextStyle(color: Colors.black87, fontSize: 12, fontWeight: FontWeight.w600);
+    const value = TextStyle(color: _kGreen, fontSize: 16, fontWeight: FontWeight.bold);
+    Widget cell(Widget w, Alignment al) => SizedBox(height: 26, child: Align(alignment: al, child: w));
+    final labels = <Widget>[
+      if (sehri != null) cell(Text('${urdu ? 'سحری ختم' : 'Sehri End Time'}:', style: label), Alignment.centerLeft),
+      if (iftar != null) cell(Text('${urdu ? 'افطار کا وقت' : 'Iftar Time'}:', style: label), Alignment.centerLeft),
+    ];
+    final times = <Widget>[
+      if (sehri != null) cell(Text(formatTime12(sehri), style: value), Alignment.centerRight),
+      if (iftar != null) cell(Text(formatTime12(iftar), style: value), Alignment.centerRight),
+    ];
+    return Column(crossAxisAlignment: CrossAxisAlignment.stretch, mainAxisSize: MainAxisSize.min, children: [
+      _PulseNotice(text: urdu ? '⚠️ سحری اور افطار کے اوقات صرف مہکر کے لیے ہیں۔' : '⚠️ Sehri & Iftar timings are for Mehkar only.'),
+      const SizedBox(height: 8),
+      FittedBox(
+        fit: BoxFit.scaleDown,
+        alignment: Alignment.centerRight,
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: labels),
+          const SizedBox(width: 10),
+          Column(crossAxisAlignment: CrossAxisAlignment.end, mainAxisSize: MainAxisSize.min, children: times),
+        ]),
+      ),
     ]);
   }
 
@@ -776,24 +832,27 @@ class _CalendarScreenState extends State<CalendarScreen> {
             child: Padding(
               padding: const EdgeInsets.all(14),
               child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                // Date block: the Hijri year always sits on its own second
+                // line, and each line shrinks to fit rather than wrapping.
                 Expanded(
-                  flex: 5,
+                  flex: 10,
                   child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                     Text(urdu ? 'آج' : "Today", style: const TextStyle(color: Colors.black54, fontSize: 12)),
-                    Text('${today.day} ${urdu ? _gMonthsUr[today.month - 1] : _gMonthsEn[today.month - 1]} ${today.year}', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-                    Text('${hToday[2]} ${urdu ? hijriMonthsUr[hToday[1] - 1] : hijriMonthsEn[hToday[1] - 1]} ${hToday[0]} ${urdu ? 'ہجری' : 'AH'}', style: const TextStyle(fontSize: 15, color: _kGreen, fontWeight: FontWeight.w600)),
-                    // One-line notice, shown only while timings are displayed.
-                    if (_selectedTiming() != null)
-                      Padding(
-                        padding: const EdgeInsets.only(top: 8),
-                        child: Text(
-                          urdu ? '⚠️ سحری اور افطار کے اوقات صرف مہکر کے لیے ہیں۔' : '⚠️ Sehri & Iftar timings are for Mehkar only.',
-                          style: const TextStyle(fontSize: 11.5, color: Colors.black54),
-                        ),
-                      ),
+                    FittedBox(
+                      fit: BoxFit.scaleDown,
+                      alignment: Alignment.centerLeft,
+                      child: Text('${today.day} ${urdu ? _gMonthsUr[today.month - 1] : _gMonthsEn[today.month - 1]} ${today.year}', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                    ),
+                    FittedBox(
+                      fit: BoxFit.scaleDown,
+                      alignment: Alignment.centerLeft,
+                      child: Text('${hToday[2]} ${urdu ? hijriMonthsUr[hToday[1] - 1] : hijriMonthsEn[hToday[1] - 1]}', style: const TextStyle(fontSize: 15, color: _kGreen, fontWeight: FontWeight.w600)),
+                    ),
+                    Text('${hToday[0]} ${urdu ? 'ہجری' : 'AH'}', style: const TextStyle(fontSize: 15, color: _kGreen, fontWeight: FontWeight.w600)),
                   ]),
                 ),
-                Expanded(flex: 4, child: Align(alignment: Alignment.topRight, child: _timingsPanel())),
+                const SizedBox(width: 8),
+                Expanded(flex: 11, child: _timingsPanel()),
               ]),
             ),
           ),
