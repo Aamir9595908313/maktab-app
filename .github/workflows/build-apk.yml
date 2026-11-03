@@ -247,12 +247,13 @@ jobs:
                       '            }\n        }\n    }',
                       1,
                   )
-              if "signingConfig = signingConfigs" not in src:
-                  src = src.replace(
-                      "release {",
-                      'release {\n            signingConfig = if (keystorePropertiesFile.exists()) signingConfigs.getByName("release") else signingConfigs.getByName("debug")',
-                      1,
-                  )
+              cond = 'if (keystorePropertiesFile.exists()) signingConfigs.getByName("release") else signingConfigs.getByName("debug")'
+              if "signingConfig = signingConfigs.getByName(\"debug\")" in src:
+                  # Flutter's scaffold already ships this line in the release
+                  # buildType, so replace it rather than skipping the switch.
+                  src = src.replace("signingConfig = signingConfigs.getByName(\"debug\")", "signingConfig = " + cond, 1)
+              elif "signingConfig = if (keystorePropertiesFile" not in src:
+                  src = src.replace("release {", "release {\n            signingConfig = " + cond, 1)
           else:
               header = (
                   'def keystorePropertiesFile = rootProject.file("key.properties")\n'
@@ -275,12 +276,11 @@ jobs:
                       '            }\n        }\n    }',
                       1,
                   )
-              if "signingConfig signingConfigs" not in src:
-                  src = src.replace(
-                      "release {",
-                      "release {\n            signingConfig keystorePropertiesFile.exists() ? signingConfigs.release : signingConfigs.debug",
-                      1,
-                  )
+              condg = "keystorePropertiesFile.exists() ? signingConfigs.release : signingConfigs.debug"
+              if "signingConfig signingConfigs.debug" in src:
+                  src = src.replace("signingConfig signingConfigs.debug", "signingConfig " + condg, 1)
+              elif "signingConfig keystorePropertiesFile" not in src:
+                  src = src.replace("release {", "release {\n            signingConfig " + condg, 1)
 
           with open(path, "w") as f:
               f.write(src)
