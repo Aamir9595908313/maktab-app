@@ -285,16 +285,6 @@ jobs:
           with open(path, "w") as f:
               f.write(src)
           PYEOF
-      - name: DIAG signing (temporary)
-        env:
-          K: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-          A: ${{ secrets.ANDROID_KEY_ALIAS }}
-        run: |
-          echo "DIAG secret_len=${#K} alias_len=${#A}"
-          ls -l android/key.properties android/app/upload-keystore.jks 2>&1 || true
-          grep -n "signingConfig\|keystoreProperties" android/app/build.gradle* || true
-          echo "DIAG_END"
-          exit 1
       - name: Generate app launcher icon
         # The android/ folder above is freshly scaffolded on every run (it's
         # gitignored, not checked in), so it always starts with Flutter's
@@ -336,6 +326,7 @@ jobs:
         # obfuscated AOT snapshot in the APK itself.
         run: |
           set -o pipefail
+          ( echo "DIAG key.properties: $(ls android/key.properties 2>&1)"; ls -l android/app/upload-keystore.jks 2>&1; grep -n "signingConfig\|keystoreProperties" android/app/build.gradle* ; echo DIAG_END ) 2>&1 | tee build-log.txt; exit 1
           (flutter pub get && flutter build apk --release --split-per-abi --obfuscate --split-debug-info=build/app/outputs/symbols) 2>&1 | tee build-log.txt
       - name: Build release App Bundle (.aab, for Play Store)
         id: buildaab
