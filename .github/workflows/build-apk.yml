@@ -176,6 +176,7 @@ jobs:
               f.write(src)
           PYEOF
       - name: Decode release signing keystore (if configured)
+        # (Permanent release key now configured via the four ANDROID_* secrets.)
         # Play Store refuses an app signed with Flutter's public debug
         # key, and every future update must be signed with the SAME key -
         # so this has to be a real keystore kept outside the repo, fed in
