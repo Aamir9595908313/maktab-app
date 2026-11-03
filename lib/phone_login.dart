@@ -57,7 +57,7 @@ class FirebasePhoneLogin {
       case 'network-request-failed':
         return 'No internet connection. Check your network and try again.';
       default:
-        return 'Could not complete phone verification (${e.code}). Please try again.';
+        return 'Could not complete phone verification (${e.code}): ${e.message ?? 'no details'}';
     }
   }
 
