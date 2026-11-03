@@ -18,6 +18,7 @@ import 'package:printing/printing.dart';
 import 'state.dart';
 import 'guest_tools.dart';
 import 'supabase_config.dart';
+import 'phone_login.dart';
 import 'sadqa_peti.dart';
 import 'prayer_notifications.dart';
 import 'monthly_members.dart';
@@ -54,6 +55,8 @@ void main() {
 
 Future<void> _connectSupabase() async {
   await Supabase.initialize(url: SupabaseConfig.url, anonKey: SupabaseConfig.anonKey).timeout(const Duration(seconds: 12));
+  // Real phone-OTP login (Firebase). No-op if this build has no Firebase config.
+  await FirebasePhoneLogin.init();
   // Warm the Calendar's shared data (Hijri adjustment + Islamic events) in
   // the background so the Calendar screen opens already correct.
   unawaited(prefetchIslamicCalendarData());
@@ -3681,10 +3684,23 @@ class _GuestHomeState extends State<GuestHome> {
       err = '';
     });
     try {
-      await sb.auth.signInWithOtp(phone: '+91$p');
+      if (FirebasePhoneLogin.ready) {
+        final auto = await FirebasePhoneLogin.sendCode(p, onAutoVerified: _onAutoVerified);
+        if (auto) {
+          await _onAutoVerified();
+          return;
+        }
+      } else {
+        await sb.auth.signInWithOtp(phone: '+91$p');
+      }
       setState(() {
         busy = false;
         step2 = true;
+      });
+    } on PhoneLoginException catch (e) {
+      setState(() {
+        busy = false;
+        err = e.message;
       });
     } on AuthException catch (e) {
       setState(() {
@@ -3710,13 +3726,22 @@ class _GuestHomeState extends State<GuestHome> {
       otp.clear();
     });
     try {
-      await sb.auth.signInWithOtp(phone: '+91${digits(phone.text)}');
+      if (FirebasePhoneLogin.ready) {
+        await FirebasePhoneLogin.sendCode(digits(phone.text), onAutoVerified: _onAutoVerified);
+      } else {
+        await sb.auth.signInWithOtp(phone: '+91${digits(phone.text)}');
+      }
       if (!mounted) return;
       setState(() {
         busy = false;
         err = '';
       });
       toast(context, 'A new OTP has been sent.');
+    } on PhoneLoginException catch (e) {
+      setState(() {
+        busy = false;
+        err = e.message;
+      });
     } on AuthException catch (e) {
       setState(() {
         busy = false;
@@ -3737,8 +3762,62 @@ class _GuestHomeState extends State<GuestHome> {
       err = '';
     });
     try {
-      final res = await sb.auth.verifyOTP(phone: '+91$p', token: otp.text.trim(), type: OtpType.sms);
-      final uid = res.user?.id;
+      final res = FirebasePhoneLogin.ready
+          ? await FirebasePhoneLogin.verifyCode(otp.text.trim())
+          : await sb.auth.verifyOTP(phone: '+91$p', token: otp.text.trim(), type: OtpType.sms);
+      await _completeLogin(res.user?.id);
+    } on PhoneLoginException catch (e) {
+      setState(() {
+        busy = false;
+        err = e.message;
+      });
+    } on AuthException catch (e) {
+      // Supabase's own wording here ("Token has expired or is invalid") is
+      // accurate but doesn't tell someone what to do about it - an OTP is
+      // only valid for a short window, so this fires often simply because
+      // it was typed in a bit too slowly, not because anything is broken.
+      final expired = e.message.toLowerCase().contains('expired') || e.message.toLowerCase().contains('invalid');
+      setState(() {
+        busy = false;
+        err = expired ? 'This OTP has expired or was entered incorrectly. Tap "Resend OTP" below to get a new one.' : e.message;
+      });
+    } catch (e) {
+      setState(() {
+        busy = false;
+        err = 'Could not verify the OTP. Check your internet connection and try again.';
+      });
+    }
+  }
+
+  // Phone auto-verified the SMS (no typing needed): finish the same way.
+  Future<void> _onAutoVerified() async {
+    if (!mounted) return;
+    setState(() {
+      busy = true;
+      err = '';
+    });
+    try {
+      final res = await FirebasePhoneLogin.exchangeForSupabaseSession();
+      await _completeLogin(res.user?.id);
+    } on PhoneLoginException catch (e) {
+      if (mounted) {
+        setState(() {
+          busy = false;
+          err = e.message;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          busy = false;
+          err = 'Could not sign you in. Check your internet connection and try again.';
+        });
+      }
+    }
+  }
+
+  Future<void> _completeLogin(String? uid) async {
+    try {
       if (uid == null) {
         setState(() {
           busy = false;

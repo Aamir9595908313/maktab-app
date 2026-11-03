@@ -285,6 +285,54 @@ jobs:
           with open(path, "w") as f:
               f.write(src)
           PYEOF
+      - name: Firebase phone-login config (if configured)
+        # Real mobile-number OTP login uses Firebase. The values come from the
+        # GOOGLE_SERVICES_JSON repo secret (never committed - this repo is
+        # public) and are written into lib/firebase_config.dart for this build
+        # only. Without the secret the committed empty stub stays and the app
+        # keeps using the Supabase OTP login. firebase_auth needs minSdk 23.
+        env:
+          GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
+        run: |
+          python3 - <<'PYEOF'
+          import json, os, re
+
+          # minSdk >= 23 for the Firebase plugins (harmless without the secret).
+          for path in ("android/app/build.gradle.kts", "android/app/build.gradle"):
+              if not os.path.exists(path):
+                  continue
+              src = open(path).read()
+              if path.endswith(".kts"):
+                  src2 = re.sub(r"minSdk\s*=\s*flutter\.minSdkVersion", "minSdk = maxOf(23, flutter.minSdkVersion)", src)
+                  src2 = re.sub(r"minSdk\s*=\s*(\d+)", lambda m: "minSdk = 23" if int(m.group(1)) < 23 else m.group(0), src2)
+              else:
+                  src2 = re.sub(r"minSdkVersion\s+flutter\.minSdkVersion", "minSdkVersion Math.max(23, flutter.minSdkVersion)", src)
+                  src2 = re.sub(r"minSdkVersion\s+(\d+)", lambda m: "minSdkVersion 23" if int(m.group(1)) < 23 else m.group(0), src2)
+              if src2 != src:
+                  open(path, "w").write(src2)
+              print("minSdk line:", [l.strip() for l in src2.splitlines() if "minSdk" in l])
+
+          raw = os.environ.get("GOOGLE_SERVICES_JSON", "").strip()
+          if not raw:
+              print("No GOOGLE_SERVICES_JSON secret - keeping Supabase OTP login.")
+          else:
+              d = json.loads(raw)
+              info = d["project_info"]
+              client = next(c for c in d["client"] if c["client_info"]["android_client_info"]["package_name"] == "com.faizeraza.maktab_app")
+              vals = {
+                  "apiKey": client["api_key"][0]["current_key"],
+                  "appId": client["client_info"]["mobilesdk_app_id"],
+                  "projectId": info["project_id"],
+                  "messagingSenderId": info["project_number"],
+                  "storageBucket": info.get("storage_bucket", ""),
+              }
+              body = "class FirebaseConfig {\n"
+              for k, v in vals.items():
+                  body += "  static const String %s = %s;\n" % (k, json.dumps(v))
+              body += "  static bool get isConfigured => apiKey.isNotEmpty && appId.isNotEmpty && projectId.isNotEmpty;\n}\n"
+              open("lib/firebase_config.dart", "w").write(body)
+              print("Firebase configured for project:", info["project_id"])
+          PYEOF
       - name: Generate app launcher icon
         # The android/ folder above is freshly scaffolded on every run (it's
         # gitignored, not checked in), so it always starts with Flutter's
