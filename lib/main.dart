@@ -19,6 +19,7 @@ import 'state.dart';
 import 'guest_tools.dart';
 import 'supabase_config.dart';
 import 'phone_login.dart';
+import 'push.dart';
 import 'sadqa_peti.dart';
 import 'prayer_notifications.dart';
 import 'monthly_members.dart';
@@ -573,6 +574,7 @@ Future<String?> submitOneAttendanceRemote(Student s, String status, {required St
   if (status == 'A' && s.status == 'Active') {
     if (await _claimAbsenceNotification(s, date) == NotifyOutcome.sentNow) {
       st.sendAbsenceNotification(s, madrasa, date);
+      unawaited(PushService.notifyAbsence(s.dbId!, date));
     }
   }
   return null;
@@ -680,6 +682,7 @@ Future<AttendanceSubmitResult> submitAttendanceSessionRemote({
     final outcome = await _claimAbsenceNotification(s, date);
     if (outcome == NotifyOutcome.sentNow) {
       st.sendAbsenceNotification(s, madrasa, date);
+      unawaited(PushService.notifyAbsence(s.dbId!, date));
       notified++;
     } else if (outcome == NotifyOutcome.failed) {
       retryNeeded.add(s);
@@ -3850,6 +3853,7 @@ class _GuestHomeState extends State<GuestHome> {
         return;
       }
       st.loginWithAccount(account);
+      unawaited(PushService.registerForCurrentUser());
       // Fire-and-forget: Master Data (Madrasas/Courses) loads in the
       // background so login itself isn't held up by it; the Home screen
       // and Master Data screen just show demo data for a moment if this is
@@ -4372,6 +4376,9 @@ class _ShellState extends State<Shell> {
                 // student details, etc.) so the back button can't walk
                 // back into authenticated screens after logging out.
                 nav.popUntil((r) => r.isFirst);
+                try {
+                  await PushService.unregister().timeout(const Duration(seconds: 4));
+                } catch (_) {}
                 try {
                   await sb.auth.signOut().timeout(const Duration(seconds: 8));
                 } catch (_) {

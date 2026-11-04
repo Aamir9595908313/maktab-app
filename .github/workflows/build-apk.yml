@@ -331,6 +331,18 @@ jobs:
                   body += "  static const String %s = %s;\n" % (k, json.dumps(v))
               body += "  static bool get isConfigured => apiKey.isNotEmpty && appId.isNotEmpty && projectId.isNotEmpty;\n}\n"
               open("lib/firebase_config.dart", "w").write(body)
+              # Native side (what the google-services Gradle plugin would
+              # generate): lets Android push (FCM) start Firebase on its own,
+              # even when the app process was launched by an incoming push.
+              os.makedirs("android/app/src/main/res/values", exist_ok=True)
+              def esc(v):
+                  return v.replace("&", "&amp;").replace("<", "&lt;").replace("'", "\\'")
+              xml = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<resources>\n"
+              for name, key in (("google_app_id", "appId"), ("google_api_key", "apiKey"), ("google_crash_reporting_api_key", "apiKey"),
+                                ("gcm_defaultSenderId", "messagingSenderId"), ("project_id", "projectId"), ("google_storage_bucket", "storageBucket")):
+                  xml += '    <string name="%s" translatable="false">%s</string>\n' % (name, esc(vals[key]))
+              xml += "</resources>\n"
+              open("android/app/src/main/res/values/firebase_strings.xml", "w").write(xml)
               print("Firebase configured for project:", info["project_id"])
           PYEOF
       - name: Generate app launcher icon
