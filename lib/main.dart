@@ -3079,7 +3079,16 @@ class _MaktabAppState extends State<MaktabApp> {
       // nothing in this app's own code controlled. Forcing ltr here makes
       // every screen's layout consistent regardless of the device's
       // system language.
-      builder: (context, child) => Directionality(textDirection: TextDirection.ltr, child: child ?? const SizedBox.shrink()),
+      builder: (context, child) => Directionality(
+        textDirection: TextDirection.ltr,
+        // Keep every screen, bottom sheet and dialog clear of the Android
+        // navigation bar (back / home / recents buttons) so bottom buttons
+        // are never hidden underneath it.
+        child: ColoredBox(
+          color: const Color(0xFFF7F8F5),
+          child: SafeArea(top: false, left: false, right: false, child: child ?? const SizedBox.shrink()),
+        ),
+      ),
       // themeMode defaults to following the OS; without an explicit
       // darkTheme, Flutter would otherwise keep using this same light
       // theme either way, so this alone wasn't the "black field" cause -
