@@ -66,29 +66,95 @@ Future<void> _connectSupabase() async {
   await _restoreSession();
 }
 
+Map<String, dynamic> _accToJson(Account a) => {
+      'phone': a.phone, 'name': a.name, 'role': a.role, 'roleName': a.roleName, 'branches': a.branches,
+      'teachMadrasas': a.teachMadrasas, 'myClasses': [for (final c in a.myClasses) {'m': c.madrasa, 'c': c.cls}],
+      'active': a.active, 'dbId': a.dbId, 'pending': a.pending, 'extraPerms': a.extraPerms.toList(),
+    };
+
+Account _accFromJson(Map<String, dynamic> j) => Account(j['phone'] as String? ?? '', j['name'] as String? ?? '', j['role'] as String? ?? 'parent',
+    roleName: j['roleName'] as String? ?? '',
+    branches: [for (final x in (j['branches'] as List? ?? [])) x as String],
+    teachMadrasas: [for (final x in (j['teachMadrasas'] as List? ?? [])) x as String],
+    myClasses: [for (final x in (j['myClasses'] as List? ?? [])) ClassAssignment(x['m'] as String, x['c'] as int)],
+    active: j['active'] as bool? ?? true, dbId: j['dbId'] as String?, pending: j['pending'] as bool? ?? false,
+    extraPerms: {for (final x in (j['extraPerms'] as List? ?? [])) x as String});
+
+Future<void> _saveAccountCache(Account a) async {
+  try {
+    final p = await SharedPreferences.getInstance();
+    await p.setString('cached_account', jsonEncode(_accToJson(a)));
+  } catch (_) {}
+}
+
+Future<Account?> _loadAccountCache() async {
+  try {
+    final p = await SharedPreferences.getInstance();
+    final raw = p.getString('cached_account');
+    if (raw == null) return null;
+    return _accFromJson(jsonDecode(raw) as Map<String, dynamic>);
+  } catch (_) {
+    return null;
+  }
+}
+
+Future<void> _clearAccountCache() async {
+  try {
+    final p = await SharedPreferences.getInstance();
+    await p.remove('cached_account');
+  } catch (_) {}
+}
+
+Future<void> _forceSignOut() async {
+  try { await sb.auth.signOut().timeout(const Duration(seconds: 6)); } catch (_) {}
+  await _clearAccountCache();
+  st.logout();
+}
+
+// WhatsApp-style start: if a saved session exists, open straight into the
+// app from the cached account (works with no/weak internet), then refresh
+// the profile in the background.
 Future<void> _restoreSession() async {
   final session = sb.auth.currentSession;
   if (session == null) return;
+  final cached = await _loadAccountCache();
+  if (cached != null && cached.active) {
+    st.loginWithAccount(cached);
+    unawaited(PushService.registerForCurrentUser());
+    unawaited(_refreshAccount(session.user.id, cached));
+    return;
+  }
+  // No cache yet (first launch after update): needs the network once.
+  final account = await loadSupabaseProfile(session.user.id).timeout(const Duration(seconds: 12));
+  if (account == null || !account.active) {
+    await _forceSignOut();
+    return;
+  }
+  await _saveAccountCache(account);
+  st.loginWithAccount(account);
+  unawaited(PushService.registerForCurrentUser());
+  unawaited(loadMasterData().then((_) => subscribeRealtime()));
+}
+
+Future<void> _refreshAccount(String uid, Account cached) async {
   try {
-    Account? account;
-    for (var i = 0; i < 3 && account == null; i++) {
-      account = await loadSupabaseProfile(session.user.id).timeout(const Duration(seconds: 12));
-      if (account == null) await Future.delayed(const Duration(milliseconds: 400));
-    }
-    if (account == null || !account.active) {
-      // Profile gone or account deactivated: require a fresh login.
-      try { await sb.auth.signOut().timeout(const Duration(seconds: 6)); } catch (_) {}
+    final fresh = await loadSupabaseProfile(uid).timeout(const Duration(seconds: 20));
+    if (fresh == null || !fresh.active) {
+      await _forceSignOut();
       return;
     }
-    st.loginWithAccount(account);
-    unawaited(PushService.registerForCurrentUser());
-    unawaited(loadMasterData().then((_) => subscribeRealtime()));
+    await _saveAccountCache(fresh);
+    if (jsonEncode(_accToJson(fresh)) != jsonEncode(_accToJson(cached))) {
+      final keepSplash = st.showLoginSplash;
+      st.loginWithAccount(fresh);
+      if (!keepSplash) st.dismissLoginSplash();
+    }
+    await loadMasterData().then((_) => subscribeRealtime());
   } on AuthException {
-    // Refresh token revoked/expired: sign in again.
-    try { await sb.auth.signOut().timeout(const Duration(seconds: 6)); } catch (_) {}
+    await _forceSignOut();
+  } catch (_) {
+    // Offline / slow network: keep working from the cached account.
   }
-  // Network errors propagate so the Retry screen appears instead of
-  // wrongly logging the person out.
 }
 
 // Maps the Supabase schema's role names to the names the rest of this app
@@ -3880,6 +3946,7 @@ class _GuestHomeState extends State<GuestHome> {
         });
         return;
       }
+      unawaited(_saveAccountCache(account));
       st.loginWithAccount(account);
       unawaited(PushService.registerForCurrentUser());
       // Fire-and-forget: Master Data (Madrasas/Courses) loads in the
@@ -4400,6 +4467,7 @@ class _ShellState extends State<Shell> {
                 // session is invalidated too when possible), but a slow or
                 // failed network call can no longer block the local logout.
                 st.logout();
+                unawaited(_clearAccountCache());
                 // Drop any screens pushed via Navigator.push (Roles,
                 // student details, etc.) so the back button can't walk
                 // back into authenticated screens after logging out.
