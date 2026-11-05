@@ -1228,6 +1228,7 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
         lat = pos.latitude;
         lng = pos.longitude;
         timings = t.map((k, v) => MapEntry(k, v.toString()));
+        if (timings['Maghrib'] != null) timings['Maghrib'] = addMinutesToHhmm(timings['Maghrib']!, kMaghribOffsetMinutes);
         status = _PrayerStatus.ready;
       });
       // Best-effort, non-blocking: the place name and any scheduled

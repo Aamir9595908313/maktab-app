@@ -28,6 +28,19 @@ const String _channelId = 'prayer_times_channel';
 const String _channelName = 'Prayer Time Reminders';
 const String _channelDesc = 'Notifies you when each prayer time starts.';
 
+// Local adjustment: Maghrib is shown and notified this many minutes AFTER
+// the calculated sunset-based time (a safety margin).
+const int kMaghribOffsetMinutes = 2;
+
+/// Adds [minutes] to an "HH:mm" string (keeps any trailing text out). Wraps past midnight.
+String addMinutesToHhmm(String hhmm, int minutes) {
+  final m = RegExp(r'^(\d{1,2}):(\d{2})').firstMatch(hhmm.trim());
+  if (m == null) return hhmm;
+  var total = int.parse(m.group(1)!) * 60 + int.parse(m.group(2)!) + minutes;
+  total %= 24 * 60;
+  return '${(total ~/ 60).toString().padLeft(2, '0')}:${(total % 60).toString().padLeft(2, '0')}';
+}
+
 class _PrayerDef {
   final String label;
   final String apiKey;
@@ -245,7 +258,7 @@ class PrayerNotificationService {
         final hour = int.tryParse(parts[0]);
         final minute = int.tryParse(parts[1]);
         if (hour == null || minute == null) continue;
-        final scheduled = tz.TZDateTime(tz.local, d.year, d.month, d.day, hour, minute);
+        final scheduled = tz.TZDateTime(tz.local, d.year, d.month, d.day, hour, minute + (p.apiKey == 'Maghrib' ? kMaghribOffsetMinutes : 0));
         if (!scheduled.isAfter(now)) continue; // never schedule a time already past
         await _plugin.zonedSchedule(
           id++,
