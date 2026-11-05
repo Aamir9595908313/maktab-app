@@ -94,6 +94,17 @@ class PrayerNotificationService {
     _initialized = true;
   }
 
+  // Per-prayer alarm switch (speaker icon on the Prayer Times screen).
+  static Future<Set<String>> mutedPrayers() async {
+    final prefs = await SharedPreferences.getInstance();
+    return {for (final p in _prayers) if (prefs.getBool('prayer_muted_${p.apiKey}') ?? false) p.apiKey};
+  }
+
+  static Future<void> setPrayerMuted(String apiKey, bool muted) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('prayer_muted_$apiKey', muted);
+  }
+
   static Future<bool> isEnabled() async {
     final prefs = await SharedPreferences.getInstance();
     return prefs.getBool(_prefKeyEnabled) ?? false;
@@ -212,6 +223,7 @@ class PrayerNotificationService {
     final place = (prefs.getString('prayer_last_place') ?? '').trim();
     final city = place.split(',').first.trim(); // 'Mehkar, Maharashtra' -> 'Mehkar'
     await _plugin.cancelAll();
+    final muted = await mutedPrayers();
 
     final today = DateTime.now();
     final days = [for (int i = 0; i < 7; i++) DateTime(today.year, today.month, today.day).add(Duration(days: i))];
@@ -250,6 +262,7 @@ class PrayerNotificationService {
       final t = timingsByDate[key];
       if (t == null) continue;
       for (final p in _prayers) {
+        if (muted.contains(p.apiKey)) continue;
         final raw = t[p.apiKey];
         if (raw == null) continue;
         final cleaned = raw.split(' ').first; // API sometimes appends " (TZ)"

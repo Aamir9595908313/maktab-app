@@ -11,6 +11,7 @@ import 'package:http/http.dart' as http;
 import 'package:printing/printing.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'prayer_notifications.dart';
+import 'prayer_dial.dart';
 import 'state.dart' show AboutUsContent, AboutUsSection, kMadrasaCategories;
 
 const Color _kGreen = Color(0xFF054D00);
@@ -1138,7 +1139,12 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
   Future<void> _loadNotifPref() async {
     final enabled = await PrayerNotificationService.isEnabled();
     if (!mounted) return;
-    setState(() => notifEnabled = enabled);
+    final muted = await PrayerNotificationService.mutedPrayers();
+    if (!mounted) return;
+    setState(() {
+      notifEnabled = enabled;
+      mutedPrayers = muted;
+    });
     _refreshNotifSummary();
   }
 
@@ -1356,89 +1362,39 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
     return '$h:$minute $suffix';
   }
 
+  Set<String> mutedPrayers = {};
+
+  Future<void> _toggleMute(String key) async {
+    if (!notifEnabled) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Turn on "Prayer alarm" first.')));
+      return;
+    }
+    final nowMuted = !mutedPrayers.contains(key);
+    await PrayerNotificationService.setPrayerMuted(key, nowMuted);
+    if (!mounted) return;
+    setState(() => nowMuted ? mutedPrayers.add(key) : mutedPrayers.remove(key));
+    if (lat != null && lng != null) {
+      try {
+        await PrayerNotificationService.scheduleUpcoming(latitude: lat!, longitude: lng!, placeName: placeName);
+      } catch (_) {}
+      await _refreshNotifSummary();
+    }
+  }
+
   Widget _ready() {
-    final rows = [
-      ['Fajr', _fmt12Hour(timings['Fajr'])],
-      ['Sunrise', _fmt12Hour(timings['Sunrise'])],
-      ['Dhuhr', _fmt12Hour(timings['Dhuhr'])],
-      ['Asr', _fmt12Hour(timings['Asr'])],
-      ['Maghrib', _fmt12Hour(timings['Maghrib'])],
-      ['Isha', _fmt12Hour(timings['Isha'])],
-    ];
-    return ListView(
-      padding: const EdgeInsets.all(16),
-      children: [
-        Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const Icon(Icons.location_on, size: 16, color: _kGreen),
-            const SizedBox(width: 4),
-            Flexible(
-              child: Text(
-                placeLoading ? 'Finding your location…' : (placeName ?? '${lat!.toStringAsFixed(3)}, ${lng!.toStringAsFixed(3)}'),
-                style: const TextStyle(color: Colors.black87, fontSize: 13, fontWeight: FontWeight.w600),
-                textAlign: TextAlign.center,
-                overflow: TextOverflow.ellipsis,
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 2),
-        Text('${lat!.toStringAsFixed(3)}, ${lng!.toStringAsFixed(3)}', style: const TextStyle(color: Colors.black38, fontSize: 11), textAlign: TextAlign.center),
-        const SizedBox(height: 4),
-        Center(
-          child: OutlinedButton.icon(
-            onPressed: status == _PrayerStatus.loading ? null : _updateToCurrentLocation,
-            icon: const Icon(Icons.my_location, size: 18),
-            label: const Text('Update current location'),
-            style: OutlinedButton.styleFrom(foregroundColor: _kGreen, side: const BorderSide(color: _kGreen)),
-          ),
-        ),
-        const SizedBox(height: 8),
-        Card(
-          child: SwitchListTile(
-            value: notifEnabled,
-            onChanged: notifBusy ? null : _onToggleNotif,
-            activeColor: _kGreen,
-            title: const Text('Notify me at prayer time', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
-            subtitle: const Text(
-              'Shows an in-app notification the moment each prayer starts (not WhatsApp/SMS). Works even if the app is closed.',
-              style: TextStyle(fontSize: 11.5),
-            ),
-          ),
-        ),
-        if (notifEnabled && notifSummary.isNotEmpty)
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 4),
-            child: Text(notifSummary, style: const TextStyle(fontSize: 11.5, color: Colors.black54)),
-          ),
-        Align(
-          alignment: Alignment.centerRight,
-          child: TextButton.icon(
-            onPressed: notifBusy ? null : _sendTestNotification,
-            icon: const Icon(Icons.notifications_active_outlined, size: 16),
-            label: const Text('Send test notification', style: TextStyle(fontSize: 12)),
-          ),
-        ),
-        const SizedBox(height: 6),
-        for (final r in rows)
-          Card(
-            child: ListTile(
-              title: Text(r[0]!, style: const TextStyle(fontWeight: FontWeight.bold)),
-              trailing: Text(r[1] ?? '-', style: const TextStyle(fontSize: 16, color: _kGreen, fontWeight: FontWeight.bold)),
-            ),
-          ),
-        const SizedBox(height: 10),
-        const Card(
-          child: Padding(
-            padding: EdgeInsets.all(12),
-            child: Text(
-              "Asr is calculated using the Hanafi method (the later time, when a shadow is twice the object's height, instead of once). Times are computed for your live GPS location and can be a few minutes off from your local mosque's posted timetable.",
-              style: TextStyle(fontSize: 12, color: Colors.black54),
-            ),
-          ),
-        ),
-      ],
+    final label = (placeName != null && placeName!.trim().isNotEmpty) ? placeName!.split(',').first.trim().toUpperCase() : '${lat!.toStringAsFixed(2)}, ${lng!.toStringAsFixed(2)}';
+    return PrayerDialView(
+      timings: timings,
+      placeLabel: label,
+      notifEnabled: notifEnabled,
+      notifBusy: notifBusy,
+      notifSummary: notifSummary,
+      muted: mutedPrayers,
+      onToggleNotif: _onToggleNotif,
+      onToggleMute: _toggleMute,
+      onUpdateLocation: _updateToCurrentLocation,
+      onTest: _sendTestNotification,
+      updating: placeLoading,
     );
   }
 }
