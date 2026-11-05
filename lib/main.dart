@@ -2100,6 +2100,73 @@ Future<String?> setUserRoleRemote({
 // been - a Super Admin searches an existing account by mobile number,
 // sees what they already have, and only adds to it.
 
+// ---------------- Find a person by mobile number (Roles & Permissions) ----------------
+class PersonLookup {
+  final String phone10;
+  final String? userId; // null = no account yet
+  final String name;
+  final String roleLabel;
+  final String dbRole;
+  final bool active;
+  final List<String> branches;
+  final Set<String> extraPerms;
+  final String? inviteRole; // pending invite (no login yet)
+  final List<String> inviteBranches;
+  final List<String> children; // students whose parent mobile is this number
+  PersonLookup({required this.phone10, this.userId, this.name = '', this.roleLabel = '', this.dbRole = '', this.active = true, this.branches = const [],
+      this.extraPerms = const {}, this.inviteRole, this.inviteBranches = const [], this.children = const []});
+}
+
+String _roleLabelFor(String dbRole, String customName) {
+  switch (dbRole) {
+    case 'super_admin': return 'Super Admin';
+    case 'madrasa_admin': return 'Maktab Admin';
+    case 'teacher': return 'Teacher';
+    case 'committee': return 'Committee Member';
+    case 'parent': return 'Parent';
+    case 'student': return 'Student';
+    case 'custom': return customName.isEmpty ? 'Custom role' : 'Custom role: $customName';
+    default: return dbRole;
+  }
+}
+
+Future<PersonLookup?> lookupPersonByPhoneRemote(String phone) async {
+  final p = digits(phone);
+  if (p.length != 10) return null;
+  final full = '91$p';
+  final row = await sb.from('user_profiles').select('id, full_name, base_role, custom_role_id, is_active').eq('phone', full).maybeSingle();
+  final inv = await sb.from('pending_role_invites').select().eq('phone', full).maybeSingle();
+  List<String> kids = [];
+  try {
+    final kr = await sb.from('students').select('name').eq('parent_phone', p);
+    kids = [for (final r in (kr as List)) (r['name'] as String?) ?? ''].where((n) => n.isNotEmpty).toList();
+  } catch (_) {}
+  if (row == null) {
+    return PersonLookup(
+      phone10: p,
+      inviteRole: inv == null ? null : _roleLabelFor((inv['base_role'] as String?) ?? '', ''),
+      inviteBranches: inv == null ? const [] : List<String>.from((inv['madrasa_names'] as List?) ?? []),
+      name: (inv?['full_name'] as String?) ?? '',
+      children: kids,
+    );
+  }
+  final uid = row['id'] as String;
+  String customName = '';
+  if (row['custom_role_id'] != null) {
+    final rr = await sb.from('roles').select('name').eq('id', row['custom_role_id'] as Object).maybeSingle();
+    customName = (rr?['name'] as String?) ?? '';
+  }
+  final scopeRows = await sb.from('user_madrasa_scope').select('madrasas(name)').eq('user_id', uid);
+  final branches = [for (final r in (scopeRows as List)) ((r['madrasas'] as Map?)?['name'] as String?) ?? ''].where((n) => n.isNotEmpty).toList();
+  final extraRows = await sb.from('user_extra_permissions').select('screen_key').eq('user_id', uid);
+  final extra = <String>{for (final r in (extraRows as List)) (r['screen_key'] as String?) ?? ''}..removeWhere((x) => x.isEmpty);
+  final dbRole = (row['base_role'] as String?) ?? '';
+  return PersonLookup(
+    phone10: p, userId: uid, name: (row['full_name'] as String?) ?? '', roleLabel: _roleLabelFor(dbRole, customName), dbRole: dbRole,
+    active: (row['is_active'] as bool?) ?? true, branches: branches, extraPerms: extra, children: kids,
+  );
+}
+
 class GrantLookupResult {
   final String userId;
   final String name;
@@ -8189,6 +8256,130 @@ class _RolesViewState extends State<RolesView> {
   static const List<String> screens = ['Students', 'Fees', 'Reports', 'Leave', 'Sadqa Peti', 'Monthly Members'];
   static const List<String> builtInRoles = ['Super Admin', 'Maktab Admin', 'Teacher', 'Committee Member'];
 
+  // "Find a person by mobile number" card.
+  final pPhone = TextEditingController();
+  bool pBusy = false;
+  PersonLookup? person;
+  String? personError;
+
+  Future<void> _findPerson() async {
+    setState(() {
+      pBusy = true;
+      person = null;
+      personError = null;
+    });
+    PersonLookup? r;
+    String? err;
+    if (digits(pPhone.text).length != 10) {
+      err = 'Enter a valid 10-digit mobile number.';
+    } else {
+      try {
+        r = await lookupPersonByPhoneRemote(pPhone.text);
+      } catch (_) {
+        err = 'Could not search. Check your internet connection and try again.';
+      }
+    }
+    if (!mounted) return;
+    setState(() {
+      pBusy = false;
+      person = r;
+      personError = err;
+    });
+  }
+
+  Widget _personCard() {
+    final p = person!;
+    final isMe = p.userId != null && p.userId == sb.auth.currentUser?.id;
+    final noRecord = p.userId == null && p.inviteRole == null && p.children.isEmpty;
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(p.name.isEmpty ? '+91 ${p.phone10}' : '${p.name}  (+91 ${p.phone10})', style: const TextStyle(fontWeight: FontWeight.bold)),
+          if (p.userId != null) ...[
+            const SizedBox(height: 4),
+            Text('Role: ${p.roleLabel}', style: const TextStyle(fontSize: 13)),
+            Text('Status: ${p.active ? 'Active' : 'Deactivated'}', style: TextStyle(fontSize: 13, color: p.active ? Colors.green[800] : Colors.red)),
+            Text('Makatib: ${p.branches.isEmpty ? (p.dbRole == 'super_admin' ? 'All' : 'none') : p.branches.join(', ')}', style: const TextStyle(fontSize: 13)),
+            if (p.extraPerms.isNotEmpty) Text('Extra access: ${p.extraPerms.join(', ')}', style: const TextStyle(fontSize: 13)),
+          ],
+          if (p.userId == null && p.inviteRole != null) ...[
+            const SizedBox(height: 4),
+            Text('Invited as ${p.inviteRole} - has not logged in yet.', style: const TextStyle(fontSize: 13)),
+            if (p.inviteBranches.isNotEmpty) Text('Makatib: ${p.inviteBranches.join(', ')}', style: const TextStyle(fontSize: 13)),
+          ],
+          if (p.children.isNotEmpty) Text('Parent mobile of: ${p.children.join(', ')}', style: const TextStyle(fontSize: 13)),
+          if (noRecord) const Text('No account, invite or student is linked to this number. You can add a role below.', style: TextStyle(fontSize: 13, color: Colors.black54)),
+          const SizedBox(height: 8),
+          Wrap(spacing: 8, runSpacing: 4, children: [
+            OutlinedButton.icon(
+              icon: const Icon(Icons.add_moderator, size: 18),
+              label: Text(p.userId == null && p.inviteRole == null ? 'Add role' : 'Change / add role'),
+              onPressed: () {
+                setState(() {
+                  aPhone.text = p.phone10;
+                  aName.text = p.name;
+                  gPhone.text = p.phone10;
+                });
+                toast(context, 'Number and name filled in below - choose the role under "Assign / change role" and tap Save role.');
+              },
+            ),
+            if (p.userId != null)
+              OutlinedButton.icon(
+                icon: Icon(p.active ? Icons.block : Icons.check_circle, size: 18, color: p.active ? Colors.red : Colors.green),
+                label: Text(p.active ? 'Deactivate' : 'Activate'),
+                onPressed: pBusy || isMe
+                    ? null
+                    : () async {
+                        final ok = await showDialog<bool>(
+                          context: context,
+                          builder: (ctx) => AlertDialog(
+                            title: Text(p.active ? 'Deactivate this person?' : 'Activate this person?'),
+                            content: Text(p.active ? 'They will not be able to use the app until you activate them again.' : 'They will be able to log in again.'),
+                            actions: [TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')), TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Yes'))],
+                          ),
+                        );
+                        if (ok != true) return;
+                        setState(() => pBusy = true);
+                        String? e;
+                        try {
+                          await sb.from('user_profiles').update({'is_active': !p.active}).eq('id', p.userId!);
+                        } catch (_) {
+                          e = 'Could not save. Check your internet connection and try again.';
+                        }
+                        if (!mounted) return;
+                        setState(() => pBusy = false);
+                        toast(context, e ?? (p.active ? 'Deactivated' : 'Activated'));
+                        if (e == null) await _findPerson();
+                      },
+              ),
+            if (p.userId == null && p.inviteRole != null)
+              OutlinedButton.icon(
+                icon: const Icon(Icons.delete_outline, size: 18, color: Colors.red),
+                label: const Text('Cancel invite'),
+                onPressed: pBusy
+                    ? null
+                    : () async {
+                        setState(() => pBusy = true);
+                        String? e;
+                        try {
+                          await sb.from('pending_role_invites').delete().eq('phone', '91${p.phone10}');
+                        } catch (_) {
+                          e = 'Could not cancel. Check your internet connection and try again.';
+                        }
+                        if (!mounted) return;
+                        setState(() => pBusy = false);
+                        toast(context, e ?? 'Invite cancelled');
+                        if (e == null) await _findPerson();
+                      },
+              ),
+          ]),
+          if (isMe) const Padding(padding: EdgeInsets.only(top: 4), child: Text('This is your own account - you cannot deactivate yourself.', style: TextStyle(fontSize: 12, color: Colors.black54))),
+        ]),
+      ),
+    );
+  }
+
   // "Give extra screen access" - additive, see grantExtraPermissionRemote.
   final gPhone = TextEditingController();
   bool gLookupBusy = false;
@@ -8227,6 +8418,21 @@ class _RolesViewState extends State<RolesView> {
   Widget build(BuildContext context) {
     final names = st.customRoles.keys.toList();
     return page([
+      h('Find a person by mobile number', icon: Icons.manage_search),
+      const Padding(
+        padding: EdgeInsets.only(bottom: 6),
+        child: Text('Enter a mobile number to see that person\'s role, status and Makatib - then add or change a role, or deactivate / activate them.', style: TextStyle(color: Colors.black54, fontSize: 12.5)),
+      ),
+      Row(children: [
+        Expanded(child: field(pPhone, '10-digit mobile number', number: true)),
+        const SizedBox(width: 8),
+        ElevatedButton(
+          onPressed: pBusy ? null : _findPerson,
+          child: pBusy ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2)) : const Text('Search'),
+        ),
+      ]),
+      if (personError != null) Padding(padding: const EdgeInsets.only(top: 4), child: Text(personError!, style: const TextStyle(color: Colors.red))),
+      if (person != null) _personCard(),
       h('Create role', icon: Icons.admin_panel_settings),
       field(roleName, 'Role name (for example Accountant, or Result Manager)'),
       const Text('Tick the screens this role can see and add/edit:'),
