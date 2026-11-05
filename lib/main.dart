@@ -25,6 +25,7 @@ import 'prayer_notifications.dart';
 import 'monthly_members.dart';
 import 'results.dart';
 import 'help.dart';
+import 'user_management.dart';
 import 'dua_kalimat.dart';
 import 'islamic_calendar_admin.dart';
 import 'timetable_admin.dart';
@@ -10187,9 +10188,13 @@ class MasterDataDashboard extends StatelessWidget {
         if (canManageOrg) sectionTile('Maktab', Icons.account_balance, '${st.madrasas.length}', MasterDataSection.maktab),
         sectionTile('Classes & Books', Icons.menu_book, '${st.classDefs.length}', MasterDataSection.classes),
         if (canManageOrg) sectionTile('Teachers', Icons.groups, '${st.teacherAccounts.where((t) => !t.pending).length}', MasterDataSection.teachers),
-        if (canManageOrg) sectionTile('Maktab Admins', Icons.admin_panel_settings, 'Invite', MasterDataSection.maktabAdmins),
-        if (canManageOrg) sectionTile('Committee Members', Icons.diversity_3, 'Invite', MasterDataSection.committee),
-        if (canManageOrg) sectionTile('Users and Roles', Icons.admin_panel_settings, 'Permissions', MasterDataSection.usersRoles),
+        // Super Admin: one User Management screen replaces the separate
+        // Maktab Admins / Committee Members / Users and Roles tiles.
+        if (isSuper)
+          tile('User Management', 'Users', icon: Icons.manage_accounts, onTap: () => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const UserManagementScreen()))),
+        if (canManageOrg && !isSuper) sectionTile('Maktab Admins', Icons.admin_panel_settings, 'Invite', MasterDataSection.maktabAdmins),
+        if (canManageOrg && !isSuper) sectionTile('Committee Members', Icons.diversity_3, 'Invite', MasterDataSection.committee),
+        if (canManageOrg && !isSuper) sectionTile('Users and Roles', Icons.admin_panel_settings, 'Permissions', MasterDataSection.usersRoles),
         if (canManageOrg) sectionTile('Add-on Courses', Icons.auto_stories, '${st.courses.length}', MasterDataSection.addonCourses),
         if (isSuper) sectionTile('Super Admin Tools', Icons.settings_suggest, "About Us, Notifications, Dua'iya Kalimat", MasterDataSection.superTools),
       ]),
