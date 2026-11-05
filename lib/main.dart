@@ -4874,6 +4874,38 @@ class SyllabusBody extends StatelessWidget {
     return cd.pageBased ? _pageBody(context, cd) : _chapterBody(context);
   }
 
+  // Classes before this student's current one are shown as already done,
+  // with a note that this happened before the app tracked progress.
+  List<Widget> _earlierClasses() {
+    final prev = st.classDefs.entries.where((e) => e.key < s.cls && e.value.active).toList()..sort((a, b) => a.key.compareTo(b.key));
+    if (prev.isEmpty) return const [];
+    return [
+      Card(
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            const Text('Earlier classes', style: TextStyle(fontWeight: FontWeight.bold)),
+            const SizedBox(height: 6),
+            for (final e in prev)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 3),
+                child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  const Icon(Icons.check_circle, color: Color(0xFF2E7D32), size: 20),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      Text(e.value.name, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13.5)),
+                      const Text('Completed before tracking', style: TextStyle(color: Color(0xFF2E7D32), fontSize: 12)),
+                    ]),
+                  ),
+                ]),
+              ),
+          ]),
+        ),
+      ),
+    ];
+  }
+
   Widget _pageBody(BuildContext context, ClassDef cd) {
     final p = st.pageProg(s);
     final cur = st.currentPageNo(s);
@@ -4892,6 +4924,7 @@ class SyllabusBody extends StatelessWidget {
           ]),
         ),
       ),
+      ..._earlierClasses(),
       const SizedBox(height: 4),
       const Text('Legend: green = Completed (with date), amber = In progress, grey = Pending', style: TextStyle(fontSize: 11.5, color: Colors.black54)),
       const SizedBox(height: 8),
@@ -4991,6 +5024,7 @@ class SyllabusBody extends StatelessWidget {
           ]),
         ),
       ),
+      ..._earlierClasses(),
       for (var i = 0; i < p.length; i++)
         Card(
           child: Padding(
