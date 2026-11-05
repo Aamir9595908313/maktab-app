@@ -61,6 +61,34 @@ Future<void> _connectSupabase() async {
   // Warm the Calendar's shared data (Hijri adjustment + Islamic events) in
   // the background so the Calendar screen opens already correct.
   unawaited(prefetchIslamicCalendarData());
+  // Stay signed in like WhatsApp: Supabase keeps the session on the phone,
+  // so rebuild the account from it instead of asking for an OTP again.
+  await _restoreSession();
+}
+
+Future<void> _restoreSession() async {
+  final session = sb.auth.currentSession;
+  if (session == null) return;
+  try {
+    Account? account;
+    for (var i = 0; i < 3 && account == null; i++) {
+      account = await loadSupabaseProfile(session.user.id).timeout(const Duration(seconds: 12));
+      if (account == null) await Future.delayed(const Duration(milliseconds: 400));
+    }
+    if (account == null || !account.active) {
+      // Profile gone or account deactivated: require a fresh login.
+      try { await sb.auth.signOut().timeout(const Duration(seconds: 6)); } catch (_) {}
+      return;
+    }
+    st.loginWithAccount(account);
+    unawaited(PushService.registerForCurrentUser());
+    unawaited(loadMasterData().then((_) => subscribeRealtime()));
+  } on AuthException {
+    // Refresh token revoked/expired: sign in again.
+    try { await sb.auth.signOut().timeout(const Duration(seconds: 6)); } catch (_) {}
+  }
+  // Network errors propagate so the Retry screen appears instead of
+  // wrongly logging the person out.
 }
 
 // Maps the Supabase schema's role names to the names the rest of this app
