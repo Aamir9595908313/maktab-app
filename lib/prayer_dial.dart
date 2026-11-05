@@ -416,17 +416,26 @@ class _DialPainter extends CustomPainter {
       canvas.drawCircle(_pt(c, r, back), 1.6, Paint()..color = _a(_kGold, 0.30 * (1 - i / 24)));
     }
 
-    // prayer markers + time labels
+    // prayer markers + time labels (labels that would collide are pushed outward)
+    final placed = <Rect>[];
     for (final e in events) {
       final p = _pt(c, r, e.at);
       final isAct = e.name == activeName;
       canvas.drawCircle(p, isAct ? 3.2 : 2.2, Paint()..color = isAct ? _kBrightGold : _a(Colors.white, 0.5));
-      final lp = _pt(c, r + 24, e.at);
       final tp = TextPainter(
         text: TextSpan(text: _fmt12(e.at).toLowerCase(), style: TextStyle(color: isAct ? Colors.white : _a(Colors.white, 0.6), fontSize: 9.5, fontWeight: isAct ? FontWeight.w700 : FontWeight.w400)),
         textDirection: TextDirection.ltr,
       )..layout();
-      tp.paint(canvas, Offset(lp.dx - tp.width / 2, lp.dy - tp.height / 2));
+      var rr = r + 24;
+      Rect box = Rect.zero;
+      for (var k = 0; k < 4; k++) {
+        final lp = _pt(c, rr, e.at);
+        box = Rect.fromCenter(center: lp, width: tp.width + 6, height: tp.height + 2);
+        if (!placed.any((o) => o.overlaps(box))) break;
+        rr += tp.height + 3;
+      }
+      placed.add(box);
+      tp.paint(canvas, Offset(box.center.dx - tp.width / 2, box.center.dy - tp.height / 2));
     }
 
     // crescent moon node with glow
