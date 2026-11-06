@@ -2543,6 +2543,38 @@ Future<String?> addStudentRemote({
       if (cls == 3 && curPara != null) 'current_para': curPara,
       if (cls == 3 && curPage != null) 'current_page': curPage,
     }).select().single();
+    // Class 3: every page before the chosen Para/Page (in the Hafeezi teaching
+    // order) is recorded as already completed, so the syllabus shows them done.
+    final prior = <int, String>{};
+    if (cls == 3 && curPara != null && curPage != null && cd!.paras.isNotEmpty) {
+      final startPage = st.paraStartPage(cd, curPara);
+      if (startPage != null) {
+        final para = cd.paras.firstWhere((p) => p.paraNo == curPara);
+        final target = startPage + (curPage > para.pageCount ? para.pageCount : curPage) - 1;
+        for (final pg in st.pageSequence(cd)) {
+          if (pg == target) break;
+          prior[pg] = start;
+        }
+        if (prior.isNotEmpty && row['id'] != null) {
+          try {
+            await sb.from('syllabus_progress').upsert([
+              for (final pg in prior.keys)
+                {
+                  'student_id': row['id'],
+                  'page_no': pg,
+                  'status': 'completed',
+                  'completed_on': start,
+                  'grade': 'Before tracking',
+                  'remark': 'Completed before tracking',
+                  'created_by': sb.auth.currentUser?.id,
+                }
+            ], onConflict: 'student_id,page_no');
+          } catch (_) {
+            prior.clear();
+          }
+        }
+      }
+    }
     st.addStudentFromRemote(
       key: key,
       name: n,
@@ -2563,6 +2595,10 @@ Future<String?> addStudentRemote({
       curPage: cls == 3 ? curPage : null,
       dbId: row['id'] as String?,
     );
+    if (prior.isNotEmpty) {
+      final added = st.students.last;
+      st.setPriorPages(added, prior);
+    }
     return null;
   } on PostgrestException catch (e) {
     if (e.code == '23505') return 'A student with a matching ID already exists, try again';
@@ -7550,7 +7586,12 @@ class _StudentsViewState extends State<StudentsView> {
                   if (!mounted) return;
                 }
                 setState(() => busy = false);
-                toast(context, e ?? 'Student added and saved.');
+                var okMsg = 'Student added and saved.';
+                if (e == null && st.students.isNotEmpty) {
+                  final due = st.dueEarlierClassCourses(st.students.last);
+                  if (due.isNotEmpty) okMsg = 'Student added. Courses due from earlier classes: ${due.map((d) => d.course.name).join(', ')}.';
+                }
+                toast(context, e ?? okMsg);
                 if (e == null) {
                   name.clear();
                   parent.clear();
@@ -9425,7 +9466,20 @@ class CoursesTabBody extends StatelessWidget {
     // has actually assigned to this student's class via Master Data, not
     // every active course in the system.
     final assignable = st.coursesForClass(st.classDefs[s.cls]?.id ?? -1).where((c) => c.active && !enrollments.any((e) => e.courseId == c.id));
+    final dueEarlier = st.dueEarlierClassCourses(s);
     return page([
+      if (dueEarlier.isNotEmpty)
+        Card(
+          color: const Color(0xFFFFF3F0),
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              const Text('Courses due from earlier classes', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.red)),
+              const SizedBox(height: 4),
+              for (final d in dueEarlier) Text('• ${d.course.name} - ${d.className} (not completed)', style: const TextStyle(fontSize: 13)),
+            ]),
+          ),
+        ),
       if (canSubmit) ...[
         const Text('Assign an Add-on Course to this student:', style: TextStyle(fontWeight: FontWeight.w600)),
         const SizedBox(height: 6),

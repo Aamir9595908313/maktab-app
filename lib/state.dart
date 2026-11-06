@@ -956,6 +956,27 @@ class AppState extends ChangeNotifier {
     return coursesForClass(cd.id).where((c) => !isCourseCompletedFor(s, c.id)).toList();
   }
 
+  void setPriorPages(Student s, Map<int, String> dates) {
+    s.pageDate = Map<int, String>.from(dates);
+    s.pageGrade = {for (final k in dates.keys) k: 'Before tracking'};
+    notifyListeners();
+  }
+
+  // Add-on courses assigned to EARLIER classes (class number below the
+  // student's current one) that this student has not completed - mainly for
+  // students admitted directly into a later class. Informational only.
+  List<({String className, Course course})> dueEarlierClassCourses(Student s) {
+    final out = <({String className, Course course})>[];
+    final keys = classDefs.keys.where((k) => k < s.cls).toList()..sort();
+    for (final k in keys) {
+      final cd = classDefs[k]!;
+      for (final c in coursesForClass(cd.id)) {
+        if (c.active && !isCourseCompletedFor(s, c.id)) out.add((className: cd.name, course: c));
+      }
+    }
+    return out;
+  }
+
   // Whether this student can actually be promoted/graduated right now:
   // their syllabus is done (eligible) AND every add-on course assigned to
   // their class is completed+approved. Kept separate from eligible() so
