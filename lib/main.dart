@@ -2801,7 +2801,7 @@ Future<String?> editStudentRemote(Student s, {String? name, String? parentPhone,
       return 'Could not save. Check your internet connection and try again.';
     }
   }
-  st.editStudent(s, nameV: nameV, parentPhone: parentPhone == null ? null : digits(parentPhone), address: address, madrasa: madrasa, cls: cls, dob: dob, fatherNameV: fatherNameV, guardianRelation: guardianRelation, batch: batch, aadhaarNumber: aadhaarNumber);
+  st.editStudent(s, name: nameV, parentPhone: parentPhone == null ? null : digits(parentPhone), address: address, madrasa: madrasa, cls: cls, dob: dob, fatherName: fatherNameV, guardianRelation: guardianRelation, batch: batch, aadhaarNumber: aadhaarNumber);
   return null;
 }, (m) => m);
 
