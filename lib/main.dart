@@ -9475,8 +9475,26 @@ class CoursesTabBody extends StatelessWidget {
             padding: const EdgeInsets.all(12),
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               const Text('Courses due from earlier classes', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.red)),
+              if (canSubmit) const Text('Tap "Start course", then submit it for approval once completed.', style: TextStyle(fontSize: 12, color: Colors.black54)),
               const SizedBox(height: 4),
-              for (final d in dueEarlier) Text('• ${d.course.name} - ${d.className} (not completed)', style: const TextStyle(fontSize: 13)),
+              for (final d in dueEarlier)
+                Builder(builder: (context) {
+                  final enr = enrollments.where((e) => e.courseId == d.course.id).firstOrNull;
+                  return Padding(
+                    padding: const EdgeInsets.only(top: 4),
+                    child: Row(children: [
+                      Expanded(child: Text('• ${d.course.name} - ${d.className}\n   ${enr == null ? 'Not started' : 'Status: ${enr.status == 'in_progress' ? 'In progress' : enr.status == 'awaiting_approval' ? 'Awaiting approval' : 'Pending'} (see below to submit)'}', style: const TextStyle(fontSize: 13))),
+                      if (enr == null && canSubmit)
+                        OutlinedButton(
+                          onPressed: () async {
+                            final e = await enrollCourseRemote(s, d.course);
+                            if (context.mounted && e != null) toast(context, e);
+                          },
+                          child: const Text('Start course'),
+                        ),
+                    ]),
+                  );
+                }),
             ]),
           ),
         ),
