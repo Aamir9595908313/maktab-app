@@ -18,6 +18,7 @@
 import 'dart:convert';
 
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:timezone/data/latest_all.dart' as tzdata;
@@ -30,7 +31,7 @@ const String _channelDesc = 'Notifies you when each prayer time starts.';
 
 // Local adjustment: Maghrib is shown and notified this many minutes AFTER
 // the calculated sunset-based time (a safety margin).
-const int kMaghribOffsetMinutes = 2;
+const int kMaghribOffsetMinutes = 3;
 
 /// Adds [minutes] to an "HH:mm" string (keeps any trailing text out). Wraps past midnight.
 String addMinutesToHhmm(String hhmm, int minutes) {
@@ -51,7 +52,7 @@ class _PrayerDef {
 // shown on the Prayer Times screen as a reference point (end of Fajr).
 const List<_PrayerDef> _prayers = [
   _PrayerDef('Fajr', 'Fajr'),
-  _PrayerDef('Dhuhr', 'Dhuhr'),
+  _PrayerDef('Zuhr', 'Dhuhr'),
   _PrayerDef('Asr', 'Asr'),
   _PrayerDef('Maghrib', 'Maghrib'),
   _PrayerDef('Isha', 'Isha'),
@@ -152,11 +153,57 @@ class PrayerNotificationService {
     try {
       if (!await isEnabled()) return;
       final prefs = await SharedPreferences.getInstance();
-      final lat = prefs.getDouble('prayer_last_lat');
-      final lng = prefs.getDouble('prayer_last_lng');
+      var lat = prefs.getDouble('prayer_last_lat');
+      var lng = prefs.getDouble('prayer_last_lng');
+      String? place;
+      // Pick up the phone's current position (if allowed) so reminders follow
+      // the user to a new city instead of staying on the last saved place.
+      try {
+        if (await Geolocator.isLocationServiceEnabled()) {
+          final perm = await Geolocator.checkPermission();
+          if (perm == LocationPermission.always || perm == LocationPermission.whileInUse) {
+            final pos = await Geolocator.getLastKnownPosition() ??
+                await Geolocator.getCurrentPosition(locationSettings: const LocationSettings(accuracy: LocationAccuracy.low)).timeout(const Duration(seconds: 8));
+            if (lat == null || lng == null || Geolocator.distanceBetween(lat, lng, pos.latitude, pos.longitude) > 3000) {
+              lat = pos.latitude;
+              lng = pos.longitude;
+              place = await reverseGeocodeName(pos.latitude, pos.longitude);
+            }
+          }
+        }
+      } catch (_) {}
       if (lat == null || lng == null) return;
-      await scheduleUpcoming(latitude: lat, longitude: lng);
+      await scheduleUpcoming(latitude: lat, longitude: lng, placeName: place);
     } catch (_) {}
+  }
+
+  // Resolves (lat, lng) to "Village/Town/City, State" via OpenStreetMap
+  // Nominatim at a fine zoom so a village or locality is named, not just the
+  // district. Returns null if it can't be resolved.
+  static Future<String?> reverseGeocodeName(double latitude, double longitude) async {
+    try {
+      final uri = Uri.parse('https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=$latitude&lon=$longitude&zoom=14&addressdetails=1');
+      final res = await http
+          .get(uri, headers: {'User-Agent': 'MaktabETajushshriahApp/1.0 (Faiz-E-Raza Group Mehkar)'})
+          .timeout(const Duration(seconds: 10));
+      if (res.statusCode != 200) return null;
+      final body = jsonDecode(res.body) as Map<String, dynamic>;
+      final addr = body['address'] as Map<String, dynamic>?;
+      if (addr == null) return body['display_name'] as String?;
+      String? pick(List<String> keys) {
+        for (final k in keys) {
+          final v = addr[k];
+          if (v is String && v.trim().isNotEmpty) return v.trim();
+        }
+        return null;
+      }
+      final city = pick(['hamlet', 'village', 'suburb', 'neighbourhood', 'town', 'city', 'city_district', 'municipality', 'county']);
+      final state = pick(['state']);
+      final parts = [city, state].whereType<String>().toList();
+      return parts.isNotEmpty ? parts.join(', ') : (body['display_name'] as String?);
+    } catch (_) {
+      return null;
+    }
   }
 
   // Human-readable status for the Prayer Times screen, e.g.
@@ -217,9 +264,16 @@ class PrayerNotificationService {
     // Remember the last known location so reminders can be refreshed at every
     // app launch (rescheduleFromSaved) without opening the Prayer Times screen.
     final prefs = await SharedPreferences.getInstance();
+    final oldLat = prefs.getDouble('prayer_last_lat');
+    final oldLng = prefs.getDouble('prayer_last_lng');
     await prefs.setDouble('prayer_last_lat', latitude);
     await prefs.setDouble('prayer_last_lng', longitude);
-    if (placeName != null && placeName.trim().isNotEmpty) await prefs.setString('prayer_last_place', placeName.trim());
+    if (placeName != null && placeName.trim().isNotEmpty) {
+      await prefs.setString('prayer_last_place', placeName.trim());
+    } else if (oldLat == null || oldLng == null || Geolocator.distanceBetween(oldLat, oldLng, latitude, longitude) > 3000) {
+      // Moved somewhere new and the name is unknown: never reuse the old city's name.
+      await prefs.remove('prayer_last_place');
+    }
     final place = (prefs.getString('prayer_last_place') ?? '').trim();
     final city = place.split(',').first.trim(); // 'Mehkar, Maharashtra' -> 'Mehkar'
     await _plugin.cancelAll();

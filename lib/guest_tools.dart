@@ -1157,28 +1157,12 @@ class _PrayerTimesScreenState extends State<PrayerTimesScreen> {
   // before this feature existed.
   Future<void> _reverseGeocode(double latitude, double longitude) async {
     setState(() => placeLoading = true);
-    try {
-      final uri = Uri.parse(
-          'https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=$latitude&lon=$longitude&zoom=10&addressdetails=1');
-      final res = await http
-          .get(uri, headers: {'User-Agent': 'MaktabETajushshriahApp/1.0 (Faiz-E-Raza Group Mehkar)'})
-          .timeout(const Duration(seconds: 10));
-      if (res.statusCode != 200) throw Exception('bad status');
-      final body = jsonDecode(res.body) as Map<String, dynamic>;
-      final addr = body['address'] as Map<String, dynamic>?;
-      final city = addr?['city'] ?? addr?['town'] ?? addr?['village'] ?? addr?['county'] ?? addr?['suburb'];
-      final state = addr?['state'];
-      final parts = [city, state].whereType<String>().toList();
-      final name = parts.isNotEmpty ? parts.join(', ') : (body['display_name'] as String?);
-      if (!mounted) return;
-      setState(() {
-        placeName = name;
-        placeLoading = false;
-      });
-    } catch (_) {
-      if (!mounted) return;
-      setState(() => placeLoading = false);
-    }
+    final name = await PrayerNotificationService.reverseGeocodeName(latitude, longitude);
+    if (!mounted) return;
+    setState(() {
+      if (name != null) placeName = name;
+      placeLoading = false;
+    });
   }
 
   // Re-reads the phone's live GPS position, recalculates every prayer time

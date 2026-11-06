@@ -10,6 +10,7 @@ import 'dart:async';
 import 'dart:math' as math;
 import 'dart:ui' show FontFeature, ImageFilter;
 import 'package:flutter/material.dart';
+import 'prayer_notifications.dart' show kMaghribOffsetMinutes;
 
 const Color _kGold = Color(0xFFD4AF37);
 const Color _kAmber = Color(0xFFF39C12);
@@ -108,7 +109,7 @@ class _PrayerDialViewState extends State<PrayerDialView> with SingleTickerProvid
     final dhuhr = _mins(tm['Dhuhr']) ?? 730;
     final asr = _mins(tm['Asr']) ?? 990;
     final maghrib = _mins(tm['Maghrib']) ?? 1070;
-    final sunset = _mins(tm['Sunset']) ?? (maghrib - 2);
+    final sunset = _mins(tm['Sunset']) ?? (maghrib - kMaghribOffsetMinutes);
     final isha = _mins(tm['Isha']) ?? 1150;
     final dk = (fajr + sunset) / 2; // Dahwa-Kubra: midpoint of Fajr and sunset (Hanafi)
     return [
@@ -117,6 +118,7 @@ class _PrayerDialViewState extends State<PrayerDialView> with SingleTickerProvid
       _Ev('Dahwa-Kubra', '', dk, Icons.error_outline),
       _Ev('Zuhr', 'Dhuhr', dhuhr, Icons.wb_sunny_outlined),
       _Ev('Asr', 'Asr', asr, Icons.light_mode_outlined),
+      _Ev('Makruh Time', '', maghrib - 20, Icons.block),
       _Ev('Maghrib', 'Maghrib', maghrib, Icons.wb_twilight),
       _Ev('Isha', 'Isha', isha, Icons.nightlight_round),
     ];
@@ -125,10 +127,10 @@ class _PrayerDialViewState extends State<PrayerDialView> with SingleTickerProvid
   // Makruh (forbidden for salah) windows: sunrise (+20 min), zawal (from
   // Dahwa-Kubra until Zuhr) and sunset (the 20 minutes before sunset).
   String? _forbiddenRow(double t, List<_Ev> ev) {
-    final sunrise = ev[1].at, dk = ev[2].at, dhuhr = ev[3].at, maghrib = ev[5].at;
+    final sunrise = ev[1].at, dk = ev[2].at, dhuhr = ev[3].at, maghrib = ev[6].at;
     if (t >= sunrise && t < sunrise + 20) return 'Sunrise';
     if (t >= dk && t < dhuhr) return 'Dahwa-Kubra';
-    if (t >= maghrib - 22 && t < maghrib) return 'Maghrib';
+    if (t >= maghrib - 20 && t < maghrib) return 'Makruh Time';
     return null;
   }
 
@@ -320,7 +322,7 @@ class _PrayerDialViewState extends State<PrayerDialView> with SingleTickerProvid
             ),
             const SizedBox(height: 4),
             Text(
-              "Asr uses the Hanafi method. Maghrib includes +2 minutes. Dahwa-Kubra is the midpoint between Fajr and sunset; no salah from then until Zuhr begins. Times are for your GPS location and may differ a few minutes from the local timetable.",
+              "Asr uses the Hanafi method. Maghrib includes +$kMaghribOffsetMinutes minutes. Makruh Time is the 20 minutes before Maghrib (no salah). Dahwa-Kubra is the midpoint between Fajr and sunset; no salah from then until Zuhr begins. Times are for your GPS location and may differ a few minutes from the local timetable.",
               style: TextStyle(color: _a(Colors.white, 0.45), fontSize: 11),
             ),
           ]),
@@ -410,6 +412,16 @@ class _DialPainter extends CustomPainter {
       canvas.drawLine(Offset(c.dx + r1 * math.sin(a), c.dy - r1 * math.cos(a)), Offset(c.dx + r2 * math.sin(a), c.dy - r2 * math.cos(a)), lattice);
     }
 
+    // Makruh window before Maghrib: red arc on the ring
+    for (final e in events) {
+      if (e.name != 'Makruh Time') continue;
+      final start = (e.at - 720) / 1440 * 2 * math.pi - math.pi / 2;
+      final sweep = 20 / 1440 * 2 * math.pi;
+      final rect = Rect.fromCircle(center: c, radius: r);
+      canvas.drawArc(rect, start, sweep, false, Paint()..style = PaintingStyle.stroke..strokeWidth = 7..strokeCap = StrokeCap.round..color = _a(_kCrimson, 0.35)..maskFilter = const MaskFilter.blur(BlurStyle.normal, 5));
+      canvas.drawArc(rect, start, sweep, false, Paint()..style = PaintingStyle.stroke..strokeWidth = 3.2..strokeCap = StrokeCap.round..color = _kCrimson);
+    }
+
     // trail behind the node
     for (var i = 1; i <= 24; i++) {
       final back = t - i * 4.0;
@@ -419,6 +431,7 @@ class _DialPainter extends CustomPainter {
     // prayer markers + time labels (labels that would collide are pushed outward)
     final placed = <Rect>[];
     for (final e in events) {
+      if (e.name == 'Makruh Time') continue;
       final p = _pt(c, r, e.at);
       final isAct = e.name == activeName;
       canvas.drawCircle(p, isAct ? 3.2 : 2.2, Paint()..color = isAct ? _kBrightGold : _a(Colors.white, 0.5));
