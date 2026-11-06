@@ -2756,9 +2756,9 @@ Future<String?> editStudentRemote(Student s, {String? name, String? parentPhone,
     final aErr = validateAadhaarNumber(aadhaarNumber);
     if (aErr != null) return aErr;
   }
-  if (name != null) name = toTitleCase(name);
-  if (fatherName != null) fatherName = toTitleCase(fatherName);
-  final newName = (name != null && name.isNotEmpty) ? name : s.name;
+  final nameV = name == null ? null : toTitleCase(name);
+  final fatherNameV = fatherName == null ? null : toTitleCase(fatherName);
+  final newName = (nameV != null && nameV.isNotEmpty) ? nameV : s.name;
   final newDob = dob != null ? (dob.trim().isEmpty ? null : dob.trim()) : s.dob;
   if (!confirmDuplicate && (newName != s.name || newDob != s.dob)) {
     final dup = st.findActiveDuplicate(newName, newDob, excludeId: s.id);
@@ -2767,7 +2767,7 @@ Future<String?> editStudentRemote(Student s, {String? name, String? parentPhone,
     }
   }
   final patch = <String, Object?>{};
-  if (name != null && name.isNotEmpty) patch['name'] = name;
+  if (nameV != null && nameV.isNotEmpty) patch['name'] = nameV;
   if (parentPhone != null && parentPhone.trim().isNotEmpty) {
     if (digits(parentPhone).length != 10) return 'Parent mobile must be 10 digits';
     patch['parent_phone'] = digits(parentPhone);
@@ -2775,7 +2775,7 @@ Future<String?> editStudentRemote(Student s, {String? name, String? parentPhone,
   if (aadhaarNumber != null) patch['aadhaar_number'] = aadhaarNumber;
   if (address != null) patch['address'] = address.trim().isEmpty ? null : address.trim();
   if (dob != null) patch['dob'] = dob.trim().isEmpty ? null : dob.trim();
-  if (fatherName != null) patch['father_name'] = fatherName.isEmpty ? null : fatherName;
+  if (fatherNameV != null) patch['father_name'] = fatherNameV.isEmpty ? null : fatherNameV;
   if (guardianRelation != null && kGuardianRelations.contains(guardianRelation)) patch['guardian_relation'] = guardianRelation;
   if (batch != null && batch.isNotEmpty) patch['batch'] = batch;
   if (madrasa != null) {
@@ -2801,7 +2801,7 @@ Future<String?> editStudentRemote(Student s, {String? name, String? parentPhone,
       return 'Could not save. Check your internet connection and try again.';
     }
   }
-  st.editStudent(s, name: name, parentPhone: parentPhone == null ? null : digits(parentPhone), address: address, madrasa: madrasa, cls: cls, dob: dob, fatherName: fatherName, guardianRelation: guardianRelation, batch: batch, aadhaarNumber: aadhaarNumber);
+  st.editStudent(s, nameV: nameV, parentPhone: parentPhone == null ? null : digits(parentPhone), address: address, madrasa: madrasa, cls: cls, dob: dob, fatherNameV: fatherNameV, guardianRelation: guardianRelation, batch: batch, aadhaarNumber: aadhaarNumber);
   return null;
 }, (m) => m);
 
