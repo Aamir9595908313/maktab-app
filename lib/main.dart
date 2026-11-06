@@ -3799,7 +3799,7 @@ Future<void> editStudentDialog(BuildContext context, Student s) async {
           TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
           ElevatedButton(
             onPressed: () {
-              final err = validateAadhaarNumber(digits(aadhaarCtl.text));
+              final err = validateAadhaarNumber(digitsAll(aadhaarCtl.text));
               if (err != null) {
                 setD(() => aadhaarErr = err);
                 return;
@@ -3813,7 +3813,7 @@ Future<void> editStudentDialog(BuildContext context, Student s) async {
     ),
   );
   if (result != true) return;
-  var e = await editStudentRemote(s, aadhaarNumber: digits(aadhaarCtl.text), name: name.text, parentPhone: parent.text, address: address.text, madrasa: madrasa, cls: cls, dob: dob.text, fatherName: fatherName.text, guardianRelation: guardianRelation, batch: batch);
+  var e = await editStudentRemote(s, aadhaarNumber: digitsAll(aadhaarCtl.text), name: name.text, parentPhone: parent.text, address: address.text, madrasa: madrasa, cls: cls, dob: dob.text, fatherName: fatherName.text, guardianRelation: guardianRelation, batch: batch);
   if (e != null && e.startsWith('DUPLICATE:')) {
     if (!context.mounted) return;
     final proceed = await showDialog<bool>(
@@ -3829,7 +3829,7 @@ Future<void> editStudentDialog(BuildContext context, Student s) async {
     );
     if (proceed != true) return;
     if (!context.mounted) return;
-    e = await editStudentRemote(s, aadhaarNumber: digits(aadhaarCtl.text), name: name.text, parentPhone: parent.text, address: address.text, madrasa: madrasa, cls: cls, dob: dob.text, fatherName: fatherName.text, guardianRelation: guardianRelation, batch: batch, confirmDuplicate: true);
+    e = await editStudentRemote(s, aadhaarNumber: digitsAll(aadhaarCtl.text), name: name.text, parentPhone: parent.text, address: address.text, madrasa: madrasa, cls: cls, dob: dob.text, fatherName: fatherName.text, guardianRelation: guardianRelation, batch: batch, confirmDuplicate: true);
   }
   if (context.mounted) toast(context, e ?? 'Student updated.');
 }
@@ -3898,6 +3898,9 @@ Widget field(TextEditingController c, String label, {bool number = false, int li
         decoration: InputDecoration(labelText: label, border: const OutlineInputBorder()),
       ),
     );
+
+/// Digits only, no trimming (Aadhaar is 12 digits; digits() below keeps just the last 10 for phones).
+String digitsAll(String s) => s.replaceAll(RegExp(r'\D'), '');
 
 String digits(String s) {
   final d = s.replaceAll(RegExp(r'\D'), '');
@@ -7500,7 +7503,7 @@ class _StudentsViewState extends State<StudentsView> {
                   cls: cls,
                   parentPhone: digits(parent.text),
                   studentPhone: digits(stuPhone.text),
-                  aadhaarNumber: digits(aadhaarNo.text),
+                  aadhaarNumber: digitsAll(aadhaarNo.text),
                   address: address.text,
                   madrasa: madrasaToUse,
                   dob: dob.text,
@@ -7533,7 +7536,7 @@ class _StudentsViewState extends State<StudentsView> {
                     cls: cls,
                     parentPhone: digits(parent.text),
                     studentPhone: digits(stuPhone.text),
-                    aadhaarNumber: digits(aadhaarNo.text),
+                    aadhaarNumber: digitsAll(aadhaarNo.text),
                     address: address.text,
                     madrasa: madrasaToUse,
                     dob: dob.text,

@@ -299,17 +299,6 @@ class _PrayerDialViewState extends State<PrayerDialView> with SingleTickerProvid
                 ),
               ),
             ),
-            if (forbidden != null)
-              Container(
-                margin: const EdgeInsets.only(bottom: 6),
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                decoration: BoxDecoration(color: _a(_kCrimson, 0.14), borderRadius: BorderRadius.circular(10), border: Border.all(color: _a(_kCrimson, 0.5))),
-                child: Row(children: [
-                  const Icon(Icons.block, size: 16, color: _kCrimson),
-                  const SizedBox(width: 8),
-                  const Expanded(child: Text('Makruh time - salah is not allowed in this period.', style: TextStyle(color: _kCrimson, fontSize: 12, fontWeight: FontWeight.w600))),
-                ]),
-              ),
             for (final e in ev) _row(e, e.name == act.name, forbidden == e.name),
             const SizedBox(height: 4),
             Align(
