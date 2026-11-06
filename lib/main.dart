@@ -6026,7 +6026,7 @@ class _BulkImportStudentsState extends State<BulkImportStudents> {
         digits(cell(r, 'student_phone')),
         cell(r, 'address'),
         cls,
-        digits(cell(r, 'aadhaar_number')),
+        digitsAll(cell(r, 'aadhaar_number')),
         // Maktab (branch) and Batch (timing) are optional columns: blank
         // falls back to the Maktab picked above and Morning. A value that
         // doesn't match the app's lists is flagged below, never guessed.
