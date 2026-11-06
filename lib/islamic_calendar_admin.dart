@@ -21,6 +21,7 @@
 // time it loads, instead of only picking up the change on a cold app start.
 
 import 'package:flutter/material.dart';
+import 'save_guard.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'main.dart' show sb, kGreen, page, toast, confirmDialog;
 import 'guest_tools.dart' show hijriMonthsEn, invalidateIslamicCalendarCache;
@@ -87,7 +88,7 @@ Future<String?> createIslamicEventRemote({
   String? description,
   required String recurrenceType,
   int? hijriYear,
-}) async {
+}) async => SaveGuard.run<String?>('createIslamicEventRemote', 'Please wait, saving...', () async {
   try {
     await sb.from('islamic_calendar_events').insert({
       'name': name.trim(),
@@ -108,7 +109,7 @@ Future<String?> createIslamicEventRemote({
   } catch (_) {
     return 'Could not save. Check your internet connection and try again.';
   }
-}
+}, (m) => m);
 
 Future<String?> updateIslamicEventRemote(
   IslamicCalendarEventAdmin item, {
@@ -119,7 +120,7 @@ Future<String?> updateIslamicEventRemote(
   String? description,
   required String recurrenceType,
   int? hijriYear,
-}) async {
+}) async => SaveGuard.run<String?>('updateIslamicEventRemote', 'Please wait, saving...', () async {
   final cleanDescription = (description == null || description.trim().isEmpty) ? null : description.trim();
   final year = recurrenceType == 'this_year_only' ? hijriYear : null;
   try {
@@ -151,7 +152,7 @@ Future<String?> updateIslamicEventRemote(
   } catch (_) {
     return 'Could not save. Check your internet connection and try again.';
   }
-}
+}, (m) => m);
 
 Future<String?> deleteIslamicEventRemote(IslamicCalendarEventAdmin item) async {
   try {

@@ -191,6 +191,11 @@ class Student {
   // Mark Attendance can group students who attend different times of day
   // instead of silently defaulting everyone to Present on Final Submit.
   String batch;
+  // Class 3 (Hafeezi Qur'an) admission: the Para (1-30) and Page (1-21) the
+  // student had reached when admitted. Display-only - it does not change
+  // syllabus progress or promotion logic.
+  int? curPara;
+  int? curPage;
   // page-based progress (Classes 1-3): pageNo -> date / grade / remark
   Map<int, String> pageDate;
   Map<int, String> pageGrade;
@@ -229,6 +234,8 @@ class Student {
     this.fatherName = '',
     this.guardianRelation = 'Father',
     this.batch = 'Morning',
+    this.curPara,
+    this.curPage,
     Map<int, String>? pageDate,
     Map<int, String>? pageGrade,
     Map<int, String>? chDate,
@@ -1828,6 +1835,8 @@ class AppState extends ChangeNotifier {
     String fatherName = '',
     String guardianRelation = 'Father',
     String batch = 'Morning',
+    int? curPara,
+    int? curPage,
     String? dbId,
   }) {
     final id = nextId++;
@@ -1848,6 +1857,8 @@ class AppState extends ChangeNotifier {
         fatherName: fatherName,
         guardianRelation: guardianRelation,
         batch: batch,
+        curPara: curPara,
+        curPage: curPage,
         dbId: dbId));
     notifyListeners();
   }

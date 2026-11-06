@@ -18,6 +18,7 @@
 
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
+import 'save_guard.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:printing/printing.dart';
@@ -95,7 +96,7 @@ Future<String?> createDuaKalimatItemRemote({
   required String fileType,
   required Uint8List bytes,
   required String fileName,
-}) async {
+}) async => SaveGuard.run<String?>('createDuaKalimatItemRemote', 'Please wait, saving...', () async {
   if (title.trim().isEmpty) return 'Enter a title.';
   if (bytes.length > kDuaKalimatMaxBytes) return 'That file is larger than the 10 MB limit.';
   final ext = fileName.contains('.') ? fileName.split('.').last.toLowerCase() : (fileType == 'pdf' ? 'pdf' : 'jpg');
@@ -132,7 +133,7 @@ Future<String?> createDuaKalimatItemRemote({
     } catch (_) {}
     return 'Could not save. Check your internet connection and try again.';
   }
-}
+}, (m) => m);
 
 Future<String?> updateDuaKalimatItemRemote(DuaKalimatItem item, {String? title, int? sequenceOrder}) async {
   final payload = <String, dynamic>{

@@ -11,6 +11,7 @@
 // ============================================================
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'save_guard.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:csv/csv.dart';
 import 'package:path_provider/path_provider.dart';
@@ -73,7 +74,7 @@ Future<String?> addMonthlyMemberRemote({
   required String joiningDate,
   String? address,
   String? remarks,
-}) async {
+}) async => SaveGuard.run<String?>('addMonthlyMemberRemote', 'Please wait, saving member...', () async {
   final n = toTitleCase(name);
   if (n.isEmpty) return 'Enter the member\'s name';
   final p = digits(phone);
@@ -108,7 +109,7 @@ Future<String?> addMonthlyMemberRemote({
   } catch (_) {
     return 'Could not save. Check your internet connection and try again.';
   }
-}
+}, (m) => m);
 
 Future<String?> editMonthlyMemberRemote({
   required MonthlyMember member,
@@ -116,7 +117,7 @@ Future<String?> editMonthlyMemberRemote({
   required double amount,
   String? address,
   String? remarks,
-}) async {
+}) async => SaveGuard.run<String?>('editMonthlyMemberRemote', 'Please wait, saving member...', () async {
   final n = toTitleCase(name);
   if (n.isEmpty) return 'Enter the member\'s name';
   if (amount <= 0) return 'Enter a monthly contribution amount greater than 0';
@@ -137,7 +138,7 @@ Future<String?> editMonthlyMemberRemote({
   } catch (_) {
     return 'Could not save. Check your internet connection and try again.';
   }
-}
+}, (m) => m);
 
 // Activate/deactivate - never deletes, so every past due and payment stays
 // exactly as it was (spec: preserve historical payments when deactivated).
@@ -159,7 +160,7 @@ Future<String?> setMonthlyMemberActiveRemote(MonthlyMember member, bool active) 
 // does automatically on the 1st, exposed here so Super Admin can run it on
 // demand (handy right after adding members, or while testing) instead of
 // waiting for the schedule.
-Future<String?> generateThisMonthDuesRemote() async {
+Future<String?> generateThisMonthDuesRemote() async => SaveGuard.run<String?>('generateThisMonthDuesRemote', 'Please wait, generating dues...', () async {
   final now = DateTime.now();
   try {
     await sb.rpc('generate_month_dues_all', params: {'p_year': now.year, 'p_month': now.month});
@@ -170,7 +171,7 @@ Future<String?> generateThisMonthDuesRemote() async {
   } catch (_) {
     return 'Could not generate. Check your internet connection and try again.';
   }
-}
+}, (m) => m);
 
 // ============================================================
 // Payments - idempotent, trigger-recalculated balance
@@ -190,7 +191,7 @@ Future<RecordPaymentResult> recordMonthlyPaymentRemote({
   required String method,
   String? txnRef,
   String? remarks,
-}) async {
+}) async => SaveGuard.run<RecordPaymentResult>('recordMonthlyPaymentRemote', 'Please wait, recording payment...', () async {
   if (amount <= 0) return const RecordPaymentResult(error: 'Enter an amount greater than 0');
   if (amount > due.outstanding + 0.01) {
     return RecordPaymentResult(error: 'That is more than the outstanding balance of Rs.${due.outstanding.toStringAsFixed(0)} for this month.');
@@ -230,7 +231,7 @@ Future<RecordPaymentResult> recordMonthlyPaymentRemote({
   } catch (_) {
     return const RecordPaymentResult(error: 'Could not save. Check your internet connection and try again.');
   }
-}
+}, (m) => RecordPaymentResult(error: m));
 
 Future<Map<String, dynamic>?> retryMonthlyNotification({String? paymentId, String? dueId}) async {
   try {

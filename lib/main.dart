@@ -4,6 +4,7 @@ import 'dart:io';
 import 'dart:math' show pi;
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
+import 'save_guard.dart';
 import 'package:flutter/services.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -328,6 +329,8 @@ Future<void> loadMasterData() async {
           fatherName: (r['father_name'] as String?) ?? '',
           guardianRelation: kGuardianRelations.contains(r['guardian_relation']) ? r['guardian_relation'] as String : 'Father',
           batch: (r['batch'] as String?) ?? 'Morning',
+          curPara: r['current_para'] as int?,
+          curPage: r['current_page'] as int?,
           dbId: r['id'] as String?,
         ),
     ]);
@@ -649,7 +652,7 @@ Future<NotifyOutcome> _claimAbsenceNotification(Student s, String date) async {
 // since the backend lock (fn_lock_submitted_attendance) only blocks writes
 // to a row that's already final. Editing a row in an already-finalized
 // session must go through editFinalizedStudentRemote below instead.
-Future<String?> submitOneAttendanceRemote(Student s, String status, {required String madrasa, required int cls, required String date}) async {
+Future<String?> submitOneAttendanceRemote(Student s, String status, {required String madrasa, required int cls, required String date}) async => SaveGuard.run<String?>('submitOneAttendanceRemote', 'Please wait, saving attendance...', () async {
   if (s.dbId == null) return 'This student is not saved to the database yet.';
   try {
     await sb.from('student_attendance').upsert({
@@ -673,7 +676,7 @@ Future<String?> submitOneAttendanceRemote(Student s, String status, {required St
     }
   }
   return null;
-}
+}, (m) => m);
 
 // Loads one past date's attendance for whichever students are already in
 // memory, caching it in st.attByDate - used by the Mark Attendance screen's
@@ -720,7 +723,7 @@ Future<AttendanceSubmitResult> submitAttendanceSessionRemote({
   required List<Student> present,
   required List<Student> absent,
   String? reason,
-}) async {
+}) async => SaveGuard.run<AttendanceSubmitResult>('submitAttendanceSessionRemote', 'Please wait, submitting attendance...', () async {
   final madrasaId = _madrasaDbId(madrasa);
   final classId = _classDbId(cls);
   if (madrasaId == null || classId == null) {
@@ -784,7 +787,7 @@ Future<AttendanceSubmitResult> submitAttendanceSessionRemote({
     }
   }
   return AttendanceSubmitResult(error: null, notifiedCount: notified, retryNeeded: retryNeeded);
-}
+}, (m) => AttendanceSubmitResult(error: m));
 
 // Lets an authorized user (the screen that shows this is Teacher-only
 // already) retry absence notifications that didn't go out the first time -
@@ -809,7 +812,7 @@ Future<int> retryAbsenceNotificationsRemote(List<Student> list, String madrasa, 
 // swapped in, then resubmits through the same submit_attendance_session
 // path everything else uses, so the backend's existing correction-logging
 // (attendance_correction_log) still captures the audit trail automatically.
-Future<String?> editFinalizedStudentRemote(Student edited, String newStatus, {required String madrasa, required int cls, required String batch, required String date}) async {
+Future<String?> editFinalizedStudentRemote(Student edited, String newStatus, {required String madrasa, required int cls, required String batch, required String date}) async => SaveGuard.run<String?>('editFinalizedStudentRemote', 'Please wait, saving attendance correction...', () async {
   final roster = st.students.where((s) => s.madrasa == madrasa && s.cls == cls && s.batch == batch && s.status == 'Active').toList();
   final present = <Student>[];
   final absent = <Student>[];
@@ -836,7 +839,7 @@ Future<String?> editFinalizedStudentRemote(Student edited, String newStatus, {re
     reason: 'Edited via Mark Attendance (${st.user?.name ?? 'Teacher'})',
   );
   return res.error;
-}
+}, (m) => m);
 
 // ---------------- Maktab Events / Holidays (public.maktab_events) ----------------
 Future<void> loadEvents() async {
@@ -871,7 +874,7 @@ Future<void> loadEvents() async {
   } catch (_) {}
 }
 
-Future<String?> addEventRemote(String madrasa, String name, String type, String date, {String? startTime, String? endTime, String? batch, String description = ''}) async {
+Future<String?> addEventRemote(String madrasa, String name, String type, String date, {String? startTime, String? endTime, String? batch, String description = ''}) async => SaveGuard.run<String?>('addEventRemote', 'Please wait, saving event...', () async {
   final n = name.trim();
   if (n.isEmpty) return 'Enter an Event/Holiday name';
   final madrasaId = _madrasaDbId(madrasa);
@@ -930,9 +933,9 @@ Future<String?> addEventRemote(String madrasa, String name, String type, String 
   } catch (_) {
     return 'Could not save. Check your internet connection and try again.';
   }
-}
+}, (m) => m);
 
-Future<String?> cancelEventRemote(MaktabEvent e, String reason) async {
+Future<String?> cancelEventRemote(MaktabEvent e, String reason) async => SaveGuard.run<String?>('cancelEventRemote', 'Please wait, cancelling event...', () async {
   if (e.dbId == null) return 'This Event/Holiday was not saved to the database yet.';
   try {
     await sb.from('maktab_events').update({
@@ -947,7 +950,7 @@ Future<String?> cancelEventRemote(MaktabEvent e, String reason) async {
   } catch (_) {
     return 'Could not save. Check your internet connection and try again.';
   }
-}
+}, (m) => m);
 
 // ---------------- Notification Template Management (public.notification_templates) ----------------
 Future<void> loadNotifTemplates() async {
@@ -983,7 +986,7 @@ Future<void> loadNotifTemplates() async {
 // fn_notification_template_audit trigger (backend, not just this screen
 // being hidden from other roles), which also snapshots the previous body
 // into notification_template_history automatically.
-Future<String?> updateNotifTemplateRemote(NotifTemplate t, {String? body, List<String>? variables, bool? active}) async {
+Future<String?> updateNotifTemplateRemote(NotifTemplate t, {String? body, List<String>? variables, bool? active}) async => SaveGuard.run<String?>('updateNotifTemplateRemote', 'Please wait, saving...', () async {
   if (t.dbId == null) return 'This template is not saved to the database yet.';
   final patch = <String, dynamic>{};
   if (body != null) patch['body'] = body;
@@ -999,7 +1002,7 @@ Future<String?> updateNotifTemplateRemote(NotifTemplate t, {String? body, List<S
   } catch (_) {
     return 'Could not save. Check your internet connection and try again.';
   }
-}
+}, (m) => m);
 
 Future<List<NotifTemplateVersion>> loadTemplateHistory(NotifTemplate t) async {
   if (t.dbId == null) return const [];
@@ -1051,7 +1054,7 @@ Future<void> loadAboutUsData() async {
 
 // Only a Super Admin can succeed - enforced again by the about_us_super_write
 // RLS policy at the database level, not just by hiding the edit screen.
-Future<String?> updateAboutUsRemote(AboutUsContent c) async {
+Future<String?> updateAboutUsRemote(AboutUsContent c) async => SaveGuard.run<String?>('updateAboutUsRemote', 'Please wait, saving...', () async {
   try {
     await sb.from('about_us').update({
       'heading': c.heading,
@@ -1068,7 +1071,7 @@ Future<String?> updateAboutUsRemote(AboutUsContent c) async {
   } catch (_) {
     return 'Could not save. Check your internet connection and try again.';
   }
-}
+}, (m) => m);
 
 // On-demand, month-scoped query for the Parent attendance report (not
 // loaded into the global model at login like loadAttendance's "today +
@@ -1262,7 +1265,7 @@ Future<void> loadLeaves() async {
   ]);
 }
 
-Future<String?> applyLeaveRemote(String type, String madrasa, String from, String to, String reason) async {
+Future<String?> applyLeaveRemote(String type, String madrasa, String from, String to, String reason) async => SaveGuard.run<String?>('applyLeaveRemote', 'Please wait, saving...', () async {
   final u = st.user;
   if (u == null) return 'Not logged in';
   final local = st.applyLeave(type, from, to, reason, madrasa: madrasa);
@@ -1286,9 +1289,9 @@ Future<String?> applyLeaveRemote(String type, String madrasa, String from, Strin
   } catch (_) {
     return 'Could not save. Check your internet connection and try again.';
   }
-}
+}, (m) => m);
 
-Future<String?> decideLeaveRemote(Leave l, bool ok, String remark) async {
+Future<String?> decideLeaveRemote(Leave l, bool ok, String remark) async => SaveGuard.run<String?>('decideLeaveRemote', 'Please wait, saving...', () async {
   st.decideLeave(l, ok, remark);
   if (l.dbId == null) return null;
   try {
@@ -1305,7 +1308,7 @@ Future<String?> decideLeaveRemote(Leave l, bool ok, String remark) async {
   } catch (_) {
     return 'Could not save. Check your internet connection and try again.';
   }
-}
+}, (m) => m);
 
 // ---------------- Syllabus (public.syllabus_progress / public.chapters) ----------------
 // Page-based (Classes 1-3) writes page_no rows; chapter-based (Class 4+)
@@ -1326,7 +1329,7 @@ Future<void> loadChapters() async {
   } catch (_) {}
 }
 
-Future<String?> addChapterRemote(int cls, String title, int days) async {
+Future<String?> addChapterRemote(int cls, String title, int days) async => SaveGuard.run<String?>('addChapterRemote', 'Please wait, saving...', () async {
   final classId = _classDbId(cls);
   if (classId == null) return 'That class is not saved to the database yet.';
   try {
@@ -1339,7 +1342,7 @@ Future<String?> addChapterRemote(int cls, String title, int days) async {
   } catch (_) {
     return 'Could not save. Check your internet connection and try again.';
   }
-}
+}, (m) => m);
 
 // Para-wise book structure (public.class_paras) - optional, for a
 // page-based class whose book is split into named sections (e.g. a Qur'an
@@ -1366,7 +1369,7 @@ Future<void> loadClassParas() async {
   } catch (_) {}
 }
 
-Future<String?> addParaRemote(ClassDef cd, int pageCount) async {
+Future<String?> addParaRemote(ClassDef cd, int pageCount) async => SaveGuard.run<String?>('addParaRemote', 'Please wait, saving...', () async {
   if (cd.dbId == null) return 'This class is not saved to the database yet.';
   final paraNo = cd.paras.isEmpty ? 1 : (cd.paras.map((p) => p.paraNo).reduce((a, b) => a > b ? a : b) + 1);
   try {
@@ -1378,9 +1381,9 @@ Future<String?> addParaRemote(ClassDef cd, int pageCount) async {
   } catch (_) {
     return 'Could not save. Check your internet connection and try again.';
   }
-}
+}, (m) => m);
 
-Future<String?> updateParaPageCountRemote(ClassDef cd, ParaDef p, int pageCount) async {
+Future<String?> updateParaPageCountRemote(ClassDef cd, ParaDef p, int pageCount) async => SaveGuard.run<String?>('updateParaPageCountRemote', 'Please wait, saving...', () async {
   if (p.dbId == null) return 'This Para is not saved to the database yet.';
   try {
     await sb.from('class_paras').update({'page_count': pageCount}).eq('id', p.dbId as Object);
@@ -1391,7 +1394,7 @@ Future<String?> updateParaPageCountRemote(ClassDef cd, ParaDef p, int pageCount)
   } catch (_) {
     return 'Could not save. Check your internet connection and try again.';
   }
-}
+}, (m) => m);
 
 // ---------------- Add-on Course class assignments (public.class_course_assignments) ----------------
 Future<void> loadClassCourseAssignments() async {
@@ -1410,7 +1413,7 @@ Future<void> loadClassCourseAssignments() async {
   } catch (_) {}
 }
 
-Future<String?> assignCourseToClassRemote(ClassDef cd, Course c) async {
+Future<String?> assignCourseToClassRemote(ClassDef cd, Course c) async => SaveGuard.run<String?>('assignCourseToClassRemote', 'Please wait, saving...', () async {
   if (cd.dbId == null || c.dbId == null) return 'This class or Add-on Course was not saved to the database yet.';
   try {
     final row = await sb
@@ -1425,9 +1428,9 @@ Future<String?> assignCourseToClassRemote(ClassDef cd, Course c) async {
   } catch (_) {
     return 'Could not save. Check your internet connection and try again.';
   }
-}
+}, (m) => m);
 
-Future<String?> unassignCourseFromClassRemote(ClassDef cd, Course c) async {
+Future<String?> unassignCourseFromClassRemote(ClassDef cd, Course c) async => SaveGuard.run<String?>('unassignCourseFromClassRemote', 'Please wait, saving...', () async {
   if (cd.dbId == null || c.dbId == null) return null;
   try {
     await sb.from('class_course_assignments').delete().eq('class_id', cd.dbId as Object).eq('course_id', c.dbId as Object);
@@ -1438,7 +1441,7 @@ Future<String?> unassignCourseFromClassRemote(ClassDef cd, Course c) async {
   } catch (_) {
     return 'Could not save. Check your internet connection and try again.';
   }
-}
+}, (m) => m);
 
 // ---------------- Course enrollments (public.course_enrollments) ----------------
 // Resolves the handful of distinct submitted_by/approved_by user ids
@@ -1487,7 +1490,7 @@ Future<void> loadCourseEnrollments() async {
   } catch (_) {}
 }
 
-Future<String?> enrollCourseRemote(Student s, Course c) async {
+Future<String?> enrollCourseRemote(Student s, Course c) async => SaveGuard.run<String?>('enrollCourseRemote', 'Please wait, saving...', () async {
   if (s.dbId == null || c.dbId == null) return 'This student or Add-on Course was not saved to the database yet.';
   try {
     final row = await sb
@@ -1503,9 +1506,9 @@ Future<String?> enrollCourseRemote(Student s, Course c) async {
   } catch (_) {
     return 'Could not save. Check your internet connection and try again.';
   }
-}
+}, (m) => m);
 
-Future<String?> submitCourseCompletionRemote(CourseEnrollment e) async {
+Future<String?> submitCourseCompletionRemote(CourseEnrollment e) async => SaveGuard.run<String?>('submitCourseCompletionRemote', 'Please wait, saving...', () async {
   st.submitCourseCompletion(e);
   if (e.dbId == null) return 'This Add-on Course enrollment was not saved to the database yet.';
   try {
@@ -1518,9 +1521,9 @@ Future<String?> submitCourseCompletionRemote(CourseEnrollment e) async {
   } catch (_) {
     return 'Could not save - this will revert on refresh. Check your connection and try again.';
   }
-}
+}, (m) => m);
 
-Future<String?> decideCourseCompletionRemote(Student s, CourseEnrollment e, bool approve, {String reason = ''}) async {
+Future<String?> decideCourseCompletionRemote(Student s, CourseEnrollment e, bool approve, {String reason = ''}) async => SaveGuard.run<String?>('decideCourseCompletionRemote', 'Please wait, saving...', () async {
   if (e.dbId == null) {
     st.decideCourseCompletion(s, e, approve, reason: reason);
     return 'This Add-on Course enrollment was not saved to the database yet.';
@@ -1553,7 +1556,7 @@ Future<String?> decideCourseCompletionRemote(Student s, CourseEnrollment e, bool
   } catch (_) {
     return 'Could not save - this will revert on refresh. Check your connection and try again.';
   }
-}
+}, (m) => m);
 
 Future<void> loadSyllabusProgress() async {
   final idByDbId = {for (final s in st.students) if (s.dbId != null) s.dbId!: s};
@@ -1603,7 +1606,7 @@ Future<void> loadSyllabusProgress() async {
 // database, so the next full data reload quietly reverted it - exactly
 // the "page resets to 1 after Final Submit" bug. Now the teacher is told
 // immediately instead of finding out later via a silent revert.
-Future<String?> tickChapterRemote(Student s, int i, String date, String grade) async {
+Future<String?> tickChapterRemote(Student s, int i, String date, String grade) async => SaveGuard.run<String?>('tickChapterRemote', 'Please wait, saving progress...', () async {
   st.tickChapter(s, i, date, grade);
   if (s.dbId == null) return null;
   final chapterId = st.chapters[s.cls]?[i].dbId;
@@ -1621,9 +1624,9 @@ Future<String?> tickChapterRemote(Student s, int i, String date, String grade) a
   } catch (e) {
     return 'Could not save - this chapter will revert on refresh. Check your connection and try again.';
   }
-}
+}, (m) => m);
 
-Future<String?> markPageCompleteRemote(Student s, int pageNo, String date, String grade, String remark) async {
+Future<String?> markPageCompleteRemote(Student s, int pageNo, String date, String grade, String remark) async => SaveGuard.run<String?>('markPageCompleteRemote', 'Please wait, saving progress...', () async {
   st.markPageComplete(s, pageNo, date, grade, remark);
   if (s.dbId == null) return null;
   try {
@@ -1640,7 +1643,7 @@ Future<String?> markPageCompleteRemote(Student s, int pageNo, String date, Strin
   } catch (e) {
     return 'Could not save - this page will revert on refresh. Check your connection and try again.';
   }
-}
+}, (m) => m);
 
 // ---------------- Complaints (public.complaints) ----------------
 
@@ -1668,7 +1671,7 @@ Future<void> loadComplaints() async {
   }
 }
 
-Future<String?> addComplaintRemote(String to, String subject, String text) async {
+Future<String?> addComplaintRemote(String to, String subject, String text) async => SaveGuard.run<String?>('addComplaintRemote', 'Please wait, saving...', () async {
   final u = st.user;
   if (u == null) return 'Not signed in';
   if (subject.trim().isEmpty) return 'Enter a subject';
@@ -1688,7 +1691,7 @@ Future<String?> addComplaintRemote(String to, String subject, String text) async
   } catch (_) {
     return 'Could not submit. Check your internet connection and try again.';
   }
-}
+}, (m) => m);
 
 Future<void> replyRemote(Complaint c, String text) async {
   if (text.trim().isEmpty) return;
@@ -1738,7 +1741,7 @@ Future<void> loadFees() async {
   }
 }
 
-Future<String> payRemote(Student s, String m) async {
+Future<String> payRemote(Student s, String m) async => SaveGuard.run<String>('payRemote', 'Please wait, recording payment...', () async {
   final msg = st.pay(s, m);
   final monthNo = AppState.monthNumFromKey(m);
   final year = AppState.yearFromKey(m);
@@ -1765,7 +1768,7 @@ Future<String> payRemote(Student s, String m) async {
     }
   }
   return msg;
-}
+}, (m) => m);
 
 // ---------------- Committee members ----------------
 // Same shape as loadTeachers above: real accounts (base_role='committee')
@@ -1802,12 +1805,12 @@ Future<void> loadCommitteeMembers() async {
   st.setCommitteeFromDb(list);
 }
 
-Future<String?> addCommitteeRemote(String phone, String name, List<String> branches) async {
+Future<String?> addCommitteeRemote(String phone, String name, List<String> branches) async => SaveGuard.run<String?>('addCommitteeRemote', 'Please wait, saving...', () async {
   if (branches.isEmpty) return 'Choose at least one Maktab';
   final e = await addRoleInviteRemote(name: name, phone: phone, dbRole: 'committee', madrasaNames: branches);
   if (e == null) await loadCommitteeMembers();
   return e;
-}
+}, (m) => m);
 
 // "Remove" means different things depending on whether this person has
 // ever actually logged in: a real account is deactivated (same as
@@ -1912,7 +1915,7 @@ Future<void> loadAnnouncements() async {
 // time they read st.announcements, so nothing has to come back and flip a
 // flag once the date passes. startDate is optional - null means show
 // immediately, same as leaving it out used to mean before this existed.
-Future<String?> postAnnouncementRemote(String title, String msg, {String? startDate, required String endDate}) async {
+Future<String?> postAnnouncementRemote(String title, String msg, {String? startDate, required String endDate}) async => SaveGuard.run<String?>('postAnnouncementRemote', 'Please wait, saving announcement...', () async {
   if (title.trim().isEmpty) return 'Enter a title';
   if (endDate.isEmpty) return 'Choose a "To" date - it decides when this announcement disappears on its own.';
   if (startDate != null && startDate.isNotEmpty && diffDays(startDate, endDate) > 0) return 'The "To" date must be on or after the "From" date.';
@@ -1932,7 +1935,7 @@ Future<String?> postAnnouncementRemote(String title, String msg, {String? startD
   } catch (_) {
     return 'Could not save. Check your internet connection and try again.';
   }
-}
+}, (m) => m);
 
 // Whether an announcement should actually be shown today - active (not
 // withdrawn) AND today falls inside its optional start/end date range.
@@ -1982,7 +1985,7 @@ Future<void> loadCustomRoles() async {
   } catch (_) {}
 }
 
-Future<String?> createRoleRemote(String name, Set<String> perms) async {
+Future<String?> createRoleRemote(String name, Set<String> perms) async => SaveGuard.run<String?>('createRoleRemote', 'Please wait, saving...', () async {
   final n = name.trim();
   if (n.isEmpty) return 'Enter a role name';
   if (perms.isEmpty) return 'Tick at least one screen';
@@ -2000,7 +2003,7 @@ Future<String?> createRoleRemote(String name, Set<String> perms) async {
   } catch (_) {
     return 'Could not save. Check your internet connection and try again.';
   }
-}
+}, (m) => m);
 
 // Gives a person ANY role in the system - Super Admin, Maktab Admin,
 // Teacher, Committee Member, or any existing Custom Role - including
@@ -2027,7 +2030,7 @@ Future<String?> setUserRoleRemote({
   required String dbRole,
   String? customRoleName,
   List<String> branches = const [],
-}) async {
+}) async => SaveGuard.run<String?>('setUserRoleRemote', 'Please wait, saving...', () async {
   final p = digits(phone);
   if (p.length != 10) return 'Enter a 10-digit mobile number';
   final n = toTitleCase(name);
@@ -2090,7 +2093,7 @@ Future<String?> setUserRoleRemote({
   } catch (_) {
     return 'Could not save. Check your internet connection and try again.';
   }
-}
+}, (m) => m);
 
 // ---------------- Extra screen permissions (public.user_extra_permissions) ----------------
 // Unlike setUserRoleRemote above (which REPLACES a person's whole role,
@@ -2198,7 +2201,7 @@ Future<GrantLookupResult?> lookupAccountForGrantRemote(String phone) async {
 // Adds `screenKey` to this person's extra permissions (no-op if they
 // already have it) and, if `newBranches` names any Maktab not already in
 // their scope, adds just those - existing scope rows are left untouched.
-Future<String?> grantExtraPermissionRemote(String userId, String screenKey, {List<String> newBranches = const []}) async {
+Future<String?> grantExtraPermissionRemote(String userId, String screenKey, {List<String> newBranches = const []}) async => SaveGuard.run<String?>('grantExtraPermissionRemote', 'Please wait, saving...', () async {
   try {
     await sb.from('user_extra_permissions').upsert({'user_id': userId, 'screen_key': screenKey, 'granted_by': sb.auth.currentUser?.id});
     if (newBranches.isNotEmpty) {
@@ -2218,18 +2221,18 @@ Future<String?> grantExtraPermissionRemote(String userId, String screenKey, {Lis
   } catch (_) {
     return 'Could not save. Check your internet connection and try again.';
   }
-}
+}, (m) => m);
 
 // Removes just this one permission - everything else this person can do
 // (their role, branches, other extra permissions) is left exactly as-is.
-Future<String?> revokeExtraPermissionRemote(String userId, String screenKey) async {
+Future<String?> revokeExtraPermissionRemote(String userId, String screenKey) async => SaveGuard.run<String?>('revokeExtraPermissionRemote', 'Please wait, saving...', () async {
   try {
     await sb.from('user_extra_permissions').delete().eq('user_id', userId).eq('screen_key', screenKey);
     return null;
   } catch (_) {
     return 'Could not remove. Check your internet connection and try again.';
   }
-}
+}, (m) => m);
 
 // Loads the real Teachers list: actual accounts (public.user_profiles
 // where base_role='teacher', once they've signed in at least once) plus
@@ -2283,7 +2286,7 @@ Future<void> loadTeachers() async {
 // phone number that will become that role the moment it first signs in
 // with a real OTP), just with a different base_role and whether a
 // madrasa scope is required.
-Future<String?> addRoleInviteRemote({required String name, required String phone, required String dbRole, List<String> madrasaNames = const []}) async {
+Future<String?> addRoleInviteRemote({required String name, required String phone, required String dbRole, List<String> madrasaNames = const []}) async => SaveGuard.run<String?>('addRoleInviteRemote', 'Please wait, saving...', () async {
   final n = toTitleCase(name);
   if (n.isEmpty) return 'Enter the name';
   final p = digits(phone);
@@ -2302,7 +2305,7 @@ Future<String?> addRoleInviteRemote({required String name, required String phone
   } catch (_) {
     return 'Could not save. Check your internet connection and try again.';
   }
-}
+}, (m) => m);
 
 // Creates a REAL teacher account immediately (via the 'create-teacher'
 // Edge Function, which uses the service role to create the auth identity
@@ -2315,7 +2318,7 @@ Future<String?> addRoleInviteRemote({required String name, required String phone
 // attendance/leave screens until first login - this makes the teacher a
 // real, persisted account (and fully visible everywhere) the moment the
 // admin saves the form, while still requiring a real OTP for every login.
-Future<String?> addTeacherInviteRemote(String name, String phone, List<String> madrasaNames) async {
+Future<String?> addTeacherInviteRemote(String name, String phone, List<String> madrasaNames) async => SaveGuard.run<String?>('addTeacherInviteRemote', 'Please wait, saving...', () async {
   final n = toTitleCase(name);
   if (n.isEmpty) return 'Enter the name';
   final p = digits(phone);
@@ -2338,14 +2341,14 @@ Future<String?> addTeacherInviteRemote(String name, String phone, List<String> m
   } catch (_) {
     return 'Could not save. Check your internet connection and try again.';
   }
-}
+}, (m) => m);
 
 // Adds (upserts) rows into teacher_class_assignments for a real, already-
 // logged-in teacher (a.dbId != null) - one row per selected class, all in
 // the chosen madrasa. Safe to call again for the same teacher/madrasa with
 // different classes; existing rows for other classes in that madrasa are
 // left alone (use unassignTeacherClassRemote to remove one).
-Future<String?> assignTeacherMadrasaRemote(Account a, String madrasaName, List<int> classNos) async {
+Future<String?> assignTeacherMadrasaRemote(Account a, String madrasaName, List<int> classNos) async => SaveGuard.run<String?>('assignTeacherMadrasaRemote', 'Please wait, saving...', () async {
   if (a.dbId == null) {
     return "${a.name} hasn't logged in with OTP yet, so there's no account to assign - they'll get their classes once they're invited (Master Data > Teachers) and log in.";
   }
@@ -2369,7 +2372,7 @@ Future<String?> assignTeacherMadrasaRemote(Account a, String madrasaName, List<i
   } catch (_) {
     return 'Could not save. Check your internet connection and try again.';
   }
-}
+}, (m) => m);
 
 Future<String?> setTeacherActiveRemote(Account a, bool v) async {
   if (a.dbId == null) {
@@ -2393,7 +2396,7 @@ Future<String?> setTeacherActiveRemote(Account a, bool v) async {
 // profile row), which is why this has to go through a service-role Edge
 // Function rather than a plain table update, the same reason
 // addTeacherInviteRemote/create-teacher does.
-Future<String?> updateTeacherRemote(Account a, {required String name, required String phone, required List<String> madrasaNames}) async {
+Future<String?> updateTeacherRemote(Account a, {required String name, required String phone, required List<String> madrasaNames}) async => SaveGuard.run<String?>('updateTeacherRemote', 'Please wait, saving...', () async {
   if (st.user?.role != 'super') return 'Only a Super Admin can edit a teacher\'s details.';
   if (a.dbId == null) return "This teacher hasn't logged in yet - edit the pending invite instead.";
   final n = toTitleCase(name);
@@ -2419,13 +2422,13 @@ Future<String?> updateTeacherRemote(Account a, {required String name, required S
   } catch (_) {
     return 'Could not save. Check your internet connection and try again.';
   }
-}
+}, (m) => m);
 
 // Edits a teacher who has only been invited, not yet logged in
 // (public.pending_role_invites, keyed by phone). If the phone number is
 // changing, the row has to move to the new key - delete-then-upsert so a
 // failed insert never leaves the invite silently deleted.
-Future<String?> updatePendingTeacherInviteRemote(Account a, {required String name, required String phone, required List<String> madrasaNames}) async {
+Future<String?> updatePendingTeacherInviteRemote(Account a, {required String name, required String phone, required List<String> madrasaNames}) async => SaveGuard.run<String?>('updatePendingTeacherInviteRemote', 'Please wait, saving...', () async {
   final n = toTitleCase(name);
   if (n.isEmpty) return 'Enter the name';
   final p = digits(phone);
@@ -2451,7 +2454,7 @@ Future<String?> updatePendingTeacherInviteRemote(Account a, {required String nam
   } catch (_) {
     return 'Could not save. Check your internet connection and try again.';
   }
-}
+}, (m) => m);
 
 // Inserts a new row into public.students and, on success, adds it to the
 // local list with its real database id attached. Same validation as the
@@ -2485,7 +2488,9 @@ Future<String?> addStudentRemote({
   String guardianRelation = 'Father',
   String batch = 'Morning',
   bool confirmDuplicate = false,
-}) async {
+  int? curPara,
+  int? curPage,
+}) async => SaveGuard.run<String?>('addStudentRemote', 'Please wait, saving student...', () async {
   final relation = kGuardianRelations.contains(guardianRelation) ? guardianRelation : 'Father';
   final n = toTitleCase(name);
   final fn = toTitleCase(fatherName);
@@ -2535,6 +2540,8 @@ Future<String?> addStudentRemote({
       'father_name': fn.isEmpty ? null : fn,
       'guardian_relation': relation,
       'batch': batch,
+      if (cls == 3 && curPara != null) 'current_para': curPara,
+      if (cls == 3 && curPage != null) 'current_page': curPage,
     }).select().single();
     st.addStudentFromRemote(
       key: key,
@@ -2552,6 +2559,8 @@ Future<String?> addStudentRemote({
       fatherName: fn,
       guardianRelation: relation,
       batch: batch,
+      curPara: cls == 3 ? curPara : null,
+      curPage: cls == 3 ? curPage : null,
       dbId: row['id'] as String?,
     );
     return null;
@@ -2561,7 +2570,7 @@ Future<String?> addStudentRemote({
   } catch (_) {
     return 'Could not save. Check your internet connection and try again.';
   }
-}
+}, (m) => m);
 
 // Deactivate/reactivate a student that has a real database row: save
 // is_active to Supabase first, then update the local copy, same
@@ -2574,7 +2583,7 @@ Future<String?> addStudentRemote({
 // for any other role, stamping deactivated_by/deactivated_at itself. The
 // reason typed here is sent in the same UPDATE so it lands in
 // deactivation_reason for that audit trail.
-Future<String> deactivateStudentRemote(Student s, String reason) async {
+Future<String> deactivateStudentRemote(Student s, String reason) async => SaveGuard.run<String>('deactivateStudentRemote', 'Please wait, saving...', () async {
   if (s.dbId != null) {
     try {
       await sb.from('students').update({
@@ -2588,12 +2597,12 @@ Future<String> deactivateStudentRemote(Student s, String reason) async {
     }
   }
   return st.deactivateStudent(s, reason);
-}
+}, (m) => m);
 
 // Section 4.2: only Super Admin may reactivate - enforced in the UI (the
 // button is hidden otherwise) and again by trg_enforce_student_status_change,
 // which rejects the UPDATE for any other role.
-Future<String> reactivateStudentRemote(Student s) async {
+Future<String> reactivateStudentRemote(Student s) async => SaveGuard.run<String>('reactivateStudentRemote', 'Please wait, saving...', () async {
   if (s.dbId != null) {
     try {
       await sb.from('students').update({'is_active': true}).eq('id', s.dbId as Object);
@@ -2604,6 +2613,82 @@ Future<String> reactivateStudentRemote(Student s) async {
     }
   }
   return st.reactivateStudent(s);
+}, (m) => m);
+
+// Pending/not-passed add-on courses for a student, read fresh from the
+// database (class_course_assignments x course_enrollments) so the popup is
+// accurate even if the local cache is stale. Each entry: course name + status.
+Future<List<({String name, String status})>> pendingCoursesRemote(Student s) async {
+  final cd = st.classDefs[s.cls];
+  if (cd?.dbId == null || s.dbId == null) {
+    return [for (final c in st.pendingMandatoryCourses(s)) (name: c.name, status: _enrollStatusLabel(st.courseEnrollments.where((e) => e.studentId == s.id && e.courseId == c.id).map((e) => e.status).firstOrNull))];
+  }
+  final assigned = await sb.from('class_course_assignments').select('course_id, courses(name)').eq('class_id', cd!.dbId as Object).eq('is_mandatory', true);
+  final enr = await sb.from('course_enrollments').select('course_id, status').eq('student_id', s.dbId as Object);
+  final byCourse = {for (final e in (enr as List)) e['course_id'] as String: e['status'] as String?};
+  final out = <({String name, String status})>[];
+  for (final a in (assigned as List)) {
+    final st0 = byCourse[a['course_id'] as String];
+    if (st0 == 'completed') continue;
+    final nm = ((a['courses'] as Map?)?['name'] as String?) ?? 'Course';
+    out.add((name: nm, status: _enrollStatusLabel(st0)));
+  }
+  return out;
+}
+
+String _enrollStatusLabel(String? s) {
+  switch (s) {
+    case 'in_progress':
+      return 'In progress - not passed yet';
+    case 'awaiting_approval':
+      return 'Awaiting approval';
+    case 'pending':
+      return 'Pending';
+    case null:
+      return 'Not started';
+    default:
+      return s;
+  }
+}
+
+// Shows the "cannot be promoted" popup. Returns true if the list was empty
+// (nothing blocks promotion).
+Future<bool> checkPromotionAllowed(BuildContext context, Student s) async {
+  List<({String name, String status})> pending;
+  try {
+    pending = await pendingCoursesRemote(s);
+  } catch (_) {
+    if (context.mounted) toast(context, 'Could not check the assigned courses. Check your internet connection and try again.');
+    return false;
+  }
+  if (pending.isEmpty) return true;
+  if (!context.mounted) return false;
+  await showDialog<void>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      title: const Text('Cannot promote'),
+      content: SingleChildScrollView(
+        child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+          const Text('Student cannot be promoted. The following assigned courses are still pending or not passed:', style: TextStyle(fontWeight: FontWeight.w600)),
+          const SizedBox(height: 10),
+          for (final c in pending)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 3),
+              child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                const Icon(Icons.error_outline, size: 18, color: Colors.red),
+                const SizedBox(width: 8),
+                Expanded(child: Text('${c.name}\nStatus: ${c.status}')),
+              ]),
+            ),
+        ]),
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+        ElevatedButton(onPressed: () => Navigator.pop(ctx), child: const Text('OK')),
+      ],
+    ),
+  );
+  return false;
 }
 
 // Persists "Mark Passed and Promote". Previously this called st.promote(s)
@@ -2623,7 +2708,13 @@ Future<String> reactivateStudentRemote(Student s) async {
 // into a class they are themselves assigned to (teacher_class_assignments)
 // - promoting into a class they don't teach is correctly rejected, not
 // silently allowed.
-Future<String> promoteRemote(Student s) async {
+Future<String> promoteRemote(Student s) async => SaveGuard.run<String>('promoteRemote', 'Please wait, promoting student...', () async {
+  try {
+    final blocked = await pendingCoursesRemote(s);
+    if (blocked.isNotEmpty) return 'Student cannot be promoted. Pending courses: ${blocked.map((c) => c.name).join(', ')}.';
+  } catch (_) {
+    return 'Could not check the assigned courses. Check your internet connection and try again.';
+  }
   final nextDef = st.classDefs[s.cls + 1];
   if (nextDef != null) {
     if (s.dbId != null) {
@@ -2655,12 +2746,12 @@ Future<String> promoteRemote(Student s) async {
     }
   }
   return st.promote(s);
-}
+}, (m) => m);
 
 // Section 3.2.3/5: re-runs the active-duplicate check if name or DOB
 // changed. A return value starting with "DUPLICATE:" is the warning, not
 // an error - same confirm-and-retry pattern as addStudentRemote.
-Future<String?> editStudentRemote(Student s, {String? name, String? parentPhone, String? address, String? madrasa, int? cls, String? dob, String? fatherName, String? guardianRelation, String? batch, String? aadhaarNumber, bool confirmDuplicate = false}) async {
+Future<String?> editStudentRemote(Student s, {String? name, String? parentPhone, String? address, String? madrasa, int? cls, String? dob, String? fatherName, String? guardianRelation, String? batch, String? aadhaarNumber, bool confirmDuplicate = false}) async => SaveGuard.run<String?>('editStudentRemote', 'Please wait, saving student...', () async {
   if (aadhaarNumber != null) {
     final aErr = validateAadhaarNumber(aadhaarNumber);
     if (aErr != null) return aErr;
@@ -2712,12 +2803,12 @@ Future<String?> editStudentRemote(Student s, {String? name, String? parentPhone,
   }
   st.editStudent(s, name: name, parentPhone: parentPhone == null ? null : digits(parentPhone), address: address, madrasa: madrasa, cls: cls, dob: dob, fatherName: fatherName, guardianRelation: guardianRelation, batch: batch, aadhaarNumber: aadhaarNumber);
   return null;
-}
+}, (m) => m);
 
 // Inserts a new row into public.madrasas and, on success, adds it to the
 // local list with its real database id attached. Returns null on success
 // or a short message to show the user on failure.
-Future<String?> addMadrasaRemote(String name, String? category) async {
+Future<String?> addMadrasaRemote(String name, String? category) async => SaveGuard.run<String?>('addMadrasaRemote', 'Please wait, saving...', () async {
   final n = toTitleCase(name);
   if (n.isEmpty) return 'Enter a Maktab name';
   if (category == null || !kMadrasaCategories.contains(category)) return 'Choose a Maktab Category (Boys, Girls, or Children)';
@@ -2732,7 +2823,7 @@ Future<String?> addMadrasaRemote(String name, String? category) async {
   } catch (_) {
     return 'Could not save. Check your internet connection and try again.';
   }
-}
+}, (m) => m);
 
 // Updates a madrasa's active flag in Supabase first, then reflects it
 // locally only once that succeeds, so a failed save never leaves the app
@@ -2792,7 +2883,7 @@ Future<String?> setMadrasaCategoryRemote(MadrasaRec m, String category) async {
 // app already uses that number everywhere else (promotion moves a student
 // from classDefs[n] to classDefs[n+1], so classes must stay numbered in
 // order with no gaps).
-Future<String?> addClassRemote(String name, {required bool pageBased, String? bookName, int totalPages = 0}) async {
+Future<String?> addClassRemote(String name, {required bool pageBased, String? bookName, int totalPages = 0}) async => SaveGuard.run<String?>('addClassRemote', 'Please wait, saving...', () async {
   final n = toTitleCase(name);
   if (n.isEmpty) return 'Enter a class name';
   final nextNo = (st.classDefs.keys.isEmpty ? 0 : st.classDefs.keys.reduce((a, b) => a > b ? a : b)) + 1;
@@ -2814,7 +2905,7 @@ Future<String?> addClassRemote(String name, {required bool pageBased, String? bo
   } catch (_) {
     return 'Could not save. Check your internet connection and try again.';
   }
-}
+}, (m) => m);
 
 Future<String?> setClassActiveRemote(ClassDef cd, bool v) async {
   if (cd.dbId == null) {
@@ -2844,7 +2935,7 @@ Future<String?> renameClassRemote(ClassDef cd, String name) async {
 
 // Edits an existing class's book name / total pages (requirement 1 -
 // previously only the class name itself could be changed after creation).
-Future<String?> updateClassDetailsRemote(ClassDef cd, {String? bookName, int? totalPages}) async {
+Future<String?> updateClassDetailsRemote(ClassDef cd, {String? bookName, int? totalPages}) async => SaveGuard.run<String?>('updateClassDetailsRemote', 'Please wait, saving...', () async {
   if (cd.dbId == null) return 'This class was not saved to the database yet.';
   try {
     final payload = <String, dynamic>{};
@@ -2858,7 +2949,7 @@ Future<String?> updateClassDetailsRemote(ClassDef cd, {String? bookName, int? to
   } catch (_) {
     return 'Could not save. Check your internet connection and try again.';
   }
-}
+}, (m) => m);
 
 // ---------------- Book Management (public.class_books / public.book_progress) ----------------
 // Book Management (Class 4 onward): a class can have several independent
@@ -2892,7 +2983,7 @@ Future<void> loadClassBooks() async {
   } catch (_) {}
 }
 
-Future<String?> addClassBookRemote(ClassDef cd, String name, String description, int totalPages, int sequenceOrder) async {
+Future<String?> addClassBookRemote(ClassDef cd, String name, String description, int totalPages, int sequenceOrder) async => SaveGuard.run<String?>('addClassBookRemote', 'Please wait, saving...', () async {
   final n = toTitleCase(name);
   if (n.isEmpty) return 'Enter a Book name';
   if (cd.dbId == null) return 'This class is not saved to the database yet.';
@@ -2914,9 +3005,9 @@ Future<String?> addClassBookRemote(ClassDef cd, String name, String description,
   } catch (_) {
     return 'Could not save. Check your internet connection and try again.';
   }
-}
+}, (m) => m);
 
-Future<String?> updateClassBookRemote(ClassBook b, {String? name, String? description, int? totalPages, int? sequenceOrder}) async {
+Future<String?> updateClassBookRemote(ClassBook b, {String? name, String? description, int? totalPages, int? sequenceOrder}) async => SaveGuard.run<String?>('updateClassBookRemote', 'Please wait, saving...', () async {
   if (b.dbId == null) return 'This Book is not saved to the database yet.';
   try {
     final payload = <String, dynamic>{};
@@ -2932,7 +3023,7 @@ Future<String?> updateClassBookRemote(ClassBook b, {String? name, String? descri
   } catch (_) {
     return 'Could not save. Check your internet connection and try again.';
   }
-}
+}, (m) => m);
 
 Future<String?> setClassBookActiveRemote(ClassBook b, bool active) async {
   if (b.dbId == null) return 'This Book is not saved to the database yet.';
@@ -2980,7 +3071,7 @@ Future<void> loadBookProgress() async {
   } catch (_) {}
 }
 
-Future<String?> markBookPageCompleteRemote(Student s, ClassBook b, int pageNo, String date, String grade) async {
+Future<String?> markBookPageCompleteRemote(Student s, ClassBook b, int pageNo, String date, String grade) async => SaveGuard.run<String?>('markBookPageCompleteRemote', 'Please wait, saving progress...', () async {
   st.markBookPageComplete(s, b, pageNo, date, grade);
   if (s.dbId == null || b.dbId == null) return null;
   try {
@@ -2997,10 +3088,10 @@ Future<String?> markBookPageCompleteRemote(Student s, ClassBook b, int pageNo, S
   } catch (e) {
     return 'Could not save - this page will revert on refresh. Check your connection and try again.';
   }
-}
+}, (m) => m);
 
 // Same pattern as addMadrasaRemote, for public.courses.
-Future<String?> addCourseRemote(String name, String description, {String code = ''}) async {
+Future<String?> addCourseRemote(String name, String description, {String code = ''}) async => SaveGuard.run<String?>('addCourseRemote', 'Please wait, saving...', () async {
   final n = toTitleCase(name);
   if (n.isEmpty) return 'Enter an Add-on Course name';
   try {
@@ -3012,7 +3103,7 @@ Future<String?> addCourseRemote(String name, String description, {String code = 
   } catch (_) {
     return 'Could not save. Check your internet connection and try again.';
   }
-}
+}, (m) => m);
 
 // Same pattern as setMadrasaActiveRemote, for public.courses.
 Future<String?> setCourseActiveRemote(Course c, bool v) async {
@@ -3028,7 +3119,7 @@ Future<String?> setCourseActiveRemote(Course c, bool v) async {
   }
 }
 
-Future<String?> renameCourseRemote(Course c, String name, String description, {String? code}) async {
+Future<String?> renameCourseRemote(Course c, String name, String description, {String? code}) async => SaveGuard.run<String?>('renameCourseRemote', 'Please wait, saving...', () async {
   final n = toTitleCase(name);
   if (n.isEmpty) return 'Enter an Add-on Course name';
   if (c.dbId == null) return 'This Add-on Course was not saved to the database yet.';
@@ -3041,7 +3132,7 @@ Future<String?> renameCourseRemote(Course c, String name, String description, {S
   } catch (_) {
     return 'Could not save. Check your internet connection and try again.';
   }
-}
+}, (m) => m);
 
 class MaktabApp extends StatefulWidget {
   const MaktabApp({super.key});
@@ -3086,7 +3177,7 @@ class _MaktabAppState extends State<MaktabApp> {
         // are never hidden underneath it.
         child: ColoredBox(
           color: const Color(0xFFF7F8F5),
-          child: SafeArea(top: false, left: false, right: false, child: child ?? const SizedBox.shrink()),
+          child: SaveOverlay(child: SafeArea(top: false, left: false, right: false, child: child ?? const SizedBox.shrink())),
         ),
       ),
       // themeMode defaults to following the OS; without an explicit
@@ -4925,6 +5016,8 @@ class SyllabusBody extends StatelessWidget {
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Text('${s.name} - ${cd.name}', style: const TextStyle(fontWeight: FontWeight.bold)),
             Text('Book: ${cd.bookName}', style: const TextStyle(color: Colors.black54, fontSize: 12.5)),
+            if (s.curPara != null && s.curPage != null)
+              Text('Admitted at Para ${s.curPara}, Page ${s.curPage}', style: const TextStyle(color: Colors.black87, fontSize: 12.5, fontWeight: FontWeight.w600)),
             const SizedBox(height: 6),
             LinearProgressIndicator(value: p.pct / 100),
             const SizedBox(height: 6),
@@ -5485,6 +5578,7 @@ class _StaffHomeState extends State<StaffHome> {
   // (validated in postAnnouncementRemote) - it's what makes the
   // announcement disappear on its own once that day has passed.
   String annFrom = '';
+  bool annBusy = false;
   String annTo = '';
 
   @override
@@ -5586,30 +5680,40 @@ class _StaffHomeState extends State<StaffHome> {
         ]),
         const SizedBox(height: 8),
         ElevatedButton(
-          onPressed: () async {
-            if (title.text.trim().isEmpty) {
-              toast(context, 'Enter a title');
-              return;
-            }
-            if (annTo.isEmpty) {
-              toast(context, 'Choose a "To" date - it decides when this announcement disappears on its own.');
-              return;
-            }
-            final toShown = nice(annTo);
-            final e = await postAnnouncementRemote(title.text, msg.text, startDate: annFrom.isEmpty ? null : annFrom, endDate: annTo);
-            if (e != null) {
-              toast(context, e);
-              return;
-            }
-            title.clear();
-            msg.clear();
-            setState(() {
-              annFrom = '';
-              annTo = '';
-            });
-            toast(context, 'Announcement posted. It shows on every dashboard until $toShown, then disappears on its own.');
-          },
-          child: const Text('Post announcement'),
+          onPressed: annBusy
+              ? null
+              : () async {
+                  if (title.text.trim().isEmpty) {
+                    toast(context, 'Enter a title');
+                    return;
+                  }
+                  if (annTo.isEmpty) {
+                    toast(context, 'Choose a "To" date - it decides when this announcement disappears on its own.');
+                    return;
+                  }
+                  setState(() => annBusy = true);
+                  final e = await postAnnouncementRemote(title.text, msg.text, startDate: annFrom.isEmpty ? null : annFrom, endDate: annTo);
+                  if (!mounted) return;
+                  setState(() => annBusy = false);
+                  if (e != null) {
+                    toast(context, e);
+                    return;
+                  }
+                  title.clear();
+                  msg.clear();
+                  setState(() {
+                    annFrom = '';
+                    annTo = '';
+                  });
+                  toast(context, 'Announcement created successfully.');
+                },
+          child: annBusy
+              ? const Row(mainAxisSize: MainAxisSize.min, children: [
+                  SizedBox(height: 16, width: 16, child: CircularProgressIndicator(strokeWidth: 2)),
+                  SizedBox(width: 10),
+                  Text('Please wait, saving announcement...'),
+                ])
+              : const Text('Post announcement'),
         ),
         h('Active announcements'),
         ...st.announcements.where((a) => a.active).map((a) {
@@ -7234,6 +7338,8 @@ class _StudentsViewState extends State<StudentsView> {
   int cls = 1;
   String batch = 'Morning';
   String guardianRelation = 'Father';
+  int? admPara;
+  int? admPage;
   final aadhaarNo = TextEditingController();
   bool busy = false;
   String? regMadrasa;
@@ -7315,6 +7421,29 @@ class _StudentsViewState extends State<StudentsView> {
         onChanged: (v) => setState(() => cls = v ?? cls),
       ),
       const SizedBox(height: 8),
+      // Class 3 (Hafeezi Qur'an): record where the student currently is.
+      if (cls == 3) ...[
+        Row(children: [
+          Expanded(
+            child: DropdownButtonFormField<int>(
+              value: admPara,
+              decoration: const InputDecoration(labelText: 'Para No. *', border: OutlineInputBorder()),
+              items: [for (var i = 1; i <= 30; i++) DropdownMenuItem<int>(value: i, child: Text('Para $i'))],
+              onChanged: (v) => setState(() => admPara = v),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: DropdownButtonFormField<int>(
+              value: admPage,
+              decoration: const InputDecoration(labelText: 'Page No. *', border: OutlineInputBorder()),
+              items: [for (var i = 1; i <= 21; i++) DropdownMenuItem<int>(value: i, child: Text('Page $i'))],
+              onChanged: (v) => setState(() => admPage = v),
+            ),
+          ),
+        ]),
+        const SizedBox(height: 8),
+      ],
       // Same class can run more than one session a day - this is what lets
       // Mark Attendance group students by session instead of defaulting
       // everyone not physically in front of the current teacher to Present.
@@ -7359,6 +7488,10 @@ class _StudentsViewState extends State<StudentsView> {
         onPressed: busy
             ? null
             : () async {
+                if (cls == 3 && (admPara == null || admPage == null)) {
+                  toast(context, "Select the student's current Para and Page for Class 3");
+                  return;
+                }
                 setState(() => busy = true);
                 final madrasaToUse = u.role == 'teacher' ? st.teacherMadrasa : (regMadrasa ?? 'Hanfi');
                 var e = await addStudentRemote(
@@ -7374,6 +7507,8 @@ class _StudentsViewState extends State<StudentsView> {
                   fatherName: fatherName.text,
                   guardianRelation: guardianRelation,
                   batch: batch,
+                  curPara: admPara,
+                  curPage: admPage,
                 );
                 if (!mounted) return;
                 if (e != null && e.startsWith('DUPLICATE:')) {
@@ -7405,6 +7540,8 @@ class _StudentsViewState extends State<StudentsView> {
                     fatherName: fatherName.text,
                     guardianRelation: guardianRelation,
                     batch: batch,
+                    curPara: admPara,
+                    curPage: admPage,
                     confirmDuplicate: true,
                   );
                   if (!mounted) return;
@@ -7420,6 +7557,8 @@ class _StudentsViewState extends State<StudentsView> {
                   dob.clear();
                   aadhaarNo.clear();
                   setState(() {
+                    admPara = null;
+                    admPage = null;
                     gender = '';
                     guardianRelation = 'Father';
                   });
@@ -7447,21 +7586,21 @@ class _StudentsViewState extends State<StudentsView> {
               Text(s.name, style: const TextStyle(fontWeight: FontWeight.bold)),
               Text('${st.className(s.cls)} - eligible to pass'),
               const SizedBox(height: 6),
-              if (pending.isEmpty)
-                ElevatedButton(
-                  onPressed: () async {
-                    final msg = await promoteRemote(s);
-                    if (context.mounted) toast(context, msg);
-                  },
-                  child: const Text('Mark Passed and Promote'),
-                )
-              else ...[
-                const Text(
-                  'Class completion is not allowed. The student must complete all assigned add-on courses first.',
-                  style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold, fontSize: 12.5),
-                ),
+              ElevatedButton(
+                onPressed: () async {
+                  final ok = await checkPromotionAllowed(context, s);
+                  if (!ok || !context.mounted) return;
+                  final msg = await promoteRemote(s);
+                  if (context.mounted) toast(context, msg);
+                },
+                child: const Text('Mark Passed and Promote'),
+              ),
+              if (pending.isNotEmpty) ...[
                 const SizedBox(height: 4),
-                Text('Pending: ${pending.map((c) => c.name).join(', ')}', style: const TextStyle(fontSize: 12.5, color: Colors.black54)),
+                Text(
+                  'Pending courses: ${pending.map((c) => c.name).join(', ')}',
+                  style: const TextStyle(fontSize: 12.5, color: Colors.red, fontWeight: FontWeight.w600),
+                ),
               ],
             ]),
           ),
@@ -9204,6 +9343,7 @@ class StudentDetail extends StatelessWidget {
             grid([
               tile('Current status', s.status),
               tile('Class', cd.name),
+              if (s.curPara != null && s.curPage != null) tile('Para / Page', 'Para ${s.curPara}, Page ${s.curPage}'),
               tile('Progress', p.label ?? '${p.n} of ${p.total} (${p.pct}%)'),
               tile('Pace', p.behind > 0 ? 'Behind ${p.behind}' : 'On pace', color: p.behind > 0 ? Colors.red : Colors.green),
               tile('Attendance', '${st.attPct(s)}%'),

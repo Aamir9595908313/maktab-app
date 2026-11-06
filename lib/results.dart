@@ -20,6 +20,7 @@
 // Reads go through RLS directly, same as every other module.
 // ============================================================
 import 'package:flutter/material.dart';
+import 'save_guard.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:csv/csv.dart';
 import 'package:path_provider/path_provider.dart';
@@ -40,7 +41,7 @@ Future<void> loadAcademicYears() async {
   } catch (_) {}
 }
 
-Future<String?> createAcademicYearRemote(String label, String startsOn, String endsOn) async {
+Future<String?> createAcademicYearRemote(String label, String startsOn, String endsOn) async => SaveGuard.run<String?>('createAcademicYearRemote', 'Please wait, saving...', () async {
   if (label.trim().isEmpty) return "Give this academic year a label (e.g. '2026-27').";
   try {
     await sb.from('academic_years').insert({'label': label.trim(), 'starts_on': startsOn, 'ends_on': endsOn, 'created_by': sb.auth.currentUser?.id});
@@ -52,7 +53,7 @@ Future<String?> createAcademicYearRemote(String label, String startsOn, String e
   } catch (_) {
     return 'Could not save. Check your internet connection and try again.';
   }
-}
+}, (m) => m);
 
 // Examinations this account can see at all (RLS: Super Admin - everything;
 // a Result Manager - their own branch(es); nothing for anyone else - a
@@ -152,7 +153,7 @@ Future<String?> createExaminationRemote({
   required String startsOn,
   String? endsOn,
   String? remarks,
-}) async {
+}) async => SaveGuard.run<String?>('createExaminationRemote', 'Please wait, saving examination...', () async {
   if (name.trim().isEmpty) return 'Give the examination a name.';
   try {
     final row = await sb.rpc('create_examination', params: {
@@ -173,7 +174,7 @@ Future<String?> createExaminationRemote({
   } catch (e) {
     return _friendly(e);
   }
-}
+}, (m) => m);
 
 Future<String?> addExamSubjectRemote({
   required String examId,
@@ -234,7 +235,7 @@ Future<String?> saveExamMarkRemote({
   }
 }
 
-Future<String?> submitExamForReviewRemote(String examId) async {
+Future<String?> submitExamForReviewRemote(String examId) async => SaveGuard.run<String?>('submitExamForReviewRemote', 'Please wait, submitting...', () async {
   try {
     await sb.rpc('submit_exam_for_review', params: {'p_exam_id': examId});
     await loadExaminations();
@@ -242,9 +243,9 @@ Future<String?> submitExamForReviewRemote(String examId) async {
   } catch (e) {
     return _friendly(e);
   }
-}
+}, (m) => m);
 
-Future<String?> publishExamRemote(String examId) async {
+Future<String?> publishExamRemote(String examId) async => SaveGuard.run<String?>('publishExamRemote', 'Please wait, publishing...', () async {
   try {
     await sb.rpc('publish_exam', params: {'p_exam_id': examId});
     await loadExaminations();
@@ -252,7 +253,7 @@ Future<String?> publishExamRemote(String examId) async {
   } catch (e) {
     return _friendly(e);
   }
-}
+}, (m) => m);
 
 Future<String?> deleteExamResultRemote(String examResultId, String reason) async {
   if (reason.trim().isEmpty) return 'A reason is required.';

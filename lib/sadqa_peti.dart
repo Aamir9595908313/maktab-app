@@ -15,6 +15,7 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
+import 'save_guard.dart';
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:printing/printing.dart';
@@ -123,7 +124,7 @@ Future<String?> createSadqaPetiRemote({
   required int freqMonths,
   String? remarks,
   bool force = false,
-}) async {
+}) async => SaveGuard.run<String?>('createSadqaPetiRemote', 'Please wait, saving...', () async {
   try {
     final row = await sb.rpc('create_sadqa_peti', params: {
       'p_shopkeeper_name': toTitleCase(name),
@@ -146,7 +147,7 @@ Future<String?> createSadqaPetiRemote({
   } catch (_) {
     return 'Could not save. Check your internet connection and try again.';
   }
-}
+}, (m) => m);
 
 Future<String?> updateSadqaPetiRemote(SadqaPeti p, {
   required String name,
@@ -157,7 +158,7 @@ Future<String?> updateSadqaPetiRemote(SadqaPeti p, {
   String? boxNumber,
   required int freqMonths,
   String? remarks,
-}) async {
+}) async => SaveGuard.run<String?>('updateSadqaPetiRemote', 'Please wait, saving...', () async {
   try {
     final n = toTitleCase(name);
     final sh = toTitleCase(shop);
@@ -189,7 +190,7 @@ Future<String?> updateSadqaPetiRemote(SadqaPeti p, {
   } catch (_) {
     return 'Could not save. Check your internet connection and try again.';
   }
-}
+}, (m) => m);
 
 Future<String?> setSadqaPetiActiveRemote(SadqaPeti p, bool active) async {
   try {
@@ -251,7 +252,7 @@ Future<RecordCollectionResult> recordSadqaCollectionRemote({
   String? remarks,
   String? photoFileRef,
   required String idempotencyKey,
-}) async {
+}) async => SaveGuard.run<RecordCollectionResult>('recordSadqaCollectionRemote', 'Please wait, recording collection...', () async {
   try {
     final row = await sb.rpc('record_sadqa_collection', params: {
       'p_peti_id': peti.id,
@@ -282,9 +283,9 @@ Future<RecordCollectionResult> recordSadqaCollectionRemote({
   } catch (_) {
     return const RecordCollectionResult(error: 'Could not save. Check your internet connection and try again.');
   }
-}
+}, (m) => RecordCollectionResult(error: m));
 
-Future<String?> reverseSadqaCollectionRemote(SadqaCollection c, String reason) async {
+Future<String?> reverseSadqaCollectionRemote(SadqaCollection c, String reason) async => SaveGuard.run<String?>('reverseSadqaCollectionRemote', 'Please wait, saving...', () async {
   try {
     await sb.rpc('reverse_sadqa_collection', params: {'p_collection_id': c.id, 'p_reason': reason});
     await loadSadqaCollections();
@@ -294,7 +295,7 @@ Future<String?> reverseSadqaCollectionRemote(SadqaCollection c, String reason) a
   } catch (_) {
     return 'Could not save. Check your internet connection and try again.';
   }
-}
+}, (m) => m);
 
 Future<Map<String, dynamic>?> retrySadqaNotification(String collectionId) async {
   try {
