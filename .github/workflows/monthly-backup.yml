@@ -1,0 +1,67 @@
+name: Monthly backup to Google Drive
+
+on:
+  schedule:
+    - cron: '30 20 1 * *'   # 02:00 IST on the 2nd of every month
+  workflow_dispatch: {}      # "Run workflow" button = backup now
+
+permissions:
+  contents: read
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check required secrets
+        env:
+          DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          ZIP_PW: ${{ secrets.BACKUP_ZIP_PASSWORD }}
+          UP_URL: ${{ secrets.DRIVE_UPLOAD_URL }}
+          UP_TOKEN: ${{ secrets.DRIVE_UPLOAD_TOKEN }}
+        run: |
+          for v in DB_URL ZIP_PW UP_URL UP_TOKEN; do
+            if [ -z "${!v}" ]; then echo "::error::Backup secret for $v is not set. See docs/monthly-backup-setup.md"; exit 1; fi
+          done
+
+      - name: Export database
+        env:
+          DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          mkdir -p out
+          docker run --rm -e DB_URL -v "$PWD":/w postgres:17 bash /w/scripts/backup/dump.sh
+          sudo chown -R "$USER":"$USER" out
+
+      - name: Export uploaded files (optional)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: |
+          if [ -n "$SUPABASE_URL" ] && [ -n "$SUPABASE_SERVICE_KEY" ]; then bash scripts/backup/storage.sh
+          else echo "Storage secrets not set - uploaded files not included."; fi
+
+      - name: Encrypt and zip
+        env:
+          ZIP_PW: ${{ secrets.BACKUP_ZIP_PASSWORD }}
+        run: |
+          sudo apt-get install -y -qq p7zip-full >/dev/null
+          NAME="maktab-backup-$(date -u +%Y-%m).zip"
+          echo "BACKUP_NAME=$NAME" >> "$GITHUB_ENV"
+          (cd out && 7z a -tzip -mem=AES256 -p"$ZIP_PW" "../$NAME" . >/dev/null)
+          ls -l "$NAME"
+          { echo "### Backup $NAME"; echo '```'; cat out/row_counts.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload to Google Drive
+        env:
+          UP_URL: ${{ secrets.DRIVE_UPLOAD_URL }}
+          UP_TOKEN: ${{ secrets.DRIVE_UPLOAD_TOKEN }}
+        run: |
+          base64 -w0 "$BACKUP_NAME" > b64.txt
+          jq -n --arg token "$UP_TOKEN" --arg name "$BACKUP_NAME" --rawfile data b64.txt '{token:$token,filename:$name,data:$data}' > payload.json
+          RESP=$(curl -sSL -X POST -H 'Content-Type: text/plain' --data-binary @payload.json "$UP_URL")
+          echo "$RESP" | jq -r 'if .ok then "Uploaded to Drive: \(.name) (\(.size) bytes)" else "Upload failed: \(.error // "unknown")" end'
+          echo "$RESP" | jq -e '.ok == true' >/dev/null
+          LOCAL=$(stat -c %s "$BACKUP_NAME"); REMOTE=$(echo "$RESP" | jq -r '.size')
+          [ "$LOCAL" = "$REMOTE" ] || { echo "::error::Size mismatch (local $LOCAL, Drive $REMOTE)"; exit 1; }
