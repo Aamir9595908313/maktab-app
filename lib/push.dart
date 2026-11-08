@@ -8,6 +8,7 @@ import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import 'inbox.dart';
 import 'phone_login.dart';
 
 const String _absenceChannelId = 'absence_alerts';
@@ -20,6 +21,8 @@ class PushService {
 
   // Call after a successful login.
   static Future<void> registerForCurrentUser() async {
+    // In-app Alerts inbox + phone notifications work with or without Firebase.
+    unawaited(AppAlerts.start());
     if (!FirebasePhoneLogin.ready) return;
     try {
       final messaging = FirebaseMessaging.instance;
@@ -34,6 +37,11 @@ class PushService {
             description: 'Tells parents when their child is marked absent.',
             importance: Importance.max,
           ));
+      for (final e in kAlertChannelNames.entries) {
+        await _local
+            .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()
+            ?.createNotificationChannel(AndroidNotificationChannel(e.key, e.value, importance: Importance.max));
+      }
 
       final token = await messaging.getToken();
       if (token != null) await _save(token);
@@ -46,19 +54,14 @@ class PushService {
         FirebaseMessaging.onMessage.listen((RemoteMessage m) {
           final n = m.notification;
           if (n == null) return;
-          unawaited(_local.show(
-            m.hashCode,
-            n.title,
-            n.body,
-            const NotificationDetails(
-              android: AndroidNotificationDetails(
-                _absenceChannelId,
-                'Absence alerts',
-                importance: Importance.max,
-                priority: Priority.high,
-              ),
-            ),
+          // Same notification id as the realtime path, so the phone shows it once.
+          unawaited(AppAlerts.showPhoneNotification(
+            notificationId: (m.data['notification_id'] as String?) ?? '${m.hashCode}',
+            kind: m.data['type'] as String?,
+            title: n.title ?? '',
+            body: n.body ?? '',
           ));
+          unawaited(AppAlerts.refresh());
         });
       }
     } catch (_) {}
@@ -73,6 +76,7 @@ class PushService {
 
   // Call before signing out so this phone stops getting the previous user's alerts.
   static Future<void> unregister() async {
+    unawaited(AppAlerts.stop());
     final t = _token;
     if (t == null) return;
     try {

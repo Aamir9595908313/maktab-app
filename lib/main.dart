@@ -4,6 +4,7 @@ import 'dart:io';
 import 'dart:math' show pi;
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
+import 'inbox.dart';
 import 'save_guard.dart';
 import 'package:flutter/services.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -672,7 +673,6 @@ Future<String?> submitOneAttendanceRemote(Student s, String status, {required St
   if (status == 'A' && s.status == 'Active') {
     if (await _claimAbsenceNotification(s, date) == NotifyOutcome.sentNow) {
       st.sendAbsenceNotification(s, madrasa, date);
-      unawaited(PushService.notifyAbsence(s.dbId!, date));
     }
   }
   return null;
@@ -780,7 +780,6 @@ Future<AttendanceSubmitResult> submitAttendanceSessionRemote({
     final outcome = await _claimAbsenceNotification(s, date);
     if (outcome == NotifyOutcome.sentNow) {
       st.sendAbsenceNotification(s, madrasa, date);
-      unawaited(PushService.notifyAbsence(s.dbId!, date));
       notified++;
     } else if (outcome == NotifyOutcome.failed) {
       retryNeeded.add(s);
@@ -4532,6 +4531,7 @@ class _ShellState extends State<Shell> {
             Text('${roleLabel(u)} - ${u.name}', style: const TextStyle(fontSize: 11, color: Color(0xFFF0D98A))),
           ]),
           actions: [
+            const AlertsBell(),
             if (u.role == 'super')
               IconButton(
                 icon: Badge(
