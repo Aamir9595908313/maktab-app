@@ -140,6 +140,9 @@ Future<String?> editMonthlyMemberRemote({
   }
 }, (m) => m);
 
+bool _dueSheetBusy = false;
+bool _payDialogBusy = false;
+
 // Activate/deactivate - never deletes, so every past due and payment stays
 // exactly as it was (spec: preserve historical payments when deactivated).
 Future<String?> setMonthlyMemberActiveRemote(MonthlyMember member, bool active) async {
@@ -706,8 +709,19 @@ class _MonthlyMemberDetailViewState extends State<MonthlyMemberDetailView> {
   }
 
   void _openDueDetail(BuildContext context, MonthlyMember m, MonthlyDue d) async {
-    final payments = await loadPaymentsForDue(d.id);
-    if (!context.mounted) return;
+    if (_dueSheetBusy) return; // ignore repeat taps while loading/open
+    _dueSheetBusy = true;
+    final List<MonthlyPayment> payments;
+    try {
+      payments = await loadPaymentsForDue(d.id);
+    } catch (_) {
+      _dueSheetBusy = false;
+      return;
+    }
+    if (!context.mounted) {
+      _dueSheetBusy = false;
+      return;
+    }
     await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
@@ -731,6 +745,8 @@ class _MonthlyMemberDetailViewState extends State<MonthlyMemberDetailView> {
                   icon: const Icon(Icons.payments),
                   label: const Text('Record payment'),
                   onPressed: () {
+                    if (!_dueSheetBusy) return; // already pressed once
+                    _dueSheetBusy = false;
                     Navigator.pop(ctx);
                     _openRecordPayment(context, m, d);
                   },
@@ -750,9 +766,12 @@ class _MonthlyMemberDetailViewState extends State<MonthlyMemberDetailView> {
         ),
       ),
     );
+    _dueSheetBusy = false;
   }
 
   void _openRecordPayment(BuildContext context, MonthlyMember m, MonthlyDue d) async {
+    if (_payDialogBusy) return; // one payment dialog at a time
+    _payDialogBusy = true;
     final amount = TextEditingController(text: d.outstanding.toStringAsFixed(0));
     final txnRef = TextEditingController();
     final remarks = TextEditingController();
@@ -809,6 +828,7 @@ class _MonthlyMemberDetailViewState extends State<MonthlyMemberDetailView> {
         ),
       ),
     );
+    _payDialogBusy = false;
   }
 }
 
