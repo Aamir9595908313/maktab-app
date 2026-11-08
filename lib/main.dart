@@ -4808,6 +4808,69 @@ class _AttendanceMonthReportState extends State<AttendanceMonthReport> {
     }
   }
 
+  String _letter(String status) {
+    switch (status) {
+      case 'Present':
+        return 'P';
+      case 'Absent':
+        return 'A';
+      case 'Event':
+        return 'E';
+      case 'Holiday':
+        return 'H';
+      case 'Weekend':
+        return 'W';
+      default:
+        return '-';
+    }
+  }
+
+  // Month calendar: one coloured box per day with its status letter.
+  Widget _calendar(MonthAttendanceSummary sm) {
+    final byDate = {for (final d in sm.days) d.date: d};
+    final first = DateTime(sm.year, sm.month, 1);
+    final daysInMonth = DateTime(sm.year, sm.month + 1, 0).day;
+    final lead = first.weekday % 7; // Sunday = 0
+    const heads = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
+    final cells = <Widget>[
+      for (final h in heads) Center(child: Text(h, style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.black54))),
+      for (var i = 0; i < lead; i++) const SizedBox.shrink(),
+      for (var day = 1; day <= daysInMonth; day++)
+        Builder(builder: (context) {
+          final d = byDate[fd(DateTime(sm.year, sm.month, day))];
+          if (d == null) {
+            // Before admission or a future day - nothing scheduled.
+            return Container(
+              alignment: Alignment.center,
+              decoration: BoxDecoration(color: Colors.black.withOpacity(0.04), borderRadius: BorderRadius.circular(6)),
+              child: Text('$day', style: const TextStyle(fontSize: 11, color: Colors.black26)),
+            );
+          }
+          final c = _statusColor(d.status);
+          return InkWell(
+            borderRadius: BorderRadius.circular(6),
+            onTap: () => toast(context, '${nice(d.date)}: ${d.status}${d.eventName != null ? ' - ${d.eventName}' : ''}'),
+            child: Container(
+              decoration: BoxDecoration(color: c, borderRadius: BorderRadius.circular(6)),
+              child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+                Text('$day', style: const TextStyle(fontSize: 10, color: Colors.white70)),
+                Text(_letter(d.status), style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white)),
+              ]),
+            ),
+          );
+        }),
+    ];
+    return GridView.count(
+      crossAxisCount: 7,
+      shrinkWrap: true,
+      physics: const NeverScrollableScrollPhysics(),
+      mainAxisSpacing: 4,
+      crossAxisSpacing: 4,
+      childAspectRatio: 0.95,
+      children: cells,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final s = widget.s;
@@ -4849,19 +4912,29 @@ class _AttendanceMonthReportState extends State<AttendanceMonthReport> {
             ),
           ),
           const SizedBox(height: 10),
-          Wrap(spacing: 6, runSpacing: 6, children: [
-            for (final f in const ['All', 'Present', 'Absent', 'Event', 'Holiday', 'Weekend', 'Not Recorded'])
-              ChoiceChip(label: Text(f), selected: filter == f, onSelected: (_) => setState(() => filter = f)),
-          ]),
-          const SizedBox(height: 8),
-          ...sm.days.where((d) => filter == 'All' || d.status == filter).toList().reversed.map((d) => Card(
-                child: ListTile(
-                  dense: true,
-                  leading: Icon(Icons.circle, size: 12, color: _statusColor(d.status)),
-                  title: Text(nice(d.date)),
-                  trailing: Text(d.status + (d.eventName != null ? ': ${d.eventName}' : ''), style: TextStyle(color: _statusColor(d.status), fontWeight: FontWeight.w600), overflow: TextOverflow.ellipsis),
+          _calendar(sm),
+          const SizedBox(height: 10),
+          Wrap(spacing: 12, runSpacing: 6, children: [
+            for (final e in const [
+              ['P', 'Present'],
+              ['A', 'Absent'],
+              ['E', 'Event'],
+              ['H', 'Holiday'],
+              ['W', 'Weekend'],
+              ['-', 'Not Recorded'],
+            ])
+              Row(mainAxisSize: MainAxisSize.min, children: [
+                Container(
+                  width: 20,
+                  height: 20,
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(color: _statusColor(e[1]), borderRadius: BorderRadius.circular(4)),
+                  child: Text(e[0], style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold)),
                 ),
-              )),
+                const SizedBox(width: 4),
+                Text(e[1], style: const TextStyle(fontSize: 12)),
+              ]),
+          ]),
         ];
       }(),
     ]);
