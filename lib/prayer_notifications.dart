@@ -197,7 +197,11 @@ class PrayerNotificationService {
         }
         return null;
       }
-      final city = pick(['hamlet', 'village', 'suburb', 'neighbourhood', 'town', 'city', 'city_district', 'municipality', 'county']);
+      // Official records name places like "Mehkar (M Cl)" (Municipal Council) or
+      // "Pune (M Corp.)" - drop the bracketed administrative tag.
+      String clean(String? v) => v == null ? '' : v.replaceAll(RegExp(r'\s*\([^)]*\)'), '').trim();
+      final cityRaw = pick(['hamlet', 'village', 'suburb', 'neighbourhood', 'town', 'city', 'city_district', 'municipality', 'county']);
+      final city = clean(cityRaw).isEmpty ? null : clean(cityRaw);
       final state = pick(['state']);
       final parts = [city, state].whereType<String>().toList();
       return parts.isNotEmpty ? parts.join(', ') : (body['display_name'] as String?);
