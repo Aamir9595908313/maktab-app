@@ -2714,6 +2714,7 @@ class MonthlyMember {
   String? address;
   String? remarks;
   bool isActive;
+  bool committeeAccess;
 
   MonthlyMember({
     required this.id,
@@ -2724,6 +2725,7 @@ class MonthlyMember {
     this.address,
     this.remarks,
     this.isActive = true,
+    this.committeeAccess = true,
   });
 
   factory MonthlyMember.fromJson(Map<String, dynamic> j) => MonthlyMember(
@@ -2735,6 +2737,7 @@ class MonthlyMember {
         address: j['address'] as String?,
         remarks: j['remarks'] as String?,
         isActive: (j['is_active'] as bool?) ?? true,
+        committeeAccess: (j['committee_access'] as bool?) ?? true,
       );
 }
 

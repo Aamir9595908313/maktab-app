@@ -25,6 +25,7 @@ import 'push.dart';
 import 'sadqa_peti.dart';
 import 'prayer_notifications.dart';
 import 'monthly_members.dart';
+import 'my_monthly.dart';
 import 'results.dart';
 import 'help.dart';
 import 'user_management.dart';
@@ -390,6 +391,7 @@ Future<void> loadMasterData() async {
     // called (e.g. next login) or the user can be told to check their
     // connection if "Add" keeps failing.
   } finally {
+    unawaited(refreshMonthlyMemberFlag());
     // Set even on failure, so a dashboard gated on dataLoaded doesn't get
     // stuck on a permanent loading screen if Supabase genuinely couldn't
     // be reached - it falls through to showing whatever counts it has
@@ -4352,7 +4354,7 @@ List<AppTab> _withExtraTabs(Account u, List<AppTab> base) {
 // custom role with nothing else ticked yet - rather than inside each
 // branch of _baseTabsFor, so it can never be missed for one role and not
 // another.
-List<AppTab> tabsFor(Account u) => [..._withExtraTabs(u, _baseTabsFor(u)), AppTab('Help', Icons.help_outline, () => const HelpScreen())];
+List<AppTab> tabsFor(Account u) => [..._withExtraTabs(u, _baseTabsFor(u)), if (gIsMonthlyMember) AppTab('My Monthly', Icons.volunteer_activism, () => const MyMonthlyRecordsView()), AppTab('Help', Icons.help_outline, () => const HelpScreen())];
 
 List<AppTab> _baseTabsFor(Account u) {
   final kidTabs = <AppTab>[

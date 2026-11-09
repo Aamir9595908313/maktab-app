@@ -145,6 +145,18 @@ bool _payDialogBusy = false;
 
 // Activate/deactivate - never deletes, so every past due and payment stays
 // exactly as it was (spec: preserve historical payments when deactivated).
+Future<String?> setMemberCommitteeAccessRemote(MonthlyMember member, bool enabled) async {
+  try {
+    await sb.rpc('set_member_committee_access', params: {'p_member': member.id, 'p_enabled': enabled});
+    await loadMonthlyMembers();
+    return null;
+  } on PostgrestException catch (e) {
+    return 'Could not change access: ${e.message}';
+  } catch (_) {
+    return 'Could not save. Check your internet connection and try again.';
+  }
+}
+
 Future<String?> setMonthlyMemberActiveRemote(MonthlyMember member, bool active) async {
   try {
     await sb.from('monthly_members').update({
@@ -626,6 +638,23 @@ class _MonthlyMemberDetailViewState extends State<MonthlyMemberDetailView> {
                       if (m.address != null && m.address!.isNotEmpty) Text('Address: ${m.address}'),
                       if (m.remarks != null && m.remarks!.isNotEmpty) Text('Remarks: ${m.remarks}'),
                       const SizedBox(height: 8),
+                      if (st.user?.role == 'super')
+                        SwitchListTile(
+                          contentPadding: EdgeInsets.zero,
+                          title: const Text('Working Committee access'),
+                          subtitle: const Text('Turn off to remove committee access. The member still sees their own monthly records.'),
+                          value: m.committeeAccess,
+                          onChanged: (v) async {
+                            if (!v) {
+                              final ok = await confirmDialog(context, 'Remove committee access?', '${m.fullName} will lose Working Committee access but can still see their own monthly dues and payment history.', confirmLabel: 'Remove');
+                              if (!ok) return;
+                            }
+                            if (!context.mounted) return;
+                            final e = await setMemberCommitteeAccessRemote(m, v);
+                            if (!context.mounted) return;
+                            toast(context, e ?? (v ? 'Committee access enabled.' : 'Committee access removed.'));
+                          },
+                        ),
                       OutlinedButton.icon(
                         icon: Icon(m.isActive ? Icons.block : Icons.check_circle_outline),
                         label: Text(m.isActive ? 'Deactivate member' : 'Activate member'),
