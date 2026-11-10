@@ -1719,21 +1719,40 @@ Future<void> resolveRemote(Complaint c) async {
 // that seeded per class). Only "paid in full" is tracked here, matching
 // what the UI actually shows (Complete vs due) - partial payments aren't
 // a thing in this app yet.
+// Who/how/when each paid month was received (cash, UPI, bank) - shown to
+// parents and admins next to the "Paid" status.
+class FeePaidInfo {
+  final String? paidAt;
+  final String? mode;
+  FeePaidInfo(this.paidAt, this.mode);
+  String get modeLabel => mode == 'cash' ? 'Cash' : mode == 'upi' ? 'UPI / manual' : mode == 'bank' ? 'Bank' : '';
+  String get label {
+    final d = (paidAt ?? '').split('T').first;
+    final parts = [if (d.isNotEmpty) nice(d), if (modeLabel.isNotEmpty) modeLabel];
+    return parts.join(' - ');
+  }
+}
+
+final Map<int, Map<String, FeePaidInfo>> gFeePaidInfo = {};
+
 Future<void> loadFees() async {
   final idByDbId = {for (final s in st.students) if (s.dbId != null) s.dbId!: s};
   if (idByDbId.isEmpty) return;
   try {
     // No .eq('year', ...) - fees aren't limited to one hardcoded year any
     // more, so every year a student has a complete row for is loaded.
-    final rows = await sb.from('fees_monthly').select('student_id, month, year, status').eq('status', 'complete');
+    final rows = await sb.from('fees_monthly').select('student_id, month, year, status, paid_at, paid_mode').eq('status', 'complete');
     final byStudent = <int, Set<String>>{};
+    gFeePaidInfo.clear();
     for (final r in (rows as List)) {
       final s = idByDbId[r['student_id'] as String?];
       if (s == null) continue;
       final mNo = r['month'] as int?;
       final yr = r['year'] as int?;
       if (mNo == null || mNo < 1 || mNo > 12 || yr == null) continue;
-      byStudent.putIfAbsent(s.id, () => {}).add('${AppState.kMonthAbbrevs[mNo - 1]} $yr');
+      final key = '${AppState.kMonthAbbrevs[mNo - 1]} $yr';
+      byStudent.putIfAbsent(s.id, () => {}).add(key);
+      gFeePaidInfo.putIfAbsent(s.id, () => {})[key] = FeePaidInfo(r['paid_at'] as String?, r['paid_mode'] as String?);
     }
     st.setPaidFromDb(byStudent);
   } catch (_) {
@@ -1742,7 +1761,7 @@ Future<void> loadFees() async {
   }
 }
 
-Future<String> payRemote(Student s, String m) async => SaveGuard.run<String>('payRemote', 'Please wait, recording payment...', () async {
+Future<String> payRemote(Student s, String m, {String mode = 'cash', String? remarks}) async => SaveGuard.run<String>('payRemote', 'Please wait, recording payment...', () async {
   final msg = st.pay(s, m);
   final monthNo = AppState.monthNumFromKey(m);
   final year = AppState.yearFromKey(m);
@@ -1755,14 +1774,19 @@ Future<String> payRemote(Student s, String m) async => SaveGuard.run<String>('pa
         'amount_due': 200,
         'amount_paid': 200,
         'status': 'complete',
+        'paid_at': DateTime.now().toUtc().toIso8601String(),
+        'paid_mode': mode,
+        'paid_by': sb.auth.currentUser?.id,
+        'remarks': (remarks == null || remarks.trim().isEmpty) ? null : remarks.trim(),
       }, onConflict: 'student_id,year,month').select().single();
       await sb.from('receipts').insert({
         'receipt_no': 'R-$year-${st.receiptNo}',
         'fees_monthly_id': row['id'],
         'amount': 200,
-        'mode': 'cash',
+        'mode': mode,
         'collected_by': sb.auth.currentUser?.id,
       });
+      gFeePaidInfo.putIfAbsent(s.id, () => {})[m] = FeePaidInfo(DateTime.now().toIso8601String(), mode);
     } catch (_) {
       // Already reflected locally; the next reload (realtime or manual)
       // will just show it still due if this save actually failed.
@@ -4992,7 +5016,7 @@ class KidHome extends StatelessWidget {
         Wrap(spacing: 6, children: [
           for (final m in st.feeMonths(k))
             Chip(
-              label: Text(st.isPaid(k.id, m) ? '$m - Paid' : '$m due'),
+              label: Text(st.isPaid(k.id, m) ? '$m - Paid' : '$m due Rs. 200'),
               backgroundColor: st.isPaid(k.id, m) ? const Color(0xFFDFF3DA) : const Color(0xFFFFE3E0),
             ),
         ]),
@@ -5458,13 +5482,25 @@ class KidFees extends StatelessWidget {
     return page([
       KidPicker(),
       h('Fees - ${k.name}'),
-      const Text('Monthly fee: Rs. 200. A month is Complete when fully paid.'),
+      const Text('Monthly fee: Rs. 200. A month is Complete when fully paid. The Maktab marks a month paid once the fee is received.'),
       const SizedBox(height: 6),
-      ...st.feeMonths(k).map((m) => Card(
+      Builder(builder: (_) {
+        final dueN = st.feeMonths(k).where((m) => !st.isPaid(k.id, m)).length;
+        return Card(
+          color: dueN == 0 ? const Color(0xFFDFF3DA) : const Color(0xFFFFE3E0),
+          child: ListTile(
+            leading: Icon(dueN == 0 ? Icons.verified : Icons.warning_amber, color: dueN == 0 ? Colors.green : Colors.red),
+            title: Text(dueN == 0 ? 'All fees paid' : 'Total due: Rs. ${dueN * 200} ($dueN month${dueN == 1 ? '' : 's'})'),
+          ),
+        );
+      }),
+      ...st.feeMonths(k).reversed.map((m) => Card(
             child: ListTile(
               leading: Icon(st.isPaid(k.id, m) ? Icons.check_circle : Icons.pending, color: st.isPaid(k.id, m) ? Colors.green : Colors.orange),
               title: Text(m),
-              subtitle: Text(st.isPaid(k.id, m) ? 'Paid - month complete' : 'Due Rs. 200 by the 10th'),
+              subtitle: Text(st.isPaid(k.id, m)
+                  ? 'Paid Rs. 200${(gFeePaidInfo[k.id]?[m]?.label ?? '').isEmpty ? '' : ' - ${gFeePaidInfo[k.id]![m]!.label}'}'
+                  : 'Due Rs. 200 by the 10th'),
             ),
           )),
     ]);
@@ -7896,6 +7932,46 @@ class TeachersView extends StatelessWidget {
   }
 }
 
+Future<void> _markFeePaid(BuildContext context, Student s, String m) async {
+  String mode = 'cash';
+  final remarks = TextEditingController();
+  final ok = await showDialog<bool>(
+    context: context,
+    builder: (ctx) => StatefulBuilder(
+      builder: (ctx, setD) => AlertDialog(
+        title: Text('Mark $m as paid'),
+        content: SingleChildScrollView(
+          child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text('${s.name} - Rs. 200'),
+            const SizedBox(height: 8),
+            DropdownButtonFormField<String>(
+              value: mode,
+              decoration: const InputDecoration(labelText: 'Received by', border: OutlineInputBorder()),
+              items: const [
+                DropdownMenuItem(value: 'cash', child: Text('Cash')),
+                DropdownMenuItem(value: 'upi', child: Text('UPI / manual')),
+                DropdownMenuItem(value: 'bank', child: Text('Bank transfer')),
+              ],
+              onChanged: (v) => setD(() => mode = v ?? mode),
+            ),
+            const SizedBox(height: 8),
+            TextField(controller: remarks, decoration: const InputDecoration(labelText: 'Remarks (optional)')),
+            const SizedBox(height: 8),
+            const Text('The parent will be notified that the fee was received.', style: TextStyle(color: Colors.black54, fontSize: 12)),
+          ]),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          ElevatedButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Mark paid')),
+        ],
+      ),
+    ),
+  );
+  if (ok != true || !context.mounted) return;
+  final msg = await payRemote(s, m, mode: mode, remarks: remarks.text);
+  if (context.mounted) toast(context, msg);
+}
+
 class FeesAdmin extends StatelessWidget {
   const FeesAdmin({super.key});
   @override
@@ -7918,7 +7994,7 @@ class FeesAdmin extends StatelessWidget {
     return page([
       h('Fees (month-wise)', icon: Icons.payments),
       grid([for (final m in allMonths) tile(m, '${list.where((s) => st.isPaid(s.id, m)).length} of ${list.where((s) => st.feeMonths(s).contains(m)).length} complete')]),
-      const Text('Tap a due month to record a payment of Rs. 200.'),
+      const Text('Tap a due month to mark it paid once the fee is received in cash or manually (Rs. 200).'),
       ...list.map((s) => Card(
             child: Padding(
               padding: const EdgeInsets.all(12),
@@ -7927,14 +8003,11 @@ class FeesAdmin extends StatelessWidget {
                 Wrap(spacing: 6, children: [
                   for (final m in st.feeMonths(s))
                     st.isPaid(s.id, m)
-                        ? Chip(label: Text('$m - Complete'), backgroundColor: const Color(0xFFDFF3DA))
+                        ? Chip(label: Text('$m - Paid${(gFeePaidInfo[s.id]?[m]?.label ?? '').isEmpty ? '' : ' (${gFeePaidInfo[s.id]![m]!.label})'}'), backgroundColor: const Color(0xFFDFF3DA))
                         : ActionChip(
-                            label: Text('$m due - Pay'),
+                            label: Text('$m due - Mark paid'),
                             backgroundColor: const Color(0xFFFFE3E0),
-                            onPressed: () async {
-                              final msg = await payRemote(s, m);
-                              if (context.mounted) toast(context, msg);
-                            },
+                            onPressed: () => _markFeePaid(context, s, m),
                           ),
                 ]),
               ]),
