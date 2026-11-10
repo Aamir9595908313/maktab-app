@@ -4439,6 +4439,7 @@ List<AppTab> _baseTabsFor(Account u) {
         AppTab('Teachers & Leave', Icons.groups, () => const TeachersView()),
         AppTab('Teacher Makatib', Icons.swap_horiz, () => const TeacherMadrasasAdmin()),
         AppTab('Add-on Course Approvals', Icons.verified, () => const CourseApprovalsView()),
+        AppTab('Fees', Icons.payments, () => const FeesAdmin()),
         AppTab('Fee QR & Reminders', Icons.qr_code, () => const FeeQrAdmin()),
         AppTab('Reports', Icons.assessment, () => const ReportsView()),
         AppTab('Results', Icons.grading, () => const ResultsHub()),
@@ -5792,6 +5793,7 @@ class _StaffHomeState extends State<StaffHome> {
           menuTile('Leave requests', icon: Icons.event_busy, badge: pendingLeave, onTap: () => pushPage(context, 'Teachers & Leave', const TeachersView())),
           menuTile('Complaints open', icon: Icons.report_problem, badge: open, onTap: () => pushPage(context, 'Complaints', const ComplaintsView())),
           menuTile('Committee members', icon: Icons.diversity_3, badge: st.committeeAccounts.where((m) => !m.pending).length, onTap: () => pushPage(context, 'Committee', const CommitteeAdmin())),
+          menuTile('Fees - record payment', icon: Icons.payments, onTap: () => pushPage(context, 'Fees', const FeesAdmin())),
           menuTile('Monthly Members', icon: Icons.volunteer_activism, badge: st.monthlyMembers.where((m) => m.isActive).length, onTap: () => pushPage(context, 'Monthly Members', const MonthlyMembersDashboard())),
           menuTile('Results', icon: Icons.grading, badge: st.examinations.length, onTap: () => pushPage(context, 'Results', const ResultsHub())),
           // The Notifications bell stays in the top bar only (see the
@@ -7982,34 +7984,79 @@ Future<void> _markFeePaid(BuildContext context, Student s, String m) async {
   if (context.mounted) toast(context, msg);
 }
 
-class FeesAdmin extends StatelessWidget {
+class FeesAdmin extends StatefulWidget {
   const FeesAdmin({super.key});
   @override
-  Widget build(BuildContext context) {
+  State<FeesAdmin> createState() => _FeesAdminState();
+}
+
+class _FeesAdminState extends State<FeesAdmin> {
+  final search = TextEditingController();
+  String maktab = 'All';
+  bool onlyDue = true;
+  static const int kMax = 40;
+
+  @override
+  void dispose() {
+    search.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => AnimatedBuilder(animation: st, builder: (context, _) => _body(context));
+
+  Widget _body(BuildContext context) {
     final u = st.user!;
-    // Was hardcoded to the "Hanfi" branch only, regardless of which
-    // madrasa(s) the admin actually manages - a Super Admin now sees every
-    // active student, everyone else only their own madrasa(s).
+    // A Super Admin sees every active student, everyone else only their own madrasa(s).
     final scope = u.role == 'super' ? st.students : st.students.where((s) => u.branches.contains(s.madrasa)).toList();
-    final list = scope.where((s) => s.status == 'Active').toList();
-    // Was hardcoded to ['Jun','Jul','Aug','Sep'] - now every month that
-    // actually applies to at least one of these students (from their own
-    // admission through the current month), sorted chronologically, so
-    // this keeps showing real data instead of going stale after September.
-    final allMonths = list.expand((s) => st.feeMonths(s)).toSet().toList()
-      ..sort((a, b) {
-        final y = AppState.yearFromKey(a).compareTo(AppState.yearFromKey(b));
-        return y != 0 ? y : AppState.monthNumFromKey(a).compareTo(AppState.monthNumFromKey(b));
-      });
+    final all = scope.where((s) => s.status == 'Active').toList();
+    final makatib = all.map((s) => s.madrasa).toSet().toList()..sort();
+    if (maktab != 'All' && !makatib.contains(maktab)) maktab = 'All';
+    final q = search.text.trim().toLowerCase();
+    var list = all.where((s) => maktab == 'All' || s.madrasa == maktab).toList();
+    if (q.isNotEmpty) {
+      list = list.where((s) => s.name.toLowerCase().contains(q) || s.parentPhone.contains(q) || s.fatherName.toLowerCase().contains(q) || s.key.toLowerCase().contains(q)).toList();
+    }
+    if (onlyDue) list = list.where((s) => st.feeMonths(s).any((m) => !st.isPaid(s.id, m))).toList();
+    final totalDueMonths = all.fold<int>(0, (a, s) => a + st.feeMonths(s).where((m) => !st.isPaid(s.id, m)).length);
+    final shown = list.take(kMax).toList();
     return page([
-      h('Fees (month-wise)', icon: Icons.payments),
-      grid([for (final m in allMonths) tile(m, '${list.where((s) => st.isPaid(s.id, m)).length} of ${list.where((s) => st.feeMonths(s).contains(m)).length} complete')]),
-      const Text('Tap a due month to mark it paid once the fee is received in cash or manually (Rs. 200).'),
-      ...list.map((s) => Card(
+      h('Fees - record payment', icon: Icons.payments),
+      Card(
+        child: ListTile(
+          leading: const Icon(Icons.pending_actions, color: Colors.red),
+          title: Text('Total pending: Rs. ${totalDueMonths * 200}'),
+          subtitle: Text('$totalDueMonths unpaid month(s) across ${all.length} active students'),
+        ),
+      ),
+      TextField(
+        controller: search,
+        decoration: const InputDecoration(prefixIcon: Icon(Icons.search), labelText: 'Search student, father, parent mobile or ID', border: OutlineInputBorder()),
+        onChanged: (_) => setState(() {}),
+      ),
+      const SizedBox(height: 8),
+      Row(children: [
+        Expanded(
+          child: DropdownButtonFormField<String>(
+            value: maktab,
+            decoration: const InputDecoration(labelText: 'Maktab', border: OutlineInputBorder(), isDense: true),
+            items: [const DropdownMenuItem(value: 'All', child: Text('All Makatib')), for (final m in makatib) DropdownMenuItem(value: m, child: Text(m, overflow: TextOverflow.ellipsis))],
+            onChanged: (v) => setState(() => maktab = v ?? 'All'),
+          ),
+        ),
+        const SizedBox(width: 8),
+        FilterChip(label: const Text('Only with dues'), selected: onlyDue, onSelected: (v) => setState(() => onlyDue = v)),
+      ]),
+      const SizedBox(height: 6),
+      const Text('Tap a due month, then choose how the fee was received (cash, UPI/manual or bank) and mark it paid. Rs. 200 per month.', style: TextStyle(color: Colors.black54, fontSize: 12.5)),
+      if (list.isEmpty) const Padding(padding: EdgeInsets.all(16), child: Text('No students match.')),
+      ...shown.map((s) => Card(
             child: Padding(
               padding: const EdgeInsets.all(12),
               child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                 Text('${s.name} - ${s.madrasa} - ${st.className(s.cls)}', style: const TextStyle(fontWeight: FontWeight.bold)),
+                if (s.parentPhone.isNotEmpty) Text('Parent: ${s.parentPhone}', style: const TextStyle(color: Colors.black54, fontSize: 12)),
+                const SizedBox(height: 4),
                 Wrap(spacing: 6, children: [
                   for (final m in st.feeMonths(s))
                     st.isPaid(s.id, m)
@@ -8023,6 +8070,7 @@ class FeesAdmin extends StatelessWidget {
               ]),
             ),
           )),
+      if (list.length > kMax) Padding(padding: const EdgeInsets.all(12), child: Text('Showing the first $kMax of ${list.length} students. Search or pick a Maktab to narrow down.', style: const TextStyle(color: Colors.black54))),
     ]);
   }
 }

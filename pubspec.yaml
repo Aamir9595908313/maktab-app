@@ -25,6 +25,8 @@ dependencies:
   firebase_core: ^4.0.0
   firebase_auth: ^6.0.0
   firebase_messaging: ^16.0.0
+  vibration: ^2.0.0
+  audioplayers: ^6.1.0
   flutter_windowmanager_plus: ^1.1.1 # FLAG_SECURE for the Dua'iya Kalimat viewer (blocks screenshots/recent-apps preview on Android)
 dev_dependencies:
   flutter_launcher_icons: ^0.14.3
@@ -38,6 +40,8 @@ flutter:
     # which generates the actual Android mipmap icons from it. Listing it
     # as a Flutter asset too just bundled this 1.3MB source PNG a second
     # time, uselessly, into every APK's asset bundle.
+    - assets/sounds/click.wav
+    - assets/sounds/done.wav
     - assets/surah_yaseen.pdf
     - assets/durood_e_taj.pdf
 

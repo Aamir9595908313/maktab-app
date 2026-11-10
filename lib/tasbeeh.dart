@@ -6,12 +6,14 @@ import 'dart:convert';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/services.dart';
+import 'package:vibration/vibration.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-const _bg = Color(0xFF0F5A5A);
-const _bgDark = Color(0xFF0A4545);
-const _panel = Color(0xFF0B3F3F);
+const _bg = Color(0xFF0A3D14);
+const _bgDark = Color(0xFF052A0C);
+const _panel = Color(0xFF07300F);
 const _gold = Color(0xFFF5B82E);
 
 class _Dhikr {
@@ -76,6 +78,37 @@ class _TasbeehCounterScreenState extends State<TasbeehCounterScreen> {
   bool auto = false;
   Timer? _autoTimer;
 
+  final AudioPlayer _clickPlayer = AudioPlayer();
+  final AudioPlayer _donePlayer = AudioPlayer();
+
+  Future<void> _buzz(int ms, {int amp = 128}) async {
+    try {
+      if (await Vibration.hasVibrator() == true) {
+        Vibration.vibrate(duration: ms, amplitude: amp);
+        return;
+      }
+    } catch (_) {}
+    HapticFeedback.mediumImpact();
+  }
+
+  Future<void> _playClick() async {
+    try {
+      await _clickPlayer.stop();
+      await _clickPlayer.play(AssetSource('sounds/click.wav'));
+    } catch (_) {
+      SystemSound.play(SystemSoundType.click);
+    }
+  }
+
+  Future<void> _playDone() async {
+    try {
+      await _donePlayer.stop();
+      await _donePlayer.play(AssetSource('sounds/done.wav'));
+    } catch (_) {
+      SystemSound.play(SystemSoundType.alert);
+    }
+  }
+
   _Dhikr get d => dhikrs[cur];
 
   @override
@@ -88,6 +121,8 @@ class _TasbeehCounterScreenState extends State<TasbeehCounterScreen> {
   void dispose() {
     _ticker?.cancel();
     _autoTimer?.cancel();
+    _clickPlayer.dispose();
+    _donePlayer.dispose();
     super.dispose();
   }
 
@@ -144,12 +179,15 @@ class _TasbeehCounterScreenState extends State<TasbeehCounterScreen> {
         d.count = 0;
         d.rounds++;
         if (celebrate) {
-          if (vibrate) HapticFeedback.heavyImpact();
-          if (sound) SystemSound.play(SystemSoundType.alert);
+          if (vibrate) _buzz(400, amp: 255);
+          if (sound) _playDone();
+        } else {
+          if (vibrate) _buzz(40);
+          if (sound) _playClick();
         }
       } else {
-        if (vibrate) HapticFeedback.lightImpact();
-        if (sound) SystemSound.play(SystemSoundType.click);
+        if (vibrate) _buzz(40);
+        if (sound) _playClick();
       }
     });
     _save();
@@ -170,7 +208,7 @@ class _TasbeehCounterScreenState extends State<TasbeehCounterScreen> {
       final t = daily[todayKey] ?? 0;
       if (t > 0) daily[todayKey] = t - 1;
     });
-    if (vibrate) HapticFeedback.selectionClick();
+    if (vibrate) _buzz(25, amp: 80);
     _save();
   }
 
@@ -287,7 +325,7 @@ class _TasbeehCounterScreenState extends State<TasbeehCounterScreen> {
             const Padding(padding: EdgeInsets.all(8), child: Text('My counters', style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold))),
             for (var i = 0; i < dhikrs.length; i++)
               Card(
-                color: i == cur ? const Color(0xFF14706F) : const Color(0xFF0F5050),
+                color: i == cur ? const Color(0xFF1B6A2A) : const Color(0xFF0C4A19),
                 child: ListTile(
                   title: Text(dhikrs[i].name, style: const TextStyle(color: Colors.white)),
                   subtitle: Text('Target ${dhikrs[i].target} - Rounds ${dhikrs[i].rounds} - Total ${dhikrs[i].total}', style: const TextStyle(color: Colors.white70)),
@@ -531,7 +569,7 @@ class _TasbeehCounterScreenState extends State<TasbeehCounterScreen> {
                     width: 40,
                     height: 40,
                     alignment: Alignment.center,
-                    decoration: BoxDecoration(shape: BoxShape.circle, color: auto ? _gold : const Color(0xFF2E7777)),
+                    decoration: BoxDecoration(shape: BoxShape.circle, color: auto ? _gold : const Color(0xFF2F7A3B)),
                     child: Text('A', style: TextStyle(color: auto ? Colors.black : Colors.white, fontWeight: FontWeight.bold, fontSize: 18)),
                   ),
                 ),
@@ -627,7 +665,7 @@ class _RingPainter extends CustomPainter {
     final center = size.center(Offset.zero);
     final radius = size.width / 2 - 14;
     canvas.drawCircle(center, radius, Paint()..color = _panel);
-    canvas.drawCircle(center, radius, Paint()..style = PaintingStyle.stroke..strokeWidth = 1.5..color = const Color(0xFF3B7C70));
+    canvas.drawCircle(center, radius, Paint()..style = PaintingStyle.stroke..strokeWidth = 1.5..color = const Color(0xFF3F8A4A));
     final sweep = 2 * math.pi * progress.clamp(0.0, 1.0);
     if (sweep > 0) {
       canvas.drawArc(Rect.fromCircle(center: center, radius: radius), -math.pi / 2, sweep, false, Paint()..style = PaintingStyle.stroke..strokeWidth = 4..strokeCap = StrokeCap.round..color = _gold);
