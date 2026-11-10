@@ -4985,6 +4985,7 @@ class KidHome extends StatelessWidget {
     if (k == null) return page([banner(), const Text('No child is linked to this number.')]);
     final p = progFor(k);
     final alerts = st.notes.where((n) => n.phone == k.parentPhone).toList().reversed.take(5).toList();
+    final feeDue = st.showFees ? st.feeMonths(k).where((m) => !st.isPaid(k.id, m)).toList() : <String>[];
     return page([
       banner(),
       KidPicker(),
@@ -5021,7 +5022,16 @@ class KidHome extends StatelessWidget {
             ),
         ]),
       h('Alerts'),
-      if (alerts.isEmpty) const Text('No alerts'),
+      if (alerts.isEmpty && feeDue.isEmpty) const Text('No alerts'),
+      if (feeDue.isNotEmpty)
+        Card(
+          color: const Color(0xFFFFE3E0),
+          child: ListTile(
+            leading: const Icon(Icons.payments, color: Colors.red),
+            title: Text('Fees due: Rs. ${feeDue.length * 200} (${feeDue.length} month${feeDue.length == 1 ? '' : 's'})'),
+            subtitle: Text(feeDue.join(', ')),
+          ),
+        ),
       ...alerts.map((a) => Card(child: ListTile(title: Text(a.text)))),
     ]);
   }

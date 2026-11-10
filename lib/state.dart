@@ -1343,7 +1343,7 @@ class AppState extends ChangeNotifier {
     return [for (final c in list) DayEntry('', c.madrasa, c.cls)];
   }
 
-  bool get showFees => user != null && user!.role == 'parent' && !studentView;
+  bool get showFees => user != null && (user!.role == 'parent' || user!.role == 'super') && !studentView;
 
   List<Student> kids() {
     final u = user;
