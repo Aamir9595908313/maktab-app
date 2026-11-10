@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:math' as math;
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
+import 'tasbeeh.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:geolocator/geolocator.dart';
@@ -995,120 +996,10 @@ class _CalendarScreenState extends State<CalendarScreen> {
 }
 
 // ---------------- Tasbeeh Counter ----------------
-class TasbeehScreen extends StatefulWidget {
+class TasbeehScreen extends StatelessWidget {
   const TasbeehScreen({super.key});
   @override
-  State<TasbeehScreen> createState() => _TasbeehScreenState();
-}
-
-class _TasbeehScreenState extends State<TasbeehScreen> {
-  int count = 0;
-  int target = 33;
-  bool loaded = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _load();
-  }
-
-  Future<void> _load() async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      setState(() {
-        count = prefs.getInt('tasbeeh_count') ?? 0;
-        target = prefs.getInt('tasbeeh_target') ?? 33;
-        loaded = true;
-      });
-    } catch (_) {
-      setState(() => loaded = true);
-    }
-  }
-
-  Future<void> _save() async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setInt('tasbeeh_count', count);
-      await prefs.setInt('tasbeeh_target', target);
-    } catch (_) {
-      // Offline-first: if storage is unavailable the count still works for this session.
-    }
-  }
-
-  void _tap() {
-    HapticFeedback.lightImpact();
-    setState(() => count++);
-    _save();
-    if (count == target) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Target of $target reached. MashaAllah.')));
-    }
-  }
-
-  void _reset() {
-    setState(() => count = 0);
-    _save();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    if (!loaded) return Scaffold(appBar: guestAppBar(context, 'Tasbeeh Counter'), body: const Center(child: CircularProgressIndicator()));
-    return Scaffold(
-      appBar: guestAppBar(context, 'Tasbeeh Counter'),
-      body: Column(children: [
-        const SizedBox(height: 10),
-        Wrap(spacing: 8, alignment: WrapAlignment.center, children: [
-          for (final t in [33, 99, 100]) ChoiceChip(label: Text('$t'), selected: target == t, onSelected: (_) => setState(() => target = t)),
-          ActionChip(
-            label: const Text('Custom'),
-            onPressed: () async {
-              final v = await showDialog<String>(
-                context: context,
-                builder: (ctx) {
-                  final c = TextEditingController(text: '$target');
-                  return AlertDialog(
-                    title: const Text('Set target'),
-                    content: TextField(controller: c, keyboardType: TextInputType.number),
-                    actions: [
-                      TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
-                      ElevatedButton(onPressed: () => Navigator.pop(ctx, c.text), child: const Text('OK')),
-                    ],
-                  );
-                },
-              );
-              final n = int.tryParse(v ?? '');
-              if (n != null && n > 0) setState(() => target = n);
-            },
-          ),
-        ]),
-        Expanded(
-          child: Center(
-            child: GestureDetector(
-              onTap: _tap,
-              child: Container(
-                width: 220,
-                height: 220,
-                decoration: BoxDecoration(shape: BoxShape.circle, color: _kGreen, boxShadow: const [BoxShadow(color: Colors.black26, blurRadius: 10)]),
-                alignment: Alignment.center,
-                child: Column(mainAxisSize: MainAxisSize.min, children: [
-                  Text('$count', style: const TextStyle(color: Colors.white, fontSize: 56, fontWeight: FontWeight.bold)),
-                  Text('of $target', style: const TextStyle(color: Color(0xFFF0D98A), fontSize: 16)),
-                ]),
-              ),
-            ),
-          ),
-        ),
-        const Padding(padding: EdgeInsets.only(bottom: 6), child: Text('Tap the circle to count', style: TextStyle(color: Colors.black54))),
-        Padding(
-          padding: const EdgeInsets.all(16),
-          child: OutlinedButton.icon(onPressed: _reset, icon: const Icon(Icons.refresh), label: const Text('Reset')),
-        ),
-        const Padding(
-          padding: EdgeInsets.only(bottom: 14),
-          child: Text('No login needed. The count is saved on this phone.', style: TextStyle(fontSize: 12, color: Colors.black54)),
-        ),
-      ]),
-    );
-  }
+  Widget build(BuildContext context) => const TasbeehCounterScreen();
 }
 
 // ---------------- Prayer Times (Hanafi) ----------------
