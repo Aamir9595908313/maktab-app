@@ -1,7 +1,7 @@
 name: maktab_app
 description: Maktab E Tajushshriah Madrasa Management App (demo build)
 publish_to: 'none'
-version: 1.4.0+7
+version: 0.1.0+8
 environment:
   sdk: '>=3.4.0 <4.0.0'
 dependencies:
