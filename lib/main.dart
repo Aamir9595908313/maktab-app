@@ -3916,7 +3916,12 @@ Future<void> editTeacherDialog(BuildContext context, Account a) async {
           child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
             TextField(controller: name, decoration: const InputDecoration(labelText: 'Name')),
             const SizedBox(height: 8),
-            TextField(controller: phone, decoration: const InputDecoration(labelText: 'Mobile number (10 digits)'), keyboardType: TextInputType.phone),
+            TextField(
+              controller: phone,
+              maxLength: 10,
+              inputFormatters: [FilteringTextInputFormatter.digitsOnly, LengthLimitingTextInputFormatter(10)],
+              decoration: const InputDecoration(labelText: 'Mobile number (10 digits)', prefixText: '+91 ', counterText: ''),
+              keyboardType: TextInputType.phone),
             const SizedBox(height: 10),
             const Text('Makatib this teacher will teach in:', style: TextStyle(color: Colors.black54, fontSize: 12.5)),
             const SizedBox(height: 4),
@@ -4013,6 +4018,20 @@ class _GuestHomeState extends State<GuestHome> {
       err = '';
     });
     try {
+      // Only registered numbers get an OTP (saves SMS cost and blocks strangers).
+      bool registered = true;
+      try {
+        registered = (await sb.rpc('fn_phone_is_registered', params: {'p_phone': p})) == true;
+      } catch (_) {
+        registered = true; // if the check itself fails (offline etc.), let the OTP step report the real error
+      }
+      if (!registered) {
+        setState(() {
+          busy = false;
+          err = 'This mobile number is not registered in the app. Please contact your Maktab admin to get added.';
+        });
+        return;
+      }
       if (FirebasePhoneLogin.ready) {
         final auto = await FirebasePhoneLogin.sendCode(p, onAutoVerified: _onAutoVerified);
         if (auto) {
