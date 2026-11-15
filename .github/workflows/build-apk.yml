@@ -358,6 +358,19 @@ jobs:
         run: |
           flutter pub get
           dart run flutter_launcher_icons -f pubspec.yaml
+      - name: Disable Android lintVital (crashes inside Firebase plugin lint on this toolchain)
+        # lintVitalAnalyzeRelease dies with a NoSuchMethodError inside Android's
+        # own lint tool (firebase_core plugin), failing every release build. It is
+        # only a lint pass - it does not affect the APK - so switch it off.
+        run: |
+          mkdir -p ~/.gradle/init.d
+          cat > ~/.gradle/init.d/no-lint.gradle <<'EOF'
+          allprojects {
+            tasks.configureEach { t ->
+              if (t.name.startsWith("lintVital") || t.name.startsWith("lintAnalyze") || t.name == "lint") { t.enabled = false }
+            }
+          }
+          EOF
       - name: Build release APK
         id: build
         continue-on-error: true
