@@ -3985,21 +3985,6 @@ Future<void> performLogout(BuildContext context, {bool closeDrawer = false}) asy
   } catch (_) {}
 }
 
-Future<void> confirmAndLogout(BuildContext context) async {
-  final ok = await showDialog<bool>(
-    context: context,
-    builder: (ctx) => AlertDialog(
-      title: const Text('Logout'),
-      content: const Text('Do you want to log out?'),
-      actions: [
-        TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
-        ElevatedButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Logout')),
-      ],
-    ),
-  );
-  if (ok == true && context.mounted) await performLogout(context);
-}
-
 void openTool(BuildContext context, Widget screen) => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => screen));
 
 // ---------------- login / guest home (single screen, no login required for the 3 tools) ----------------
@@ -4632,11 +4617,6 @@ class _ShellState extends State<Shell> {
                   onPressed: () => Scaffold.of(ctx).openDrawer(),
                 ),
               ),
-            IconButton(
-              icon: const Icon(Icons.logout),
-              tooltip: 'Logout',
-              onPressed: () => confirmAndLogout(context),
-            ),
             if (isMultiMadrasaTeacher)
               Padding(
                 padding: const EdgeInsets.only(right: 8),
