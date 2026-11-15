@@ -3916,12 +3916,7 @@ Future<void> editTeacherDialog(BuildContext context, Account a) async {
           child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
             TextField(controller: name, decoration: const InputDecoration(labelText: 'Name')),
             const SizedBox(height: 8),
-            TextField(
-              controller: phone,
-              maxLength: 10,
-              inputFormatters: [FilteringTextInputFormatter.digitsOnly, LengthLimitingTextInputFormatter(10)],
-              decoration: const InputDecoration(labelText: 'Mobile number (10 digits)', prefixText: '+91 ', counterText: ''),
-              keyboardType: TextInputType.phone),
+            TextField(controller: phone, decoration: const InputDecoration(labelText: 'Mobile number (10 digits)'), keyboardType: TextInputType.phone),
             const SizedBox(height: 10),
             const Text('Makatib this teacher will teach in:', style: TextStyle(color: Colors.black54, fontSize: 12.5)),
             const SizedBox(height: 4),
@@ -3971,6 +3966,38 @@ String digitsAll(String s) => s.replaceAll(RegExp(r'\D'), '');
 String digits(String s) {
   final d = s.replaceAll(RegExp(r'\D'), '');
   return d.length > 10 ? d.substring(d.length - 10) : d;
+}
+
+/// Logs out: clears the local session first (never blocked by the network),
+/// then unregisters push and signs out remotely. Used by the menu and the
+/// top-bar Logout icon.
+Future<void> performLogout(BuildContext context, {bool closeDrawer = false}) async {
+  final nav = Navigator.of(context);
+  if (closeDrawer) nav.pop();
+  st.logout();
+  unawaited(_clearAccountCache());
+  nav.popUntil((r) => r.isFirst);
+  try {
+    await PushService.unregister().timeout(const Duration(seconds: 4));
+  } catch (_) {}
+  try {
+    await sb.auth.signOut().timeout(const Duration(seconds: 8));
+  } catch (_) {}
+}
+
+Future<void> confirmAndLogout(BuildContext context) async {
+  final ok = await showDialog<bool>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      title: const Text('Logout'),
+      content: const Text('Do you want to log out?'),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+        ElevatedButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Logout')),
+      ],
+    ),
+  );
+  if (ok == true && context.mounted) await performLogout(context);
 }
 
 void openTool(BuildContext context, Widget screen) => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => screen));
@@ -4252,14 +4279,23 @@ class _GuestHomeState extends State<GuestHome> {
               // the logo the instant this screen opened, before there was
               // anything to type into yet - a tap now opens the keyboard
               // the normal way, right where the field actually is.
-              field(phone, 'Mobile number', number: true),
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 6),
+                child: TextField(
+                  controller: phone,
+                  maxLength: 10,
+                  inputFormatters: [FilteringTextInputFormatter.digitsOnly, LengthLimitingTextInputFormatter(10)],
+                  decoration: const InputDecoration(labelText: 'Mobile number (10 digits)', prefixText: '+91 ', counterText: '', border: OutlineInputBorder()),
+                  keyboardType: TextInputType.phone,
+                ),
+              ),
               const SizedBox(height: 4),
               msgBox(err),
               SizedBox(
                 width: double.infinity,
                 child: ElevatedButton(
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: digits(phone.text).length == 10 ? Colors.red : Colors.grey.shade300,
+                    backgroundColor: digits(phone.text).length == 10 ? kGreen : Colors.grey.shade300,
                     foregroundColor: digits(phone.text).length == 10 ? Colors.white : Colors.black38,
                     padding: const EdgeInsets.symmetric(vertical: 14),
                     elevation: digits(phone.text).length == 10 ? 2 : 0,
@@ -4596,6 +4632,11 @@ class _ShellState extends State<Shell> {
                   onPressed: () => Scaffold.of(ctx).openDrawer(),
                 ),
               ),
+            IconButton(
+              icon: const Icon(Icons.logout),
+              tooltip: 'Logout',
+              onPressed: () => confirmAndLogout(context),
+            ),
             if (isMultiMadrasaTeacher)
               Padding(
                 padding: const EdgeInsets.only(right: 8),
@@ -4709,34 +4750,7 @@ class _ShellState extends State<Shell> {
             ListTile(
               leading: const Icon(Icons.logout),
               title: const Text('Logout'),
-              onTap: () async {
-                final nav = Navigator.of(context);
-                nav.pop(); // close the drawer
-                // Clear local session first and unconditionally: this used
-                // to await sb.auth.signOut() with no try/catch or timeout,
-                // so on any network hiccup the whole tap silently did
-                // nothing and the user stayed logged in with no feedback.
-                // The remote sign-out is still attempted (so the server
-                // session is invalidated too when possible), but a slow or
-                // failed network call can no longer block the local logout.
-                st.logout();
-                unawaited(_clearAccountCache());
-                // Drop any screens pushed via Navigator.push (Roles,
-                // student details, etc.) so the back button can't walk
-                // back into authenticated screens after logging out.
-                nav.popUntil((r) => r.isFirst);
-                try {
-                  await PushService.unregister().timeout(const Duration(seconds: 4));
-                } catch (_) {}
-                try {
-                  await sb.auth.signOut().timeout(const Duration(seconds: 8));
-                } catch (_) {
-                  // Local session is already cleared above; a failed
-                  // remote sign-out just means the old server-side session
-                  // lingers until it expires on its own - not visible to
-                  // this user, who is already back at the login screen.
-                }
-              },
+              onTap: () => performLogout(context, closeDrawer: true),
             ),
           ]),
         ),

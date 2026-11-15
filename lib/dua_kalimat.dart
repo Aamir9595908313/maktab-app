@@ -348,15 +348,10 @@ class _DuaKalimatGalleryScreenState extends State<DuaKalimatGalleryScreen> {
                   )
                 : RefreshIndicator(
                     onRefresh: _load,
-                    child: GridView.builder(
+                    child: ListView.separated(
                       padding: const EdgeInsets.all(12),
-                      gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-                        maxCrossAxisExtent: 220,
-                        mainAxisSpacing: 12,
-                        crossAxisSpacing: 12,
-                        childAspectRatio: 0.82,
-                      ),
                       itemCount: _items!.length,
+                      separatorBuilder: (_, __) => const SizedBox(height: 8),
                       itemBuilder: (context, i) => _GalleryCard(item: _items![i]),
                     ),
                   ),
@@ -393,26 +388,24 @@ class _GalleryCardState extends State<_GalleryCard> {
   @override
   Widget build(BuildContext context) {
     final item = widget.item;
-    return InkWell(
-      borderRadius: BorderRadius.circular(10),
-      onTap: () => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => DuaKalimatViewerScreen(item: item))),
-      child: Card(
-        clipBehavior: Clip.antiAlias,
-        child: Column(children: [
-          Expanded(
-            child: Container(
-              width: double.infinity,
-              color: const Color(0xFFEEF4E8),
-              child: _thumb != null
-                  ? Image.memory(_thumb!, fit: BoxFit.cover)
-                  : Center(child: Icon(item.fileType == 'pdf' ? Icons.picture_as_pdf : Icons.image, size: 40, color: kGreen.withOpacity(0.55))),
-            ),
+    return Card(
+      margin: EdgeInsets.zero,
+      clipBehavior: Clip.antiAlias,
+      child: ListTile(
+        onTap: () => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => DuaKalimatViewerScreen(item: item))),
+        leading: ClipRRect(
+          borderRadius: BorderRadius.circular(6),
+          child: Container(
+            width: 52,
+            height: 52,
+            color: const Color(0xFFEEF4E8),
+            child: _thumb != null
+                ? Image.memory(_thumb!, fit: BoxFit.cover)
+                : Icon(item.fileType == 'pdf' ? Icons.picture_as_pdf : Icons.image, size: 28, color: kGreen.withOpacity(0.55)),
           ),
-          Padding(
-            padding: const EdgeInsets.all(8),
-            child: Text(item.title, textAlign: TextAlign.center, maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
-          ),
-        ]),
+        ),
+        title: Text(item.title, maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15, color: kGreen)),
+        trailing: const Icon(Icons.chevron_right, color: kGreen),
       ),
     );
   }
