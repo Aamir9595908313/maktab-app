@@ -1127,6 +1127,15 @@ class _SadqaPetiDashboardViewState extends State<SadqaPetiDashboardView> {
             ),
           ),
         ]),
+        const SizedBox(height: 8),
+        SizedBox(
+          width: double.infinity,
+          child: OutlinedButton.icon(
+            onPressed: () => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const SadqaYearlyCollectionView())),
+            icon: const Icon(Icons.table_chart),
+            label: const Text('Yearly Collection Report (Jan-Dec)'),
+          ),
+        ),
         const SizedBox(height: 10),
         h('Collection Register (${_filtered.length})', icon: Icons.receipt_long),
         ..._filtered.map((c) {
@@ -1214,4 +1223,140 @@ class _SadqaPetiDashboardViewState extends State<SadqaPetiDashboardView> {
 
 extension _FirstOrNull<T> on Iterable<T> {
   T? get firstOrNull => isEmpty ? null : first;
+}
+
+// ============================================================
+// Yearly Collection Report - one row per Sadqa Peti (shop), Jan..Dec columns
+// of confirmed collections, a Total column, and a bottom row with the total
+// collection of each month plus the grand total for the year. Reversed
+// collections are not counted.
+// ============================================================
+
+class SadqaYearlyCollectionView extends StatefulWidget {
+  const SadqaYearlyCollectionView({super.key});
+  @override
+  State<SadqaYearlyCollectionView> createState() => _SadqaYearlyCollectionViewState();
+}
+
+class _SadqaYearlyCollectionViewState extends State<SadqaYearlyCollectionView> {
+  late int year = DateTime.now().year;
+
+  @override
+  void initState() {
+    super.initState();
+    loadSadqaPetis();
+    loadSadqaCollections();
+  }
+
+  static String _n(double v) => v == 0 ? '-' : v.toStringAsFixed(0);
+
+  Future<void> _exportCsv(List<SadqaPeti> petis, Map<String, List<double>> paid) async {
+    final rows = <List<String>>[
+      ['Shop', 'Shopkeeper', 'Area', 'Peti ID', ...AppState.kMonthAbbrevs, 'Total $year'],
+    ];
+    final colTotals = List<double>.filled(12, 0);
+    for (final p in petis) {
+      final r = paid[p.id] ?? List<double>.filled(12, 0);
+      for (var i = 0; i < 12; i++) {
+        colTotals[i] += r[i];
+      }
+      rows.add([p.shopName, p.shopkeeperName, p.area ?? '', p.petiCode, for (final v in r) v.toStringAsFixed(0), r.fold<double>(0, (a, b) => a + b).toStringAsFixed(0)]);
+    }
+    rows.add(['Total collection', '', '', '', for (final v in colTotals) v.toStringAsFixed(0), colTotals.fold<double>(0, (a, b) => a + b).toStringAsFixed(0)]);
+    try {
+      final dir = await getTemporaryDirectory();
+      final file = File('${dir.path}/sadqa_peti_collection_$year.csv');
+      await file.writeAsString(const ListToCsvConverter().convert(rows));
+      await Share.shareXFiles([XFile(file.path)], text: 'Sadqa Peti yearly collection - $year');
+    } catch (_) {
+      if (mounted) toast(context, 'Could not export. Check storage/share permissions.');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => AnimatedBuilder(
+        animation: st,
+        builder: (context, _) {
+          final paid = <String, List<double>>{};
+          for (final c in st.sadqaCollections.where((c) => c.status != 'Reversed')) {
+            final d = DateTime.tryParse(c.collectedAt)?.toLocal();
+            if (d == null || d.year != year) continue;
+            paid.putIfAbsent(c.petiId, () => List<double>.filled(12, 0))[d.month - 1] += c.amount;
+          }
+          final petis = st.sadqaPetis.where((p) => p.status == 'Active' || (paid[p.id]?.any((v) => v > 0) ?? false)).toList()
+            ..sort((a, b) => a.shopName.toLowerCase().compareTo(b.shopName.toLowerCase()));
+          final colTotals = List<double>.filled(12, 0);
+          for (final p in petis) {
+            final r = paid[p.id];
+            if (r == null) continue;
+            for (var i = 0; i < 12; i++) {
+              colTotals[i] += r[i];
+            }
+          }
+          final grand = colTotals.fold<double>(0, (a, b) => a + b);
+
+          const bold = TextStyle(fontWeight: FontWeight.bold);
+          DataCell c(String t, {bool b = false}) => DataCell(Align(alignment: Alignment.centerRight, child: Text(t, style: b ? bold : null)));
+
+          return Scaffold(
+            appBar: AppBar(title: const Text('Sadqa Peti - Yearly Collection'), actions: [
+              IconButton(icon: const Icon(Icons.share), tooltip: 'Export CSV', onPressed: () => _exportCsv(petis, paid)),
+            ]),
+            body: ListView(
+              padding: const EdgeInsets.all(12),
+              children: [
+                DropdownButtonFormField<int>(
+                  value: year,
+                  decoration: const InputDecoration(labelText: 'Year', border: OutlineInputBorder()),
+                  items: [for (var y = DateTime.now().year - 5; y <= DateTime.now().year + 1; y++) DropdownMenuItem(value: y, child: Text('$y'))],
+                  onChanged: (v) => setState(() => year = v ?? year),
+                ),
+                const SizedBox(height: 8),
+                Card(
+                  child: Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: Text('Total collected in $year: Rs.${grand.toStringAsFixed(0)}   (${petis.length} box${petis.length == 1 ? '' : 'es'})', style: bold),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                if (petis.isEmpty)
+                  const Padding(padding: EdgeInsets.all(16), child: Text('No Sadqa Peti boxes yet.'))
+                else
+                  SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: DataTable(
+                      columnSpacing: 14,
+                      headingRowHeight: 40,
+                      dataRowMinHeight: 36,
+                      dataRowMaxHeight: 40,
+                      headingTextStyle: bold,
+                      columns: [
+                        const DataColumn(label: Text('Shop')),
+                        for (final mn in AppState.kMonthAbbrevs) DataColumn(label: Text(mn), numeric: true),
+                        DataColumn(label: Text('Total $year'), numeric: true),
+                      ],
+                      rows: [
+                        for (final p in petis)
+                          DataRow(cells: [
+                            DataCell(ConstrainedBox(constraints: const BoxConstraints(maxWidth: 150), child: Text('${p.shopName} (${p.shopkeeperName})', overflow: TextOverflow.ellipsis))),
+                            for (var i = 0; i < 12; i++) c(_n(paid[p.id]?[i] ?? 0)),
+                            c((paid[p.id]?.fold<double>(0, (a, b) => a + b) ?? 0).toStringAsFixed(0), b: true),
+                          ]),
+                        DataRow(color: WidgetStatePropertyAll(Colors.green.shade50), cells: [
+                          const DataCell(Text('Total collection', style: bold)),
+                          for (var i = 0; i < 12; i++) c(_n(colTotals[i]), b: true),
+                          c(grand.toStringAsFixed(0), b: true),
+                        ]),
+                      ],
+                    ),
+                  ),
+                const Padding(
+                  padding: EdgeInsets.only(top: 8),
+                  child: Text('Counts confirmed collections by the month they were collected; reversed collections are left out. The last row is the total collection per month; the last column is each box\'s total for the year.', style: TextStyle(color: Colors.black54, fontSize: 11.5)),
+                ),
+              ],
+            ),
+          );
+        },
+      );
 }
