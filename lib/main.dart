@@ -4505,6 +4505,10 @@ List<AppTab> _baseTabsFor(Account u) {
   }
 }
 
+// Lets a Home-screen tile jump to another tab of the main shell by its title
+// (same effect as picking it from the Menu). Set by _ShellState.
+void Function(String title)? gGoToTab;
+
 class Shell extends StatefulWidget {
   const Shell({super.key});
   @override
@@ -4513,6 +4517,23 @@ class Shell extends StatefulWidget {
 
 class _ShellState extends State<Shell> {
   int idx = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    gGoToTab = (title) {
+      final u = st.user;
+      if (u == null || !mounted) return;
+      final i = tabsFor(u).indexWhere((t) => t.title == title);
+      if (i >= 0) setState(() => idx = i);
+    };
+  }
+
+  @override
+  void dispose() {
+    gGoToTab = null;
+    super.dispose();
+  }
   bool _absenceChecked = false;
 
   // Parent-role popup: once per app session, after the child's attendance
@@ -4982,6 +5003,78 @@ class _AttendanceMonthReportState extends State<AttendanceMonthReport> {
   }
 }
 
+// Splits a child's Add-on Courses into Completed / In progress / Pending.
+// "In progress" includes courses submitted and awaiting approval; "Pending"
+// is anything assigned to the child's class (or enrolled as pending) that
+// has not been started yet.
+({List<Course> completed, List<Course> inProgress, List<Course> pending}) addOnCourseGroups(Student k) {
+  final enr = st.enrollmentsFor(k);
+  final completed = <Course>[];
+  final inProgress = <Course>[];
+  final pending = <Course>[];
+  for (final e in enr) {
+    final c = st.courseById(e.courseId);
+    if (c == null) continue;
+    if (e.status == 'completed') {
+      completed.add(c);
+    } else if (e.status == 'in_progress' || e.status == 'awaiting_approval') {
+      inProgress.add(c);
+    } else {
+      pending.add(c);
+    }
+  }
+  final started = enr.map((e) => e.courseId).toSet();
+  for (final c in st.coursesForClass(st.classDefs[k.cls]?.id ?? -1)) {
+    if (c.active && !started.contains(c.id)) pending.add(c);
+  }
+  return (completed: completed, inProgress: inProgress, pending: pending);
+}
+
+String _addOnSummary(Student k) {
+  final g = addOnCourseGroups(k);
+  final total = g.completed.length + g.inProgress.length + g.pending.length;
+  if (total == 0) return 'None yet';
+  return '${g.completed.length} of $total done';
+}
+
+class AddOnCoursesStatusScreen extends StatelessWidget {
+  final Student student;
+  const AddOnCoursesStatusScreen({super.key, required this.student});
+
+  Widget _section(String title, IconData icon, Color color, List<Course> list) => Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Padding(
+          padding: const EdgeInsets.only(top: 14, bottom: 6),
+          child: Row(children: [
+            Icon(icon, color: color, size: 20),
+            const SizedBox(width: 6),
+            Text('$title (${list.length})', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: color)),
+          ]),
+        ),
+        if (list.isEmpty) const Text('None', style: TextStyle(color: Colors.black54)),
+        for (final c in list)
+          Card(
+            child: ListTile(
+              title: Text(c.name),
+              subtitle: c.description.isEmpty ? null : Text(c.description),
+            ),
+          ),
+      ]);
+
+  @override
+  Widget build(BuildContext context) => AnimatedBuilder(
+        animation: st,
+        builder: (context, _) {
+          final g = addOnCourseGroups(student);
+          return page([
+            Text(student.name, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+            _section('Completed', Icons.check_circle, const Color(0xFF2E7D32), g.completed),
+            _section('In progress', Icons.autorenew, const Color(0xFF1565C0), g.inProgress),
+            _section('Pending', Icons.hourglass_empty, const Color(0xFFEF6C00), g.pending),
+          ]);
+        },
+      );
+}
+
 class KidHome extends StatelessWidget {
   const KidHome({super.key});
   @override
@@ -5008,9 +5101,13 @@ class KidHome extends StatelessWidget {
       Text('${st.className(k.cls)} - ${k.madrasa} - ID ${k.key}'),
       const SizedBox(height: 8),
       grid([
-        tile('Attendance Sep', '${st.attPct(k)}%'),
-        tile('Syllabus', p.label ?? '${p.n} of ${p.total} (${p.pct}%)'),
-        tile('Plan status', p.behind > 0 ? 'Behind ${p.behind} days' : 'On pace', color: p.behind > 0 ? Colors.red : Colors.green),
+        tile('Attendance Sep', '${st.attPct(k)}%', onTap: () => gGoToTab?.call('Attendance')),
+        tile('Syllabus', p.label ?? '${p.n} of ${p.total} (${p.pct}%)', onTap: () => gGoToTab?.call('Syllabus')),
+        tile(
+          'Add-on Courses',
+          _addOnSummary(k),
+          onTap: () => pushPage(context, 'Add-on Courses', AddOnCoursesStatusScreen(student: k)),
+        ),
         // Computing an actual "latest result" number here would need an
         // async fetch this tile can't do synchronously - rather than a
         // fabricated or stale number, this tile is a direct link into the
