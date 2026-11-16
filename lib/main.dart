@@ -5019,12 +5019,13 @@ class KidHome extends StatelessWidget {
         tile(
           'Latest result',
           'View in My Results',
-          onTap: () => Navigator.push(
-            context,
-            // Matches tabsFor()'s own choice: a parent in "view as student"
-            // mode gets the plain Student screen, same as the tab bar does.
-            MaterialPageRoute<void>(builder: (_) => (st.user!.role == 'parent' && !st.studentView) ? const ParentChildResultsScreen() : const StudentMyResultsScreen()),
-          ),
+          // pushPage gives the screen its own Scaffold + green AppBar with a
+          // back arrow (a bare push had no Material ancestor, which is what
+          // drew the monospace/underlined title and left no way back).
+          onTap: () {
+            final parentView = st.user!.role == 'parent' && !st.studentView;
+            pushPage(context, parentView ? "My Child's Results" : 'My Results', parentView ? const ParentChildResultsScreen() : const StudentMyResultsScreen());
+          },
         ),
       ]),
       if (st.showFees) h('Fees (month-wise)', icon: Icons.payments),
