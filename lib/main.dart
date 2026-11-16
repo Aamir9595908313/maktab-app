@@ -4455,6 +4455,7 @@ List<AppTab> _baseTabsFor(Account u) {
         // and shows only Classes, Books and Add-on Courses.
         AppTab('Classes & Books', Icons.menu_book, () => const MasterDataView()),
         AppTab('Students & Promotion', Icons.school, () => const StudentsView()),
+        AppTab('Student History', Icons.person_search, () => const StudentHistoryReportScreen(embedded: true)),
         AppTab('Add-on Course Progress', Icons.verified, () => const CourseApprovalsView()),
         AppTab('Complaints', Icons.report_problem, () => const ComplaintsView()),
       ];
@@ -7461,8 +7462,21 @@ class _NotifTemplateEditViewState extends State<NotifTemplateEditView> {
 // directly on its Syllabus tab (which already covers books/Para/chapters
 // via the shared SyllabusBody, plus a separate Add-on Courses tab) rather
 // than a second, disconnected progress view.
-class TeacherSyllabus extends StatelessWidget {
+class TeacherSyllabus extends StatefulWidget {
   const TeacherSyllabus({super.key});
+  @override
+  State<TeacherSyllabus> createState() => _TeacherSyllabusState();
+}
+
+class _TeacherSyllabusState extends State<TeacherSyllabus> {
+  final search = TextEditingController();
+
+  @override
+  void dispose() {
+    search.dispose();
+    super.dispose();
+  }
+
   @override
   Widget build(BuildContext context) => AnimatedBuilder(animation: st, builder: (context, _) => _body(context));
 
@@ -7470,10 +7484,33 @@ class TeacherSyllabus extends StatelessWidget {
     // Deactivated students are left out - there is nothing to progress or
     // approve for a student no longer attending, same scope as every
     // other student-facing screen in the app.
-    final list = st.myStudents().where((s) => s.status == 'Active').toList();
+    final all = st.myStudents().where((s) => s.status == 'Active').toList();
+    // Search by name, student key/ID or a mobile number (parent or student),
+    // same fields as the Students screen search.
+    final q = search.text.trim().toLowerCase();
+    final qDigits = q.replaceAll(RegExp(r'\D'), '');
+    final list = q.isEmpty
+        ? all
+        : all
+            .where((s) =>
+                s.name.toLowerCase().contains(q) ||
+                s.key.toLowerCase().contains(q) ||
+                (qDigits.length >= 3 && (digits(s.parentPhone).contains(qDigits) || digits(s.studentPhone).contains(qDigits))))
+            .toList();
     return page([
       h('Syllabus Progress - ${st.teacherMadrasa}', icon: Icons.menu_book),
-      if (list.isEmpty) const Text('No students in your Maktab yet.'),
+      TextField(
+        controller: search,
+        onChanged: (_) => setState(() {}),
+        decoration: InputDecoration(
+          labelText: 'Search by student name, ID or mobile number',
+          border: const OutlineInputBorder(),
+          prefixIcon: const Icon(Icons.search),
+          suffixIcon: q.isEmpty ? null : IconButton(icon: const Icon(Icons.clear), onPressed: () => setState(() => search.clear())),
+        ),
+      ),
+      const SizedBox(height: 8),
+      if (all.isEmpty) const Text('No students in your Maktab yet.') else if (list.isEmpty) const Text('No student matches your search.'),
       ...list.map((s) {
         final p = progFor(s);
         final cd = st.classDefs[s.cls]!;
@@ -11283,7 +11320,9 @@ List<int> buildMonthlyAttendanceExcel({
 // the PDF entirely rather than inventing one, per spec's own instruction
 // for exactly this situation.
 class StudentHistoryReportScreen extends StatefulWidget {
-  const StudentHistoryReportScreen({super.key});
+  const StudentHistoryReportScreen({super.key, this.embedded = false});
+  // true when shown as a tab inside the main shell (which already has an AppBar).
+  final bool embedded;
   @override
   State<StudentHistoryReportScreen> createState() => _StudentHistoryReportScreenState();
 }
@@ -11321,20 +11360,31 @@ class _StudentHistoryReportScreenState extends State<StudentHistoryReportScreen>
     // Same branch-scoping as the Students screen / FeesAdmin / the Excel
     // report above: Super Admin can search every student, every other
     // role is restricted to their own assigned branch(es).
-    final scope = u.role == 'super' ? st.students : st.students.where((s) => u.branches.contains(s.madrasa)).toList();
-    final results = q.trim().isEmpty
+    // A teacher is limited to the students of the Maktab they are currently working in.
+    final scope = u.role == 'super'
+        ? st.students
+        : u.role == 'teacher'
+            ? st.myStudents()
+            : st.students.where((s) => u.branches.contains(s.madrasa)).toList();
+    final ql = q.trim().toLowerCase();
+    final qd = ql.replaceAll(RegExp(r'\D'), '');
+    final results = ql.isEmpty
         ? const <Student>[]
-        : scope.where((s) => s.name.toLowerCase().contains(q.toLowerCase()) || s.key.toLowerCase().contains(q.toLowerCase())).take(20).toList();
-    return Scaffold(
-      appBar: AppBar(title: const Text('Student Complete History'), backgroundColor: kGreen, foregroundColor: Colors.white),
-      body: page([
+        : scope
+            .where((s) =>
+                s.name.toLowerCase().contains(ql) ||
+                s.key.toLowerCase().contains(ql) ||
+                (qd.length >= 3 && (digits(s.parentPhone).contains(qd) || digits(s.studentPhone).contains(qd))))
+            .take(20)
+            .toList();
+    final content = page([
         const Text(
           "Full history for one student - personal details, class, syllabus progress, course completion, month-wise attendance, and published examination results from admission to today. PDF only.",
           style: TextStyle(color: Colors.black54),
         ),
         const SizedBox(height: 10),
         TextField(
-          decoration: const InputDecoration(labelText: 'Search by student name or ID', border: OutlineInputBorder()),
+          decoration: const InputDecoration(labelText: 'Search by student name, ID or mobile number', border: OutlineInputBorder()),
           onChanged: (v) => setState(() {
             q = v;
             selected = null;
@@ -11370,7 +11420,11 @@ class _StudentHistoryReportScreenState extends State<StudentHistoryReportScreen>
           ),
           if (error != null) Padding(padding: const EdgeInsets.only(top: 8), child: Text(error!, style: const TextStyle(color: Colors.red))),
         ],
-      ]),
+      ]);
+    if (widget.embedded) return content;
+    return Scaffold(
+      appBar: AppBar(title: const Text('Student Complete History'), backgroundColor: kGreen, foregroundColor: Colors.white),
+      body: content,
     );
   }
 }
