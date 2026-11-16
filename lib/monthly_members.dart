@@ -404,6 +404,7 @@ class _MonthlyMembersDashboardState extends State<MonthlyMembersDashboard> {
             // same as SadqaCollectionScreen elsewhere in this app.
             Card(child: ListTile(leading: const Icon(Icons.people), title: const Text('Member List'), subtitle: const Text('Add, edit, search, activate/deactivate'), onTap: () => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const MonthlyMemberListView())))),
             Card(child: ListTile(leading: const Icon(Icons.bar_chart), title: const Text('Monthly Due Report'), subtitle: const Text('Member-wise, with month/year filter and CSV export'), onTap: () => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const MonthlyDueReportView())))),
+            Card(child: ListTile(leading: const Icon(Icons.table_chart), title: const Text('Yearly Collection Report'), subtitle: const Text('Member-wise Jan-Dec collection with totals, by year'), onTap: () => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const MonthlyYearlyCollectionView())))),
             Card(child: ListTile(leading: const Icon(Icons.notifications), title: const Text('Payment & Notification History'), subtitle: const Text('Every receipt and reminder sent, with retry'), onTap: () => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const MonthlyNotificationHistoryView())))),
             Card(child: ListTile(leading: const Icon(Icons.schedule), title: const Text('Reminder Schedule'), subtitle: const Text('The 1st of every month, plus any extra dates you add'), onTap: () => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const MonthlyReminderScheduleView())))),
             const SizedBox(height: 8),
@@ -1031,6 +1032,144 @@ class _MonthlyDueReportViewState extends State<MonthlyDueReportView> {
                       onTap: () => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => MonthlyMemberDetailView(memberId: d.memberId))),
                     ),
                   ),
+              ],
+            ),
+          );
+        },
+      );
+}
+
+// ============================================================
+// Yearly Collection Report - one row per member, Jan..Dec columns of money
+// actually received, a Total column, and a bottom row with each month's
+// total collection plus the grand total for the year.
+// ============================================================
+
+Future<void> exportYearlyCollectionCsv(BuildContext context, int year, List<MonthlyMember> members, Map<String, List<double>> paid) async {
+  final rows = <List<String>>[
+    ['Member', ...AppState.kMonthAbbrevs, 'Total $year'],
+  ];
+  final colTotals = List<double>.filled(12, 0);
+  for (final m in members) {
+    final r = paid[m.id] ?? List<double>.filled(12, 0);
+    for (var i = 0; i < 12; i++) {
+      colTotals[i] += r[i];
+    }
+    rows.add([m.fullName, for (final v in r) v.toStringAsFixed(0), r.fold<double>(0, (a, b) => a + b).toStringAsFixed(0)]);
+  }
+  rows.add(['Total collection', for (final v in colTotals) v.toStringAsFixed(0), colTotals.fold<double>(0, (a, b) => a + b).toStringAsFixed(0)]);
+  final csv = const ListToCsvConverter().convert(rows);
+  try {
+    final dir = await getTemporaryDirectory();
+    final file = File('${dir.path}/monthly_collection_$year.csv');
+    await file.writeAsString(csv);
+    await Share.shareXFiles([XFile(file.path)], text: 'Monthly Members yearly collection - $year');
+  } catch (_) {
+    if (context.mounted) toast(context, 'Could not export. Check storage/share permissions.');
+  }
+}
+
+class MonthlyYearlyCollectionView extends StatefulWidget {
+  const MonthlyYearlyCollectionView({super.key});
+  @override
+  State<MonthlyYearlyCollectionView> createState() => _MonthlyYearlyCollectionViewState();
+}
+
+class _MonthlyYearlyCollectionViewState extends State<MonthlyYearlyCollectionView> {
+  late int year = DateTime.now().year;
+
+  @override
+  void initState() {
+    super.initState();
+    loadMonthlyMembers();
+  }
+
+  static String _n(double v) => v == 0 ? '-' : v.toStringAsFixed(0);
+
+  @override
+  Widget build(BuildContext context) => AnimatedBuilder(
+        animation: st,
+        builder: (context, _) {
+          // Money actually received per member per month (monthly_dues.amount_paid).
+          final paid = <String, List<double>>{};
+          for (final d in st.monthlyDues.where((d) => d.year == year && d.month >= 1 && d.month <= 12)) {
+            paid.putIfAbsent(d.memberId, () => List<double>.filled(12, 0))[d.month - 1] += d.amountPaid;
+          }
+          // Members with any collection that year, plus active members (so zero rows show too).
+          final members = st.monthlyMembers.where((m) => m.isActive || (paid[m.id]?.any((v) => v > 0) ?? false)).toList()
+            ..sort((a, b) => a.fullName.toLowerCase().compareTo(b.fullName.toLowerCase()));
+          final colTotals = List<double>.filled(12, 0);
+          for (final m in members) {
+            final r = paid[m.id];
+            if (r == null) continue;
+            for (var i = 0; i < 12; i++) {
+              colTotals[i] += r[i];
+            }
+          }
+          final grand = colTotals.fold<double>(0, (a, b) => a + b);
+
+          const bold = TextStyle(fontWeight: FontWeight.bold);
+          DataCell c(String t, {bool b = false}) => DataCell(Align(alignment: Alignment.centerRight, child: Text(t, style: b ? bold : null)));
+
+          return Scaffold(
+            appBar: AppBar(title: const Text('Yearly Collection Report'), actions: [
+              IconButton(icon: const Icon(Icons.share), tooltip: 'Export CSV', onPressed: () => exportYearlyCollectionCsv(context, year, members, paid)),
+            ]),
+            body: ListView(
+              padding: const EdgeInsets.all(12),
+              children: [
+                DropdownButtonFormField<int>(
+                  value: year,
+                  decoration: const InputDecoration(labelText: 'Year', border: OutlineInputBorder()),
+                  items: [for (var y = DateTime.now().year - 5; y <= DateTime.now().year + 1; y++) DropdownMenuItem(value: y, child: Text('$y'))],
+                  onChanged: (v) => setState(() => year = v ?? year),
+                ),
+                const SizedBox(height: 8),
+                Card(
+                  child: Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: Text('Total collected in $year: Rs.${grand.toStringAsFixed(0)}   (${members.length} member${members.length == 1 ? '' : 's'})', style: bold),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                if (members.isEmpty)
+                  const Padding(padding: EdgeInsets.all(16), child: Text('No members yet.'))
+                else
+                  SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: DataTable(
+                      columnSpacing: 14,
+                      headingRowHeight: 40,
+                      dataRowMinHeight: 36,
+                      dataRowMaxHeight: 40,
+                      headingTextStyle: bold,
+                      columns: [
+                        const DataColumn(label: Text('Member')),
+                        for (final mn in AppState.kMonthAbbrevs) DataColumn(label: Text(mn), numeric: true),
+                        DataColumn(label: Text('Total $year'), numeric: true),
+                      ],
+                      rows: [
+                        for (final m in members)
+                          DataRow(cells: [
+                            DataCell(
+                              ConstrainedBox(constraints: const BoxConstraints(maxWidth: 150), child: Text(m.fullName, overflow: TextOverflow.ellipsis)),
+                              onTap: () => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => MonthlyMemberDetailView(memberId: m.id))),
+                            ),
+                            for (var i = 0; i < 12; i++) c(_n(paid[m.id]?[i] ?? 0)),
+                            c((paid[m.id]?.fold<double>(0, (a, b) => a + b) ?? 0).toStringAsFixed(0), b: true),
+                          ]),
+                        DataRow(color: WidgetStatePropertyAll(Colors.green.shade50), cells: [
+                          const DataCell(Text('Total collection', style: bold)),
+                          for (var i = 0; i < 12; i++) c(_n(colTotals[i]), b: true),
+                          c(grand.toStringAsFixed(0), b: true),
+                        ]),
+                      ],
+                    ),
+                  ),
+                const Padding(
+                  padding: EdgeInsets.only(top: 8),
+                  child: Text('Shows money actually received in each month. The last row is the total collection per month; the last column is each member\'s total for the year.', style: TextStyle(color: Colors.black54, fontSize: 11.5)),
+                ),
               ],
             ),
           );
