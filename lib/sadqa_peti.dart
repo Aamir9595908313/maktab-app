@@ -28,6 +28,7 @@ import 'package:image_picker/image_picker.dart';
 
 import 'state.dart';
 import 'main.dart';
+import 'yearly_report_export.dart';
 
 // ============================================================
 // Loading
@@ -1250,24 +1251,36 @@ class _SadqaYearlyCollectionViewState extends State<SadqaYearlyCollectionView> {
 
   static String _n(double v) => v == 0 ? '-' : v.toStringAsFixed(0);
 
-  Future<void> _exportCsv(List<SadqaPeti> petis, Map<String, List<double>> paid) async {
-    final rows = <List<String>>[
-      ['Shop', 'Shopkeeper', 'Area', 'Peti ID', ...AppState.kMonthAbbrevs, 'Total $year'],
-    ];
+  YearlyReportData _data(List<SadqaPeti> petis, Map<String, List<double>> paid) {
     final colTotals = List<double>.filled(12, 0);
+    final rows = <List<Object>>[];
     for (final p in petis) {
       final r = paid[p.id] ?? List<double>.filled(12, 0);
       for (var i = 0; i < 12; i++) {
         colTotals[i] += r[i];
       }
-      rows.add([p.shopName, p.shopkeeperName, p.area ?? '', p.petiCode, for (final v in r) v.toStringAsFixed(0), r.fold<double>(0, (a, b) => a + b).toStringAsFixed(0)]);
+      rows.add([p.shopkeeperName, p.shopName, p.shopkeeperPhone, ...r, r.fold<double>(0, (a, b) => a + b)]);
     }
-    rows.add(['Total collection', '', '', '', for (final v in colTotals) v.toStringAsFixed(0), colTotals.fold<double>(0, (a, b) => a + b).toStringAsFixed(0)]);
+    return YearlyReportData(
+      title: 'Sadqa Peti - Yearly Collection $year',
+      fileBase: 'sadqa_peti_collection_$year',
+      headers: ['Name', 'Shop', 'Mobile', ...AppState.kMonthAbbrevs, 'Total $year'],
+      rows: rows,
+      totalRow: ['Total collection', '', '', ...colTotals, colTotals.fold<double>(0, (a, b) => a + b)],
+      textCols: 3,
+    );
+  }
+
+  Future<void> _export(String kind, List<SadqaPeti> petis, Map<String, List<double>> paid) async {
     try {
-      final dir = await getTemporaryDirectory();
-      final file = File('${dir.path}/sadqa_peti_collection_$year.csv');
-      await file.writeAsString(const ListToCsvConverter().convert(rows));
-      await Share.shareXFiles([XFile(file.path)], text: 'Sadqa Peti yearly collection - $year');
+      final d = _data(petis, paid);
+      if (kind == 'pdf') {
+        await d.sharePdf();
+      } else if (kind == 'xlsx') {
+        await d.shareExcel();
+      } else {
+        await d.shareCsv();
+      }
     } catch (_) {
       if (mounted) toast(context, 'Could not export. Check storage/share permissions.');
     }
@@ -1300,7 +1313,16 @@ class _SadqaYearlyCollectionViewState extends State<SadqaYearlyCollectionView> {
 
           return Scaffold(
             appBar: AppBar(title: const Text('Sadqa Peti - Yearly Collection'), actions: [
-              IconButton(icon: const Icon(Icons.share), tooltip: 'Export CSV', onPressed: () => _exportCsv(petis, paid)),
+              PopupMenuButton<String>(
+                icon: const Icon(Icons.download),
+                tooltip: 'Download',
+                onSelected: (k) => _export(k, petis, paid),
+                itemBuilder: (_) => const [
+                  PopupMenuItem(value: 'pdf', child: ListTile(leading: Icon(Icons.picture_as_pdf), title: Text('Download PDF'))),
+                  PopupMenuItem(value: 'xlsx', child: ListTile(leading: Icon(Icons.table_view), title: Text('Download Excel'))),
+                  PopupMenuItem(value: 'csv', child: ListTile(leading: Icon(Icons.description), title: Text('Download CSV'))),
+                ],
+              ),
             ]),
             body: ListView(
               padding: const EdgeInsets.all(12),
@@ -1331,19 +1353,25 @@ class _SadqaYearlyCollectionViewState extends State<SadqaYearlyCollectionView> {
                       dataRowMaxHeight: 40,
                       headingTextStyle: bold,
                       columns: [
+                        const DataColumn(label: Text('Name')),
                         const DataColumn(label: Text('Shop')),
+                        const DataColumn(label: Text('Mobile')),
                         for (final mn in AppState.kMonthAbbrevs) DataColumn(label: Text(mn), numeric: true),
                         DataColumn(label: Text('Total $year'), numeric: true),
                       ],
                       rows: [
                         for (final p in petis)
                           DataRow(cells: [
-                            DataCell(ConstrainedBox(constraints: const BoxConstraints(maxWidth: 150), child: Text('${p.shopName} (${p.shopkeeperName})', overflow: TextOverflow.ellipsis))),
+                            DataCell(ConstrainedBox(constraints: const BoxConstraints(maxWidth: 130), child: Text(p.shopkeeperName, overflow: TextOverflow.ellipsis))),
+                            DataCell(ConstrainedBox(constraints: const BoxConstraints(maxWidth: 130), child: Text(p.shopName, overflow: TextOverflow.ellipsis))),
+                            DataCell(Text(p.shopkeeperPhone)),
                             for (var i = 0; i < 12; i++) c(_n(paid[p.id]?[i] ?? 0)),
                             c((paid[p.id]?.fold<double>(0, (a, b) => a + b) ?? 0).toStringAsFixed(0), b: true),
                           ]),
                         DataRow(color: WidgetStatePropertyAll(Colors.green.shade50), cells: [
                           const DataCell(Text('Total collection', style: bold)),
+                          const DataCell(Text('')),
+                          const DataCell(Text('')),
                           for (var i = 0; i < 12; i++) c(_n(colTotals[i]), b: true),
                           c(grand.toStringAsFixed(0), b: true),
                         ]),

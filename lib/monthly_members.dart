@@ -20,6 +20,7 @@ import 'dart:io';
 
 import 'state.dart';
 import 'main.dart';
+import 'yearly_report_export.dart';
 
 // ============================================================
 // Loading
@@ -1045,25 +1046,36 @@ class _MonthlyDueReportViewState extends State<MonthlyDueReportView> {
 // total collection plus the grand total for the year.
 // ============================================================
 
-Future<void> exportYearlyCollectionCsv(BuildContext context, int year, List<MonthlyMember> members, Map<String, List<double>> paid) async {
-  final rows = <List<String>>[
-    ['Member', ...AppState.kMonthAbbrevs, 'Total $year'],
-  ];
+YearlyReportData yearlyCollectionData(int year, List<MonthlyMember> members, Map<String, List<double>> paid) {
   final colTotals = List<double>.filled(12, 0);
+  final rows = <List<Object>>[];
   for (final m in members) {
     final r = paid[m.id] ?? List<double>.filled(12, 0);
     for (var i = 0; i < 12; i++) {
       colTotals[i] += r[i];
     }
-    rows.add([m.fullName, for (final v in r) v.toStringAsFixed(0), r.fold<double>(0, (a, b) => a + b).toStringAsFixed(0)]);
+    rows.add([m.fullName, m.phone, ...r, r.fold<double>(0, (a, b) => a + b)]);
   }
-  rows.add(['Total collection', for (final v in colTotals) v.toStringAsFixed(0), colTotals.fold<double>(0, (a, b) => a + b).toStringAsFixed(0)]);
-  final csv = const ListToCsvConverter().convert(rows);
+  return YearlyReportData(
+    title: 'Monthly Members - Yearly Collection $year',
+    fileBase: 'monthly_collection_$year',
+    headers: ['Member', 'Mobile', ...AppState.kMonthAbbrevs, 'Total $year'],
+    rows: rows,
+    totalRow: ['Total collection', '', ...colTotals, colTotals.fold<double>(0, (a, b) => a + b)],
+    textCols: 2,
+  );
+}
+
+Future<void> exportYearlyCollection(BuildContext context, String kind, int year, List<MonthlyMember> members, Map<String, List<double>> paid) async {
   try {
-    final dir = await getTemporaryDirectory();
-    final file = File('${dir.path}/monthly_collection_$year.csv');
-    await file.writeAsString(csv);
-    await Share.shareXFiles([XFile(file.path)], text: 'Monthly Members yearly collection - $year');
+    final d = yearlyCollectionData(year, members, paid);
+    if (kind == 'pdf') {
+      await d.sharePdf();
+    } else if (kind == 'xlsx') {
+      await d.shareExcel();
+    } else {
+      await d.shareCsv();
+    }
   } catch (_) {
     if (context.mounted) toast(context, 'Could not export. Check storage/share permissions.');
   }
@@ -1113,7 +1125,16 @@ class _MonthlyYearlyCollectionViewState extends State<MonthlyYearlyCollectionVie
 
           return Scaffold(
             appBar: AppBar(title: const Text('Yearly Collection Report'), actions: [
-              IconButton(icon: const Icon(Icons.share), tooltip: 'Export CSV', onPressed: () => exportYearlyCollectionCsv(context, year, members, paid)),
+              PopupMenuButton<String>(
+                icon: const Icon(Icons.download),
+                tooltip: 'Download',
+                onSelected: (k) => exportYearlyCollection(context, k, year, members, paid),
+                itemBuilder: (_) => const [
+                  PopupMenuItem(value: 'pdf', child: ListTile(leading: Icon(Icons.picture_as_pdf), title: Text('Download PDF'))),
+                  PopupMenuItem(value: 'xlsx', child: ListTile(leading: Icon(Icons.table_view), title: Text('Download Excel'))),
+                  PopupMenuItem(value: 'csv', child: ListTile(leading: Icon(Icons.description), title: Text('Download CSV'))),
+                ],
+              ),
             ]),
             body: ListView(
               padding: const EdgeInsets.all(12),
