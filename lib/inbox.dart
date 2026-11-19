@@ -207,6 +207,23 @@ class AppAlerts {
     } catch (_) {}
   }
 
+  /// Deletes the user's own alerts (RLS only allows their own rows).
+  static Future<bool> deleteAlerts(Set<String> ids) async {
+    if (ids.isEmpty) return true;
+    final before = items.value;
+    items.value = before.where((a) => !ids.contains(a.id)).toList();
+    unread.value = items.value.where((x) => !x.read).length;
+    try {
+      await _sb.from('app_notifications').delete().inFilter('id', ids.toList());
+      return true;
+    } catch (_) {
+      // Could not delete: put them back so the list matches the server.
+      items.value = before;
+      unread.value = before.where((x) => !x.read).length;
+      return false;
+    }
+  }
+
   static Future<void> markAllRead() async {
     for (final a in items.value) {
       a.read = true;
@@ -239,6 +256,9 @@ class AlertsInboxScreen extends StatefulWidget {
 }
 
 class _AlertsInboxScreenState extends State<AlertsInboxScreen> {
+  bool selecting = false;
+  final Set<String> selected = {};
+
   @override
   void initState() {
     super.initState();
@@ -252,24 +272,92 @@ class _AlertsInboxScreenState extends State<AlertsInboxScreen> {
     return '${d.day} ${mon[d.month - 1]}, $h:$m ${d.hour < 12 ? 'AM' : 'PM'}';
   }
 
+  void _exitSelect() => setState(() {
+        selecting = false;
+        selected.clear();
+      });
+
+  Future<void> _deleteSelected() async {
+    final n = selected.length;
+    if (n == 0) return;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('Delete $n alert${n == 1 ? '' : 's'}?'),
+        content: const Text('They will be removed from your Alerts. This cannot be undone.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Delete', style: TextStyle(color: Colors.red))),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    final done = await AppAlerts.deleteAlerts(Set<String>.of(selected));
+    if (!mounted) return;
+    _exitSelect();
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(done ? 'Deleted.' : 'Could not delete. Check your internet and try again.')));
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Alerts'),
+        leading: selecting ? IconButton(icon: const Icon(Icons.close), tooltip: 'Cancel', onPressed: _exitSelect) : null,
+        title: Text(selecting ? '${selected.length} selected' : 'Alerts'),
         backgroundColor: const Color(0xFF054D00),
         foregroundColor: Colors.white,
-        actions: [
-          TextButton(
-            onPressed: AppAlerts.markAllRead,
-            child: const Text('Mark all read', style: TextStyle(color: Colors.white)),
-          ),
-        ],
+        actions: selecting
+            ? [
+                IconButton(
+                  icon: const Icon(Icons.delete),
+                  tooltip: 'Delete selected',
+                  onPressed: selected.isEmpty ? null : _deleteSelected,
+                ),
+              ]
+            : [
+                TextButton(
+                  onPressed: AppAlerts.items.value.isEmpty ? null : () => setState(() => selecting = true),
+                  child: const Text('Select', style: TextStyle(color: Colors.white)),
+                ),
+                TextButton(
+                  onPressed: AppAlerts.markAllRead,
+                  child: const Text('Mark all read', style: TextStyle(color: Colors.white)),
+                ),
+              ],
       ),
       body: ValueListenableBuilder<List<AppAlert>>(
         valueListenable: AppAlerts.items,
         builder: (context, list, _) {
-          return RefreshIndicator(
+          // Drop selections for alerts that no longer exist.
+          selected.removeWhere((id) => !list.any((a) => a.id == id));
+          final allSelected = list.isNotEmpty && selected.length == list.length;
+          return Column(children: [
+            if (selecting)
+              CheckboxListTile(
+                value: allSelected,
+                onChanged: (v) => setState(() {
+                  if (v == true) {
+                    selected
+                      ..clear()
+                      ..addAll(list.map((a) => a.id));
+                  } else {
+                    selected.clear();
+                  }
+                }),
+                title: const Text('Select all', style: TextStyle(fontWeight: FontWeight.bold)),
+                controlAffinity: ListTileControlAffinity.leading,
+                activeColor: const Color(0xFF054D00),
+                tileColor: const Color(0xFFF1F1F1),
+              ),
+            Expanded(child: _list(list)),
+          ]);
+        },
+      ),
+    );
+  }
+
+  Widget _list(List<AppAlert> list) {
+    return RefreshIndicator(
             onRefresh: AppAlerts.refresh,
             child: list.isEmpty
                 ? ListView(children: const [
@@ -281,12 +369,19 @@ class _AlertsInboxScreenState extends State<AlertsInboxScreen> {
                     separatorBuilder: (_, __) => const Divider(height: 1),
                     itemBuilder: (context, i) {
                       final a = list[i];
+                      final isSel = selected.contains(a.id);
                       return ListTile(
-                        tileColor: a.read ? null : const Color(0xFFEFF6EA),
-                        leading: CircleAvatar(
-                          backgroundColor: const Color(0xFF054D00),
-                          child: Icon(alertIconForKind(a.kind), color: Colors.white, size: 20),
-                        ),
+                        tileColor: isSel ? const Color(0xFFDDEBD5) : (a.read ? null : const Color(0xFFEFF6EA)),
+                        leading: selecting
+                            ? Checkbox(
+                                value: isSel,
+                                activeColor: const Color(0xFF054D00),
+                                onChanged: (v) => setState(() => v == true ? selected.add(a.id) : selected.remove(a.id)),
+                              )
+                            : CircleAvatar(
+                                backgroundColor: const Color(0xFF054D00),
+                                child: Icon(alertIconForKind(a.kind), color: Colors.white, size: 20),
+                              ),
                         title: Text(a.title, style: TextStyle(fontWeight: a.read ? FontWeight.w500 : FontWeight.bold)),
                         subtitle: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                           Text(a.body),
@@ -294,13 +389,22 @@ class _AlertsInboxScreenState extends State<AlertsInboxScreen> {
                           Text(_when(a.createdAt), style: const TextStyle(fontSize: 11.5, color: Colors.black45)),
                         ]),
                         isThreeLine: true,
-                        onTap: () => AppAlerts.markRead(a),
+                        onTap: () {
+                          if (selecting) {
+                            setState(() => isSel ? selected.remove(a.id) : selected.add(a.id));
+                          } else {
+                            AppAlerts.markRead(a);
+                          }
+                        },
+                        onLongPress: selecting
+                            ? null
+                            : () => setState(() {
+                                  selecting = true;
+                                  selected.add(a.id);
+                                }),
                       );
                     },
                   ),
           );
-        },
-      ),
-    );
   }
 }
